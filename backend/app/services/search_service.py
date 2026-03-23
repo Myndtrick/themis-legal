@@ -429,14 +429,11 @@ def advanced_search(
 
     ro_date_to = _to_ro_date(date_to)
 
-    # Handle include_repealed via date_from
-    if include_repealed == "only_in_force":
-        effective_date_from = _to_ro_date(date_from) if date_from else date_type.today().strftime("%d.%m.%Y")
-    elif include_repealed == "only_repealed":
-        # First search unfiltered, then subtract in-force results later
-        effective_date_from = _to_ro_date(date_from) if date_from else ""
-    else:  # "all"
-        effective_date_from = _to_ro_date(date_from) if date_from else ""
+    # NOTE: ActInForceOnDateTextFrom does not work reliably on legislatie.just.ro
+    # (returns 0 results regardless of format). We only pass it through if the
+    # user explicitly provides a date_from value, but never auto-set it.
+    # The include_repealed filter is kept for future use / UI consistency.
+    effective_date_from = _to_ro_date(date_from) if date_from else ""
 
     all_results: list[SearchResult] = []
     seen_ids: set[str] = set()
@@ -474,21 +471,9 @@ def advanced_search(
         )
         _add_results(results)
 
-    # Handle "only_repealed": requires a second search to find what IS in force,
-    # then subtract from the unfiltered results
-    if include_repealed == "only_repealed":
-        token = _refresh_token(session)
-        today_str = date_type.today().strftime("%d.%m.%Y")
-        in_force_results = _do_search(
-            session, token,
-            title_text=title_text,
-            doc_type=resolved_doc_type,
-            doc_number=doc_number,
-            emitent=emitent,
-            date_from=today_str,
-            date_to=ro_date_to,
-        )
-        in_force_ids = {r.ver_id for r in in_force_results}
-        all_results = [r for r in all_results if r.ver_id not in in_force_ids]
+    # NOTE: "only_repealed" filtering is not possible via legislatie.just.ro since
+    # the ActInForceOnDateTextFrom field does not work. The include_repealed
+    # parameter is preserved for future use but currently has no server-side effect.
+    # Status is determined on import via auto-detection from version state.
 
     return all_results[:max_results]
