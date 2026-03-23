@@ -453,14 +453,33 @@ def advanced_search(
     # The include_repealed filter is kept for future use / UI consistency.
     effective_date_from = _to_ro_date(date_from) if date_from else ""
 
+    boosted_results: list[SearchResult] = []
     all_results: list[SearchResult] = []
     seen_ids: set[str] = set()
 
-    def _add_results(results: list[SearchResult]):
+    def _add_results(results: list[SearchResult], target: list[SearchResult] | None = None):
+        dest = target if target is not None else all_results
         for r in results:
             if r.ver_id not in seen_ids:
                 seen_ids.add(r.ver_id)
-                all_results.append(r)
+                dest.append(r)
+
+    # Step 1: Alias boost — if keyword matches a known alias, do a precise
+    # number search first and put those results at the very top.
+    if keyword and not number and not year:
+        from app.services.legal_aliases import expand_query
+        alias_matches = expand_query(keyword)
+        if alias_matches:
+            for alias in alias_matches:
+                if alias.get("number"):
+                    results = _do_search(
+                        session, token,
+                        doc_type=alias.get("type", ""),
+                        doc_number=alias["number"],
+                    )
+                    _add_results(results, target=boosted_results)
+                    if results:
+                        token = _refresh_token(session)
 
     # Primary search: title
     if title_text or resolved_doc_type or doc_number or emitent or effective_date_from or ro_date_to:
@@ -494,4 +513,17 @@ def advanced_search(
     # parameter is preserved for future use but currently has no server-side effect.
     # Status is determined on import via auto-detection from version state.
 
-    return all_results[:max_results]
+    # Step 2: Smart sorting — sort non-boosted results by doc type priority.
+    # COD/LEGE first, ancillary documents (DECIZIE, RECTIFICARE, DECRET) last.
+    DOC_TYPE_PRIORITY = {
+        "COD": 1, "LEGE": 1,
+        "OUG": 2, "OG": 2, "ORDONANTA": 2,
+        "HG": 3, "ORDIN": 3, "HOTARARE": 3,
+        "REGULAMENT": 4, "NORMA": 4,
+        "DECIZIE": 5, "RECTIFICARE": 5, "DECRET": 5,
+    }
+    all_results.sort(key=lambda r: DOC_TYPE_PRIORITY.get(r.doc_type, 5))
+
+    # Combine: boosted results first, then sorted remainder
+    final = boosted_results + all_results
+    return final[:max_results]
