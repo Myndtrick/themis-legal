@@ -158,16 +158,19 @@ def send_message(
                     final_mode = event.get("mode")
                     final_run_id = event.get("run_id")
                     final_reasoning = event.get("reasoning")
+                    final_structured = event.get("structured")
+                    final_confidence = event.get("confidence")
+                    final_flags = event.get("flags", [])
 
                     yield {
                         "event": "done",
                         "data": json.dumps({
                             "content": final_content,
-                            "structured": event.get("structured"),
+                            "structured": final_structured,
                             "mode": final_mode,
                             "run_id": final_run_id,
-                            "confidence": event.get("confidence"),
-                            "flags": event.get("flags", []),
+                            "confidence": final_confidence,
+                            "flags": final_flags,
                             "reasoning": final_reasoning,
                         }, ensure_ascii=False),
                     }
@@ -188,8 +191,12 @@ def send_message(
                     final_content,
                     mode=final_mode,
                     run_id=final_run_id,
-                    reasoning_data=json.dumps(final_reasoning, ensure_ascii=False)
-                    if final_reasoning else None,
+                    reasoning_data=json.dumps({
+                        "structured": final_structured,
+                        "reasoning": final_reasoning,
+                        "confidence": final_confidence,
+                        "flags": final_flags,
+                    }, ensure_ascii=False) if final_reasoning else None,
                 )
                 gen_db.commit()
 
@@ -249,16 +256,19 @@ def resume_paused_pipeline(
                     final_content = event.get("content", "")
                     final_mode = event.get("mode")
                     final_reasoning = event.get("reasoning")
+                    final_structured = event.get("structured")
+                    final_confidence = event.get("confidence")
+                    final_flags = event.get("flags", [])
 
                     yield {
                         "event": "done",
                         "data": json.dumps({
                             "content": final_content,
-                            "structured": event.get("structured"),
+                            "structured": final_structured,
                             "mode": final_mode,
                             "run_id": final_run_id,
-                            "confidence": event.get("confidence"),
-                            "flags": event.get("flags", []),
+                            "confidence": final_confidence,
+                            "flags": final_flags,
                             "reasoning": final_reasoning,
                         }, ensure_ascii=False),
                     }
@@ -279,8 +289,12 @@ def resume_paused_pipeline(
                     final_content,
                     mode=final_mode,
                     run_id=final_run_id,
-                    reasoning_data=json.dumps(final_reasoning, ensure_ascii=False)
-                    if final_reasoning else None,
+                    reasoning_data=json.dumps({
+                        "structured": final_structured,
+                        "reasoning": final_reasoning,
+                        "confidence": final_confidence,
+                        "flags": final_flags,
+                    }, ensure_ascii=False) if final_reasoning else None,
                 )
                 gen_db.commit()
 
