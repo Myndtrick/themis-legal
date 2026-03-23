@@ -1,0 +1,13 @@
+{
+  "name": "legalese",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx concurrently -n backend,frontend -c blue,green \"cd backend && uv run uvicorn app.main:app --reload\" \"cd frontend && npm run dev\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && uv run uvicorn app.main:app --reload"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
