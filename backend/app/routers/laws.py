@@ -410,6 +410,15 @@ def delete_law(law_id: int, db: Session = Depends(get_db)):
 
     title = law.title
     version_count = len(law.versions)
+
+    # Clean up ChromaDB index
+    try:
+        from app.services.chroma_service import remove_law_articles
+
+        remove_law_articles(db, law_id)
+    except Exception as e:
+        logger.warning(f"ChromaDB cleanup failed (non-fatal): {e}")
+
     db.delete(law)
     db.commit()
     return {

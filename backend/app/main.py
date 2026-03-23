@@ -7,7 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
+from app.models import assistant, pipeline, prompt  # noqa: F401 — register models
+from app.routers import assistant as assistant_router
 from app.routers import laws, notifications
+from app.routers import settings_pipeline, settings_prompts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,9 +32,20 @@ def run_update_check():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create data directory and database tables on startup
+    # Create data directories and database tables on startup
     os.makedirs("data", exist_ok=True)
+    os.makedirs("data/chroma", exist_ok=True)
     Base.metadata.create_all(bind=engine)
+
+    # Seed default prompts for the Legal Assistant pipeline
+    from app.database import SessionLocal
+    from app.services.prompt_service import seed_defaults
+
+    db = SessionLocal()
+    try:
+        seed_defaults(db)
+    finally:
+        db.close()
 
     # Schedule daily update check at 3:00 AM
     scheduler.add_job(
@@ -68,6 +82,9 @@ app.add_middleware(
 
 app.include_router(laws.router)
 app.include_router(notifications.router)
+app.include_router(assistant_router.router)
+app.include_router(settings_prompts.router)
+app.include_router(settings_pipeline.router)
 
 
 @app.get("/api/health")
@@ -82,3 +99,17 @@ def trigger_update_check():
 
     results = check_for_updates()
     return results
+
+
+@app.post("/api/admin/index-chroma")
+def index_chroma():
+    """Bulk index all articles into ChromaDB. Run once after Phase 1 data exists."""
+    from app.database import SessionLocal
+    from app.services.chroma_service import index_all
+
+    db = SessionLocal()
+    try:
+        count = index_all(db)
+        return {"indexed": count}
+    finally:
+        db.close()

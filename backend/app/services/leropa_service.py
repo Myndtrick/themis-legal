@@ -562,11 +562,73 @@ def import_law(
     # The forma de baza date is the law's original publication date
     date_lookup[ver_id] = _date_from_list(doc.get("date"))
 
-    # Import the forma de baza (original text)
-    law, base_version = fetch_and_store_version(
-        db, ver_id, override_date=date_lookup.get(ver_id)
-    )
-    # The main page has the best-formatted metadata — apply it to the Law record
+    # Decide which versions to import.
+    #
+    # import_history=True  → forma de baza + all consolidated versions
+    # import_history=False → only the current (newest) version in force
+    #
+    # When importing only the current version, we pick the newest-dated
+    # entry from the history list (if any) instead of the forma de baza,
+    # because the forma de baza is the original text and may be decades old.
+
+    if not import_history and history:
+        # Find the newest consolidated version by date
+        dated_entries = [
+            (entry, _parse_date(entry.get("date")))
+            for entry in history
+            if entry.get("ver_id") and _parse_date(entry.get("date"))
+        ]
+        if dated_entries:
+            dated_entries.sort(key=lambda x: x[1], reverse=True)
+            newest_entry = dated_entries[0][0]
+            current_ver_id = newest_entry["ver_id"]
+        else:
+            # No dates — fall back to the first history entry (most recent)
+            current_ver_id = history[0]["ver_id"]
+
+        logger.info(
+            f"Importing current version only: {current_ver_id} "
+            f"(date={date_lookup.get(current_ver_id)})"
+        )
+        _stored_article_ids = set()
+        law, current_version = fetch_and_store_version(
+            db, current_ver_id,
+            override_date=date_lookup.get(current_ver_id),
+        )
+        versions_imported = [current_ver_id]
+    else:
+        # Import the forma de baza (original text)
+        law, base_version = fetch_and_store_version(
+            db, ver_id, override_date=date_lookup.get(ver_id)
+        )
+        versions_imported = [ver_id]
+
+        # Import all consolidated versions
+        if history:
+            logger.info(f"Importing {len(history)} consolidated versions")
+            for entry in history:
+                hist_ver_id = entry.get("ver_id")
+                if not hist_ver_id or hist_ver_id == ver_id:
+                    continue
+
+                try:
+                    _stored_article_ids = set()
+                    _, hist_version = fetch_and_store_version(
+                        db, hist_ver_id, law=law,
+                        rate_limit_delay=rate_limit_delay,
+                        override_date=date_lookup.get(hist_ver_id),
+                    )
+                    versions_imported.append(hist_ver_id)
+                    logger.info(
+                        f"Imported version {hist_ver_id} "
+                        f"(date={date_lookup.get(hist_ver_id)}, "
+                        f"{len(versions_imported)}/{len(history) + 1})"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to import version {hist_ver_id}: {e}")
+                    continue
+
+    # Apply metadata from the main page (it has the best-formatted info)
     title = doc.get("title") or law.title
     law_number, law_year = _extract_law_number_and_year(title)
     law.title = title
@@ -577,33 +639,6 @@ def import_law(
     law.keywords = doc.get("keywords") or law.keywords
     law.issuer = ", ".join(doc.get("issuer") or []) or law.issuer
     law.source_url = doc.get("source") or law.source_url
-
-    versions_imported = [ver_id]
-
-    # Import consolidated versions
-    if import_history and history:
-        logger.info(f"Importing {len(history)} consolidated versions")
-        for entry in history:
-            hist_ver_id = entry.get("ver_id")
-            if not hist_ver_id or hist_ver_id == ver_id:
-                continue
-
-            try:
-                _stored_article_ids = set()
-                _, hist_version = fetch_and_store_version(
-                    db, hist_ver_id, law=law,
-                    rate_limit_delay=rate_limit_delay,
-                    override_date=date_lookup.get(hist_ver_id),
-                )
-                versions_imported.append(hist_ver_id)
-                logger.info(
-                    f"Imported version {hist_ver_id} "
-                    f"(date={date_lookup.get(hist_ver_id)}, "
-                    f"{len(versions_imported)}/{len(history) + 1})"
-                )
-            except Exception as e:
-                logger.error(f"Failed to import version {hist_ver_id}: {e}")
-                continue
 
     # Mark the newest-dated version as current
     all_db_versions = (
@@ -641,6 +676,15 @@ def import_law(
     db.add(audit)
 
     db.commit()
+
+    # Index articles into ChromaDB for semantic search
+    try:
+        from app.services.chroma_service import index_law_version as chroma_index
+
+        for v in all_db_versions:
+            chroma_index(db, law.id, v.id)
+    except Exception as e:
+        logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
 
     _stored_article_ids = set()
 
