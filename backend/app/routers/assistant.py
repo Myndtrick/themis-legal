@@ -163,6 +163,7 @@ def send_message(
                         "event": "done",
                         "data": json.dumps({
                             "content": final_content,
+                            "structured": event.get("structured"),
                             "mode": final_mode,
                             "run_id": final_run_id,
                             "confidence": event.get("confidence"),
@@ -253,6 +254,7 @@ def resume_paused_pipeline(
                         "event": "done",
                         "data": json.dumps({
                             "content": final_content,
+                            "structured": event.get("structured"),
                             "mode": final_mode,
                             "run_id": final_run_id,
                             "confidence": event.get("confidence"),

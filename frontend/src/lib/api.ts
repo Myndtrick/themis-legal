@@ -188,6 +188,24 @@ export interface ChatSessionDetail extends ChatSession {
   messages: ChatMessage[];
 }
 
+export interface StructuredAnswer {
+  short_answer: string;
+  legal_basis: string | null;
+  version_logic: string | null;
+  nuances: string | null;
+  changes_over_time: string | null;
+  missing_info: string | null;
+  confidence: string;
+  confidence_reason: string | null;
+  sources: Array<{
+    statement: string;
+    label: string;
+    law: string | null;
+    article: string | null;
+    version_date: string | null;
+  }>;
+}
+
 export interface ReasoningStep {
   step: number;
   name: string;

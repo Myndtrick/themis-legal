@@ -6,6 +6,7 @@ import {
   type ChatMessage,
   type ChatSession,
   type MissingLaw,
+  type StructuredAnswer,
 } from "@/lib/api";
 import { streamChat, streamResume, type SSEHandlers } from "@/lib/use-event-source";
 
@@ -146,13 +147,21 @@ export function useChat() {
           setIsStreaming(false);
         },
         onDone: (data) => {
+          // Store structured data (answer sections + reasoning) together
+          const combinedData = {
+            structured: data.structured,
+            reasoning: data.reasoning,
+            confidence: data.confidence,
+            flags: data.flags,
+          };
           const assistantMsg: ChatMessage = {
             id: Date.now() + 1,
             role: "assistant",
-            content: data.content,
+            // Use short_answer from structured if available, else raw content
+            content: data.structured?.short_answer || data.content,
             mode: data.mode,
             run_id: data.run_id,
-            reasoning_data: JSON.stringify(data.reasoning),
+            reasoning_data: JSON.stringify(combinedData),
             created_at: new Date().toISOString(),
           };
           setMessages((prev) => [...prev, assistantMsg]);
@@ -206,13 +215,21 @@ export function useChat() {
           setStreamingText((prev) => prev + text);
         },
         onDone: (data) => {
+          // Store structured data (answer sections + reasoning) together
+          const combinedData = {
+            structured: data.structured,
+            reasoning: data.reasoning,
+            confidence: data.confidence,
+            flags: data.flags,
+          };
           const assistantMsg: ChatMessage = {
             id: Date.now() + 1,
             role: "assistant",
-            content: data.content,
+            // Use short_answer from structured if available, else raw content
+            content: data.structured?.short_answer || data.content,
             mode: data.mode,
             run_id: data.run_id,
-            reasoning_data: JSON.stringify(data.reasoning),
+            reasoning_data: JSON.stringify(combinedData),
             created_at: new Date().toISOString(),
           };
           setMessages((prev) => [...prev, assistantMsg]);

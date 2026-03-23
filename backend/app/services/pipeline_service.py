@@ -147,6 +147,7 @@ def run_pipeline(
             "type": "done",
             "run_id": run_id,
             "content": state.get("answer", ""),
+            "structured": state.get("answer_structured"),
             "mode": state.get("output_mode", "qa"),
             "confidence": state.get("confidence", "MEDIUM"),
             "flags": state.get("flags", []),
@@ -206,6 +207,7 @@ def resume_pipeline(
             "type": "done",
             "run_id": run_id,
             "content": state.get("answer", ""),
+            "structured": state.get("answer_structured"),
             "mode": state.get("output_mode", "qa"),
             "confidence": state.get("confidence", "MEDIUM"),
             "flags": state.get("flags", []),
@@ -359,19 +361,31 @@ def _step2_date_extraction(state: dict, db: Session) -> dict:
 def _step3_law_identification(state: dict, db: Session) -> dict:
     prompt_text, prompt_ver = load_prompt("LA-S3", db)
 
-    # Build the list of laws in the Library for context
+    # Build the list of laws in the Library — full titles, with status
     laws_in_db = db.query(Law).all()
-    library_list = [
-        f"{law.law_number}/{law.law_year} — {law.title[:80]}"
-        for law in laws_in_db
-    ]
+    library_list = []
+    for i, law in enumerate(laws_in_db, 1):
+        library_list.append(
+            f"{i}. {law.law_number}/{law.law_year} — {law.title} "
+            f"({law.document_type}, {law.status})"
+        )
+
+    # Also build a lookup for fuzzy matching later
+    db_law_lookup = {}
+    for law in laws_in_db:
+        # Normalize: strip leading zeros, lowercase
+        num_key = law.law_number.strip().lstrip("0") or law.law_number.strip()
+        db_law_lookup[f"{num_key}/{law.law_year}"] = law
+        db_law_lookup[f"{law.law_number}/{law.law_year}"] = law
+
+    state["_db_law_lookup"] = db_law_lookup
 
     user_msg = (
         f"QUESTION TYPE: {state['question_type']}\n"
         f"LEGAL DOMAIN: {state['legal_domain']}\n"
         f"CORE ISSUE: {state['core_issue']}\n"
         f"RELEVANT DATE: {state['primary_date']}\n\n"
-        f"LAWS CURRENTLY IN LEGAL LIBRARY:\n"
+        f"LAWS CURRENTLY IN LEGAL LIBRARY ({len(laws_in_db)} laws):\n"
         + "\n".join(library_list) + "\n\n"
         f"ORIGINAL QUESTION:\n{state['question']}"
     )
@@ -392,14 +406,37 @@ def _step3_law_identification(state: dict, db: Session) -> dict:
     except json.JSONDecodeError:
         parsed = {"candidate_laws": [], "reasoning": "Failed to parse law identification"}
 
-    state["candidate_laws"] = parsed.get("candidate_laws", [])
+    candidates = parsed.get("candidate_laws", [])
+
+    # Fuzzy match: for each candidate, try to find it in the DB
+    for law_info in candidates:
+        num = str(law_info.get("law_number", "")).strip().lstrip("0") or str(law_info.get("law_number", "")).strip()
+        year = str(law_info.get("law_year", "")).strip()
+        key = f"{num}/{year}"
+
+        matched = db_law_lookup.get(key)
+        if not matched:
+            # Try original number without stripping
+            key2 = f"{law_info.get('law_number', '')}/{year}"
+            matched = db_law_lookup.get(key2)
+
+        if matched:
+            law_info["db_law_id"] = matched.id
+            law_info["source"] = "DB"
+            law_info["db_title"] = matched.title
+        else:
+            law_info["db_law_id"] = None
+            if law_info.get("source") != "Unverified":
+                law_info["source"] = law_info.get("source", "General")
+
+    state["candidate_laws"] = candidates
 
     log_step(
         db, state["run_id"], "law_identification", 3, "done",
         result["duration"],
         prompt_id="LA-S3", prompt_version=prompt_ver,
         input_summary=f"Domain: {state['legal_domain']}, Issue: {state['core_issue'][:100]}",
-        output_summary=f"Found {len(state['candidate_laws'])} candidate laws",
+        output_summary=f"Found {len(candidates)} candidate laws, {sum(1 for c in candidates if c.get('db_law_id'))} in DB",
         output_data=parsed,
     )
 
@@ -417,29 +454,18 @@ def _step4_coverage_check(state: dict, db: Session) -> dict:
     missing_laws = []
 
     for law_info in state.get("candidate_laws", []):
-        law_num = str(law_info.get("law_number", ""))
-        law_year = law_info.get("law_year")
+        key = f"{law_info.get('law_number', '')}/{law_info.get('law_year', '')}"
+        db_law_id = law_info.get("db_law_id")
 
-        existing = (
-            db.query(Law)
-            .filter(Law.law_number == law_num)
-            .filter(Law.law_year == int(law_year) if law_year else False)
-            .first()
-        )
-
-        key = f"{law_num}/{law_year}"
-        if existing:
-            law_info["db_law_id"] = existing.id
-            law_info["source"] = "DB"
-            # Check if version for the relevant date exists
+        if db_law_id:
+            # Already matched in Step 3 — just check versions exist
             has_version = (
                 db.query(LawVersion)
-                .filter(LawVersion.law_id == existing.id)
+                .filter(LawVersion.law_id == db_law_id)
                 .first()
             )
             coverage[key] = "full" if has_version else "partial"
         else:
-            law_info["db_law_id"] = None
             coverage[key] = "missing"
             missing_laws.append(law_info)
 
@@ -660,12 +686,18 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             law_version_ids=version_ids,
             n_results=20,
         )
-    else:
-        # No specific versions — search broadly
+
+    # Fallback: if filtered search returned nothing (or no versions selected),
+    # do a broad search across all articles
+    if not retrieved:
         retrieved = query_articles(
             query_text=state["question"],
             n_results=15,
         )
+        if retrieved and not version_ids:
+            state["flags"].append(
+                "No specific law versions matched — used broad semantic search across all articles"
+            )
 
     state["retrieved_articles"] = retrieved
 
@@ -739,15 +771,40 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             total_tokens_out = chunk["tokens_out"]
             total_duration = chunk["duration"]
 
-    state["answer"] = full_text
+    # Parse the structured JSON response
+    structured = None
+    try:
+        # Claude may wrap JSON in markdown code blocks — strip them
+        clean = full_text.strip()
+        if clean.startswith("```"):
+            # Remove ```json ... ``` wrapper
+            lines = clean.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean = "\n".join(lines)
+        structured = json.loads(clean)
+    except json.JSONDecodeError:
+        logger.warning(f"Failed to parse Step 7 JSON, using raw text. First 200 chars: {full_text[:200]}")
+        structured = None
+
+    if structured:
+        state["answer"] = structured.get("short_answer", full_text)
+        state["answer_structured"] = structured
+    else:
+        state["answer"] = full_text
+        state["answer_structured"] = None
 
     log_api_call(
         db, state["run_id"], "answer_generation",
         total_tokens_in, total_tokens_out, total_duration, state.get("model", ""),
     )
 
-    # Quick confidence assessment based on available data
-    if not retrieved:
+    # Use confidence from Claude's structured response if available
+    if structured and structured.get("confidence"):
+        state["confidence"] = structured["confidence"]
+    elif not retrieved:
         state["confidence"] = "LOW"
         state["flags"].append("No articles retrieved from Legal Library")
     elif any(l.get("role") == "PRIMARY" and l.get("source") != "DB"

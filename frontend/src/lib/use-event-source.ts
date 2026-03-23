@@ -5,6 +5,8 @@
  * Parses the SSE protocol: "event: <type>\ndata: <json>\n\n"
  */
 
+import type { StructuredAnswer } from "@/lib/api";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export interface SSEHandlers {
@@ -28,6 +30,7 @@ export interface SSEHandlers {
   }) => void;
   onDone?: (data: {
     content: string;
+    structured: StructuredAnswer | null;
     mode: string;
     run_id: string;
     confidence: string;
