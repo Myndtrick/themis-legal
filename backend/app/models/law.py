@@ -28,6 +28,14 @@ class DocumentState(str, enum.Enum):
     DEPRECATED = "deprecated"
 
 
+class LawStatus(str, enum.Enum):
+    IN_FORCE = "in_force"
+    REPEALED = "repealed"
+    PARTIALLY_REPEALED = "partially_repealed"
+    SUPERSEDED = "superseded"
+    UNKNOWN = "unknown"
+
+
 class StructuralElementType(str, enum.Enum):
     BOOK = "book"
     TITLE = "title"
@@ -50,6 +58,8 @@ class Law(Base):
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     issuer: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="unknown")
+    status_override: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
