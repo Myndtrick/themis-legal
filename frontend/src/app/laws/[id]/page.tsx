@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import DiffSelector from "./diff-selector";
 import DeleteVersionsButton from "./delete-versions-button";
 import CheckUpdatesButton from "./check-updates-button";
+import StatusBadge from "./status-badge";
 
 export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
   const { id } = await props.params;
@@ -44,7 +45,12 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
         {law.issuer && (
           <p className="text-sm text-gray-500 mt-1">Issuer: {law.issuer}</p>
         )}
-        <div className="mt-3">
+        <div className="mt-3 flex items-center gap-4">
+          <StatusBadge
+            lawId={law.id}
+            initialStatus={law.status}
+            initialOverride={law.status_override}
+          />
           <CheckUpdatesButton lawId={law.id} />
         </div>
       </div>
