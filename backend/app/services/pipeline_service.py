@@ -38,6 +38,46 @@ from app.services.pipeline_logger import (
 )
 from app.services.prompt_service import load_prompt
 
+import re
+
+
+def _extract_json(text: str) -> dict | None:
+    """Extract JSON from Claude's response, handling markdown wrappers and preamble text."""
+    text = text.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try stripping markdown code blocks
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+
+    # Try finding the first { ... } block
+    brace_start = text.find("{")
+    if brace_start >= 0:
+        # Find matching closing brace
+        depth = 0
+        for i in range(brace_start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[brace_start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+    return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -266,9 +306,8 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
         result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
     )
 
-    try:
-        parsed = json.loads(result["content"])
-    except json.JSONDecodeError:
+    parsed = _extract_json(result["content"])
+    if not parsed:
         parsed = {
             "question_type": "A",
             "legal_domain": "other",
@@ -326,9 +365,8 @@ def _step2_date_extraction(state: dict, db: Session) -> dict:
         result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
     )
 
-    try:
-        parsed = json.loads(result["content"])
-    except json.JSONDecodeError:
+    parsed = _extract_json(result["content"])
+    if not parsed:
         parsed = {
             "dates_found": [],
             "primary_date": state["today"],
@@ -401,9 +439,8 @@ def _step3_law_identification(state: dict, db: Session) -> dict:
         result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
     )
 
-    try:
-        parsed = json.loads(result["content"])
-    except json.JSONDecodeError:
+    parsed = _extract_json(result["content"])
+    if not parsed:
         parsed = {"candidate_laws": [], "reasoning": "Failed to parse law identification"}
 
     candidates = parsed.get("candidate_laws", [])
@@ -547,9 +584,8 @@ def _step5_import_permission(state: dict, db: Session) -> dict:
         result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
     )
 
-    try:
-        parsed = json.loads(result["content"])
-    except json.JSONDecodeError:
+    parsed = _extract_json(result["content"])
+    if not parsed:
         parsed = {
             "should_pause": True,
             "message": f"Missing primary law(s): {', '.join(l.get('law_number', '?') + '/' + str(l.get('law_year', '?')) for l in missing_primary)}. Import to continue?",
@@ -772,22 +808,9 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             total_duration = chunk["duration"]
 
     # Parse the structured JSON response
-    structured = None
-    try:
-        # Claude may wrap JSON in markdown code blocks — strip them
-        clean = full_text.strip()
-        if clean.startswith("```"):
-            # Remove ```json ... ``` wrapper
-            lines = clean.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean = "\n".join(lines)
-        structured = json.loads(clean)
-    except json.JSONDecodeError:
+    structured = _extract_json(full_text)
+    if not structured:
         logger.warning(f"Failed to parse Step 7 JSON, using raw text. First 200 chars: {full_text[:200]}")
-        structured = None
 
     if structured:
         state["answer"] = structured.get("short_answer", full_text)
