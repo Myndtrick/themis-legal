@@ -17,6 +17,7 @@ Enhance the Legal Library's import flow with structured filters and keyword sear
 
 - Internal full-text search of already-imported laws (separate feature)
 - Auto-detection of partially_repealed or superseded status (manual-only for now)
+- Pagination of search results (hard cap at 20 results from legislatie.just.ro per query)
 
 ---
 
@@ -45,6 +46,7 @@ status_override = Column(Boolean, default=False)  # True = manually set by admin
 - Check the state of the newest version: `"D"` (deprecated) → `repealed`, `"A"` (actual) → `in_force`
 - If no version has state info → `unknown`
 - `partially_repealed` and `superseded` are manual-only for now
+- `superseded` is for laws replaced by a newer law covering the same domain (e.g., old Commercial Code superseded by the Civil Code). Distinct from `repealed`, which means explicitly abrogated.
 
 ### Migration
 
@@ -68,7 +70,7 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
 | `year` | string | Combined with number as `{number}-{year}` |
 | `emitent` | string | `EmitentAct` |
 | `date_from` | string (YYYY-MM-DD) | `ActInForceOnDateTextFrom` |
-| `date_to` | string (YYYY-MM-DD) | Client-side post-filtering |
+| `date_to` | string (YYYY-MM-DD) | Backend post-filtering: exclude results with signing date after this value |
 | `include_repealed` | string: `only_in_force` / `all` / `only_repealed` | Controls `ActInForceOnDateTextFrom` |
 
 ### Search logic
@@ -78,8 +80,11 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
 3. If `keyword` + filters → single POST combining all fields
 4. For `only_in_force`: set `ActInForceOnDateTextFrom` to today's date
 5. For `all`: leave the date field empty
-6. For `only_repealed`: search without date filter, then post-filter by re-searching WITH today's date and removing matches (laws in the first set but not the second are repealed)
-7. Each result is cross-referenced against the local DB to flag "already imported"
+6. For `only_repealed`: search without date filter, then post-filter by re-searching WITH today's date and removing matches. **Limitation:** this is best-effort and limited to the top 20 results from each query. If a law falls outside the top 20 in either query, it may be misclassified. This is acceptable for a discovery tool — the user can refine filters to narrow results.
+7. Each result is cross-referenced against the local DB to flag "already imported":
+   - Primary match: check `LawVersion.ver_id` against the result's `ver_id`, join to `Law` to get `local_law_id`
+   - Secondary match: derive `source_url` from `ver_id` and check against `Law.source_url`
+   - If either matches, set `already_imported = true` and populate `local_law_id`
 
 ### Response shape
 
@@ -92,6 +97,7 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
       "doc_type": "LEGE",
       "number": "31",
       "date": "16/11/1990",
+      "date_iso": "1990-11-16",
       "issuer": "Parlamentul",
       "description": "...",
       "already_imported": true,
@@ -100,6 +106,11 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
   ],
   "total": 12
 }
+```
+
+- `date` — display string as parsed from the source
+- `date_iso` — ISO 8601 parsed date (nullable, used for `date_to` filtering and frontend sorting)
+- `total` — `len(results)` after all filtering; no server-side pagination
 ```
 
 ---
@@ -180,6 +191,8 @@ SearchImportForm
 - Import button shows a spinner on that row while importing, then switches to View on success
 - "Import all historical versions" checkbox applies to all imports in that session
 - Clear Filters resets all fields including keyword, but does NOT clear results
+- EmitentAutocomplete uses 500ms debounce (matching existing import form pattern) with loading indicator
+- The old `import-form.tsx` file is deleted and its import in `page.tsx` is replaced with `search-import-form.tsx`
 
 ---
 
@@ -204,6 +217,8 @@ SearchImportForm
   "override": true
 }
 ```
+
+Setting `"override": false` resets to auto-detection mode (the "Reset to auto" UI action).
 
 ### Update checker integration
 
@@ -234,9 +249,26 @@ The source's search form supports these fields directly:
 | partially_repealed | Manual only | N/A |
 | superseded | Manual only | N/A |
 
-### Existing code preserved
+### Code changes required
 
-- `/api/laws/search` endpoint — unchanged, stays for backward compatibility
-- `search_service.py` — the new endpoint uses the same `_do_search` and `_parse_search_results` internals but bypasses `search_laws()` query parsing
-- `import_law()` — gains status auto-detection at the end of the import flow
-- Current law list on `/laws` — stays below the new search form
+- **`_do_search` in `search_service.py`** — must be extended with new parameters: `emitent: str = ""`, `date_from: str = ""`. These map to the `EmitentAct` and `ActInForceOnDateTextFrom` form fields which are currently hardcoded as empty strings. The `date_to` filtering is done as a post-filter on parsed results using `date_iso`.
+- **`_parse_search_results`** — add `date_iso` field by parsing the `DD/MM/YYYY` date string into ISO format.
+- **`import_law()` in `leropa_service.py`** — add status auto-detection at the end of the import flow.
+- **`/api/laws/search` endpoint** — unchanged, stays for backward compatibility.
+- **Current law list on `/laws`** — stays below the new search form.
+
+### Act type codes for dropdown
+
+Complete mapping from dropdown labels to legislatie.just.ro `DocumentType` codes:
+
+| Dropdown label | Code | Notes |
+|---------------|------|-------|
+| Lege | 1 | |
+| OUG | 18 | |
+| HG | 2 | |
+| Ordin | 5 | |
+| Decizie | 17 | |
+| Regulament | — | No known code; search by title keyword "regulament" instead |
+| Directivă EU | — | No known code; search by title keyword "directiva" instead |
+
+For Regulament and Directivă EU: when selected, set `DocumentType` to empty and prepend the type name to the `TitleText` field as a keyword.
