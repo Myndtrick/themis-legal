@@ -35,6 +35,75 @@ def search_external(q: str):
         raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
 
 
+@router.get("/advanced-search")
+def advanced_search_endpoint(
+    keyword: str = "",
+    doc_type: str = "",
+    number: str = "",
+    year: str = "",
+    emitent: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    include_repealed: str = "only_in_force",
+    db: Session = Depends(get_db),
+):
+    """Advanced search on legislatie.just.ro with structured filters."""
+    from app.services.search_service import advanced_search
+
+    try:
+        results = advanced_search(
+            keyword=keyword,
+            doc_type=doc_type,
+            number=number,
+            year=year,
+            emitent=emitent,
+            date_from=date_from,
+            date_to=date_to,
+            include_repealed=include_repealed,
+        )
+    except Exception as e:
+        logger.error(f"Advanced search failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
+
+    # Cross-reference with local DB to flag already-imported laws
+    enriched = []
+    for r in results:
+        already_imported = False
+        local_law_id = None
+
+        # Primary: check LawVersion.ver_id
+        existing_version = (
+            db.query(LawVersion)
+            .filter(LawVersion.ver_id == r.ver_id)
+            .first()
+        )
+        if existing_version:
+            already_imported = True
+            local_law_id = existing_version.law_id
+        else:
+            # Secondary: check Law.source_url
+            source_url = f"https://legislatie.just.ro/Public/DetaliiDocument/{r.ver_id}"
+            existing_law = db.query(Law).filter(Law.source_url == source_url).first()
+            if existing_law:
+                already_imported = True
+                local_law_id = existing_law.id
+
+        enriched.append({
+            **r.to_dict(),
+            "already_imported": already_imported,
+            "local_law_id": local_law_id,
+        })
+
+    return {"results": enriched, "total": len(enriched)}
+
+
+@router.get("/emitents")
+def get_emitents(q: str = ""):
+    """Autocomplete emitent (issuer) names."""
+    from app.services.emitent_service import search_emitents
+    return {"emitents": search_emitents(q)}
+
+
 @router.post("/import")
 def import_law(req: ImportRequest, db: Session = Depends(get_db)):
     """Import a law from legislatie.just.ro by ver_id.
@@ -111,6 +180,8 @@ def list_laws(db: Session = Depends(get_db)):
                 ),
                 None,
             ),
+            "status": law.status,
+            "status_override": law.status_override,
         }
         for law in laws
     ]
@@ -132,6 +203,8 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
         "keywords": law.keywords,
         "issuer": law.issuer,
         "source_url": law.source_url,
+        "status": law.status,
+        "status_override": law.status_override,
         "versions": [
             {
                 "id": v.id,
@@ -352,6 +425,36 @@ def delete_old_versions(law_id: int, db: Session = Depends(get_db)):
         "message": f"Deleted {len(old_versions)} old version(s) of '{law.title}'",
         "deleted_count": len(old_versions),
     }
+
+
+class StatusUpdateRequest(BaseModel):
+    status: str
+    override: bool = True
+
+
+@router.patch("/{law_id}/status")
+def update_law_status(law_id: int, req: StatusUpdateRequest, db: Session = Depends(get_db)):
+    """Update the status of a law (admin override)."""
+    from app.services.leropa_service import detect_law_status
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    valid_statuses = {"in_force", "repealed", "partially_repealed", "superseded", "unknown"}
+    if req.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    if req.override:
+        law.status = req.status
+        law.status_override = True
+    else:
+        # Reset to auto-detection
+        law.status_override = False
+        law.status = detect_law_status(db, law)
+
+    db.commit()
+    return {"status": law.status, "status_override": law.status_override}
 
 
 @router.get("/{law_id}/diff")
