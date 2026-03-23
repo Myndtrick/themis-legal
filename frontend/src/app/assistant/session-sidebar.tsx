@@ -54,7 +54,9 @@ export function SessionSidebar({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onDeleteSession(session.id);
+                if (confirm("Delete this conversation?")) {
+                  onDeleteSession(session.id);
+                }
               }}
               className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 text-xs p-1 transition-opacity"
               title="Delete session"

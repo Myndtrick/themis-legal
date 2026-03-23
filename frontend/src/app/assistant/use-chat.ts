@@ -77,15 +77,18 @@ export function useChat() {
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
+      // Remove from UI immediately, then try backend
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (activeSessionId === sessionId) {
+        setActiveSessionId(null);
+        setMessages([]);
+        setStreamingText("");
+        setIsStreaming(false);
+      }
       try {
         await api.assistant.deleteSession(sessionId);
-        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-        if (activeSessionId === sessionId) {
-          setActiveSessionId(null);
-          setMessages([]);
-        }
-      } catch (e) {
-        console.error("Failed to delete session:", e);
+      } catch {
+        // Silently ignore — session already removed from UI
       }
     },
     [activeSessionId]
