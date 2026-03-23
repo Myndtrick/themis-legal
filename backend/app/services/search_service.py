@@ -354,3 +354,141 @@ def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
             break
 
     return results
+
+
+# Map dropdown labels to legislatie.just.ro DocumentType codes
+ADVANCED_DOC_TYPE_MAP = {
+    "lege": "1",
+    "oug": "18",
+    "hg": "2",
+    "ordin": "5",
+    "decizie": "17",
+    # Regulament and Directivă EU have no codes — handled via title keyword
+}
+
+# Types that have no numeric code and use title keyword instead
+TITLE_KEYWORD_TYPES = {"regulament", "directiva_eu"}
+
+
+def advanced_search(
+    keyword: str = "",
+    doc_type: str = "",
+    number: str = "",
+    year: str = "",
+    emitent: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    include_repealed: str = "only_in_force",
+    max_results: int = 20,
+) -> list[SearchResult]:
+    """Search legislatie.just.ro with structured filters.
+
+    Args:
+        keyword: Free-text search (title + content)
+        doc_type: Act type key (e.g. "lege", "oug", "hg", "regulament", "directiva_eu")
+        number: Law number
+        year: Law year (4 digits)
+        emitent: Issuer name
+        date_from: YYYY-MM-DD, maps to ActInForceOnDateTextFrom
+        date_to: YYYY-MM-DD, maps to DataSemnariiTextTo
+        include_repealed: "only_in_force" | "all" | "only_repealed"
+        max_results: Max results to return
+    """
+    from datetime import date as date_type
+
+    session, token = _get_session_and_token()
+
+    # Build document number
+    doc_number = ""
+    if number:
+        doc_number = f"{number}-{year}" if year else number
+
+    # Resolve doc_type code
+    resolved_doc_type = ADVANCED_DOC_TYPE_MAP.get(doc_type.lower(), "") if doc_type else ""
+    title_prefix = ""
+    if doc_type and doc_type.lower() in TITLE_KEYWORD_TYPES:
+        # No numeric code — prepend type name to title search
+        label_map = {"regulament": "regulament", "directiva_eu": "directiva"}
+        title_prefix = label_map.get(doc_type.lower(), "")
+        resolved_doc_type = ""
+
+    # Build title text
+    title_text = keyword
+    if title_prefix:
+        title_text = f"{title_prefix} {keyword}".strip()
+
+    # Convert YYYY-MM-DD dates to DD.MM.YYYY for legislatie.just.ro
+    def _to_ro_date(iso_date: str) -> str:
+        """Convert YYYY-MM-DD to DD.MM.YYYY."""
+        if not iso_date:
+            return ""
+        parts = iso_date.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+        return iso_date
+
+    ro_date_to = _to_ro_date(date_to)
+
+    # Handle include_repealed via date_from
+    if include_repealed == "only_in_force":
+        effective_date_from = _to_ro_date(date_from) if date_from else date_type.today().strftime("%d.%m.%Y")
+    elif include_repealed == "only_repealed":
+        # First search unfiltered, then subtract in-force results later
+        effective_date_from = _to_ro_date(date_from) if date_from else ""
+    else:  # "all"
+        effective_date_from = _to_ro_date(date_from) if date_from else ""
+
+    all_results: list[SearchResult] = []
+    seen_ids: set[str] = set()
+
+    def _add_results(results: list[SearchResult]):
+        for r in results:
+            if r.ver_id not in seen_ids:
+                seen_ids.add(r.ver_id)
+                all_results.append(r)
+
+    # Primary search: title
+    if title_text or resolved_doc_type or doc_number or emitent or effective_date_from or ro_date_to:
+        results = _do_search(
+            session, token,
+            title_text=title_text,
+            doc_type=resolved_doc_type,
+            doc_number=doc_number,
+            emitent=emitent,
+            date_from=effective_date_from,
+            date_to=ro_date_to,
+        )
+        _add_results(results)
+
+    # Fallback: content search if keyword provided and title search had few results
+    if keyword and len(all_results) < max_results:
+        token = _refresh_token(session)
+        results = _do_search(
+            session, token,
+            content_text=keyword,
+            doc_type=resolved_doc_type,
+            doc_number=doc_number,
+            emitent=emitent,
+            date_from=effective_date_from,
+            date_to=ro_date_to,
+        )
+        _add_results(results)
+
+    # Handle "only_repealed": requires a second search to find what IS in force,
+    # then subtract from the unfiltered results
+    if include_repealed == "only_repealed":
+        token = _refresh_token(session)
+        today_str = date_type.today().strftime("%d.%m.%Y")
+        in_force_results = _do_search(
+            session, token,
+            title_text=title_text,
+            doc_type=resolved_doc_type,
+            doc_number=doc_number,
+            emitent=emitent,
+            date_from=today_str,
+            date_to=ro_date_to,
+        )
+        in_force_ids = {r.ver_id for r in in_force_results}
+        all_results = [r for r in all_results if r.ver_id not in in_force_ids]
+
+    return all_results[:max_results]
