@@ -50,6 +50,9 @@ def advanced_search_endpoint(
     """Advanced search on legislatie.just.ro with structured filters."""
     from app.services.search_service import advanced_search
 
+    if not any([keyword, doc_type, number, year, emitent, date_from, date_to]):
+        raise HTTPException(status_code=400, detail="At least one search parameter is required")
+
     try:
         results = advanced_search(
             keyword=keyword,
@@ -380,6 +383,11 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
             for v in all_versions:
                 v.is_current = False
             dated[0][0].is_current = True
+
+        # Re-evaluate law status if not manually overridden
+        if not law.status_override:
+            from app.services.leropa_service import detect_law_status
+            law.status = detect_law_status(db, law)
 
         db.commit()
         return {"has_update": True, "message": "New version found and imported!"}
