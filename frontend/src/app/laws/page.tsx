@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { api, LawSummary } from "@/lib/api";
-import ImportForm from "./import-form";
+import SearchImportForm from "./search-import-form";
 import DeleteLawButton from "./delete-law-button";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +26,7 @@ export default async function LawsPage() {
         </div>
       </div>
 
-      <ImportForm />
+      <SearchImportForm />
 
       {error && (
         <div className="rounded-md bg-red-50 border border-red-200 p-4 mb-6">
