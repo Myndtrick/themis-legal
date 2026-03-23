@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Themis - Legal & Compliance AI",
+  title: "Themis L&C - Legal & Compliance AI",
   description:
-    "Internal legal compliance tool for Romanian wealth management",
+    "Internal legal & compliance AI tool",
 };
 
 const navItems = [
@@ -42,7 +42,7 @@ export default function RootLayout({
             <div className="flex h-16 items-center justify-between">
               <div className="flex items-center gap-8">
                 <Link href="/" className="text-xl font-bold text-gray-900">
-                  Themis
+                  Themis <span className="text-indigo-600">L&C</span>
                 </Link>
                 <nav className="hidden md:flex gap-1">
                   {navItems.map((item) => (

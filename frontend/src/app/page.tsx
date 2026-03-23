@@ -30,7 +30,7 @@ export default function Home() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
         <p className="mt-2 text-gray-600">
-          Legal & Compliance AI for Romanian Wealth Management
+          Legal & Compliance AI
         </p>
       </div>
       <div className="grid gap-6 md:grid-cols-3">

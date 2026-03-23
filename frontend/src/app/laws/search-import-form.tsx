@@ -64,7 +64,7 @@ export default function SearchImportForm() {
   const [searchError, setSearchError] = useState<string | null>(null);
 
   // Import state
-  const [importHistory, setImportHistory] = useState(true);
+  const [pendingImportId, setPendingImportId] = useState<string | null>(null);
   const [importingIds, setImportingIds] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Map<string, number>>(new Map());
   const [importErrors, setImportErrors] = useState<Map<string, string>>(new Map());
@@ -80,10 +80,17 @@ export default function SearchImportForm() {
       if (emitentRef.current && !emitentRef.current.contains(e.target as Node)) {
         setShowEmitentDropdown(false);
       }
+      // Close import dropdown if clicking outside
+      if (pendingImportId) {
+        const target = e.target as HTMLElement;
+        if (!target.closest("[data-import-dropdown]")) {
+          setPendingImportId(null);
+        }
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [pendingImportId]);
 
   const fetchEmitents = useCallback(async (q: string) => {
     try {
@@ -137,7 +144,8 @@ export default function SearchImportForm() {
     }
   }
 
-  async function handleImport(verId: string) {
+  async function handleImport(verId: string, importHistory: boolean) {
+    setPendingImportId(null);
     setImportingIds((prev) => new Set(prev).add(verId));
     setImportErrors((prev) => {
       const next = new Map(prev);
@@ -353,17 +361,8 @@ export default function SearchImportForm() {
       {results.length > 0 && (
         <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
           {/* Results header */}
-          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <span className="text-sm text-gray-600">{total} result{total !== 1 ? "s" : ""} found</span>
-            <label className="text-sm text-gray-700 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={importHistory}
-                onChange={(e) => setImportHistory(e.target.checked)}
-                className="rounded border-gray-300"
-              />
-              Import all historical versions
-            </label>
           </div>
 
           {/* Result rows */}
@@ -411,13 +410,38 @@ export default function SearchImportForm() {
                         )}
                       </div>
                     ) : (
-                      <button
-                        onClick={() => handleImport(r.ver_id)}
-                        disabled={isImporting}
-                        className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {isImporting ? "Importing..." : "Import"}
-                      </button>
+                      <div className="relative" data-import-dropdown>
+                        <button
+                          onClick={() => setPendingImportId(r.ver_id)}
+                          disabled={isImporting}
+                          className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {isImporting ? "Importing..." : "Import"}
+                        </button>
+                        {pendingImportId === r.ver_id && !isImporting && (
+                          <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-lg border border-gray-200 shadow-lg p-3 w-56">
+                            <p className="text-xs text-gray-500 mb-2">What to import?</p>
+                            <button
+                              onClick={() => handleImport(r.ver_id, false)}
+                              className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-blue-50 text-gray-700"
+                            >
+                              Current version only
+                            </button>
+                            <button
+                              onClick={() => handleImport(r.ver_id, true)}
+                              className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-blue-50 text-gray-700"
+                            >
+                              All historical versions
+                            </button>
+                            <button
+                              onClick={() => setPendingImportId(null)}
+                              className="w-full text-left px-3 py-1.5 text-xs rounded-md hover:bg-gray-50 text-gray-400 mt-1"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
