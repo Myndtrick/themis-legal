@@ -190,7 +190,7 @@ def query_articles(
     # 2. Keyword search via SQLite (catches short articles missed by embeddings)
     if db:
         keyword_results = _keyword_search(
-            db, query_text, law_version_ids, law_ids, limit=15
+            db, query_text, law_version_ids, law_ids, limit=20
         )
         for kr in keyword_results:
             if kr["article_id"] not in seen_ids:
@@ -236,11 +236,13 @@ def _keyword_search(
     words = re.findall(r"[a-zA-ZăîâșțĂÎÂȘȚ]{3,}", query_text.lower())
     keywords = [w for w in words if _normalize(w) not in stop_words]
 
-    # Expand abbreviations to legal terms
+    # Expand abbreviations and related legal terms
     expansions = {
-        "srl": ["raspundere", "limitata"],
-        "sa": ["actiuni"],
+        "srl": ["raspundere", "limitata", "societat"],
+        "sa": ["actiuni", "societat"],
         "nr": ["numar", "numarul"],
+        "asociati": ["asociat", "asociatilor"],
+        "actionari": ["actionar", "actionarilor"],
     }
     extra = []
     for kw in keywords:
