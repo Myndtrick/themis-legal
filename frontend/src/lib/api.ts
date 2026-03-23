@@ -164,6 +164,141 @@ export interface EmitentsResponse {
   emitents: string[];
 }
 
+// --- Legal Assistant types ---
+
+export interface ChatSession {
+  id: string;
+  title: string | null;
+  created_at: string;
+  last_active_at: string;
+  message_count: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  mode: string | null;
+  run_id: string | null;
+  reasoning_data: string | null;
+  created_at: string;
+}
+
+export interface ChatSessionDetail extends ChatSession {
+  messages: ChatMessage[];
+}
+
+export interface ReasoningStep {
+  step: number;
+  name: string;
+  status: "running" | "done" | "paused";
+  data?: Record<string, unknown>;
+  duration?: number;
+}
+
+export interface MissingLaw {
+  law_number: string;
+  law_year: number;
+  title: string;
+  reason: string;
+}
+
+// --- Settings: Prompts types ---
+
+export interface PromptSummary {
+  prompt_id: string;
+  description: string;
+  version_number: number;
+  status: string;
+  modified_at: string | null;
+}
+
+export interface PromptDetail {
+  prompt_id: string;
+  description: string;
+  version_number: number;
+  status: string;
+  prompt_text: string;
+  created_at: string;
+  created_by: string;
+  modification_note: string | null;
+}
+
+export interface PromptVersionSummary {
+  version_number: number;
+  status: string;
+  created_at: string;
+  created_by: string;
+  modification_note: string | null;
+}
+
+export interface PromptDiff {
+  prompt_id: string;
+  current_version: number;
+  proposed_version: number;
+  current_text: string;
+  proposed_text: string;
+  modification_note: string;
+  pending_version_id: number;
+}
+
+// --- Settings: Pipeline types ---
+
+export interface PipelineRunSummary {
+  run_id: string;
+  module: string;
+  mode: string | null;
+  question_summary: string | null;
+  started_at: string;
+  completed_at: string | null;
+  overall_status: string;
+  overall_confidence: string | null;
+  total_duration_seconds: number | null;
+  estimated_cost: number | null;
+}
+
+export interface StepLogData {
+  step_name: string;
+  step_number: number;
+  status: string;
+  duration_seconds: number | null;
+  prompt_id: string | null;
+  prompt_version: number | null;
+  input_summary: string | null;
+  output_summary: string | null;
+  confidence: string | null;
+  warnings: string | null;
+}
+
+export interface APICallLogData {
+  step_name: string;
+  tokens_in: number;
+  tokens_out: number;
+  duration_seconds: number;
+  model: string;
+}
+
+export interface PipelineRunDetail extends PipelineRunSummary {
+  flags: string | null;
+  steps: StepLogData[];
+  api_calls: APICallLogData[];
+}
+
+export interface HealthStats {
+  total_runs: number;
+  ok_count: number;
+  warning_count: number;
+  error_count: number;
+  partial_count: number;
+  ok_pct: number;
+  warning_pct: number;
+  error_pct: number;
+  avg_confidence_high_pct: number;
+  avg_duration_seconds: number;
+  avg_cost: number;
+  most_common_warnings: string[];
+}
+
 // API functions
 export const api = {
   laws: {
@@ -219,5 +354,81 @@ export const api = {
       apiFetch<{ ok: boolean }>("/api/notifications/read-all", {
         method: "PUT",
       }),
+  },
+  assistant: {
+    createSession: () =>
+      apiFetch<ChatSession>("/api/assistant/sessions", { method: "POST" }),
+    listSessions: () =>
+      apiFetch<ChatSession[]>("/api/assistant/sessions"),
+    getSession: (id: string) =>
+      apiFetch<ChatSessionDetail>(`/api/assistant/sessions/${id}`),
+    deleteSession: (id: string) =>
+      apiFetch<{ message: string }>(`/api/assistant/sessions/${id}`, {
+        method: "DELETE",
+      }),
+    // sendMessage is NOT here — it uses SSE streaming via fetch directly
+    resume: (sessionId: string, runId: string, decisions: Record<string, string>) =>
+      fetch(`${API_BASE}/api/assistant/sessions/${sessionId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: runId, decisions }),
+      }),
+  },
+  settings: {
+    prompts: {
+      list: () =>
+        apiFetch<PromptSummary[]>("/api/settings/prompts/"),
+      get: (promptId: string) =>
+        apiFetch<PromptDetail>(`/api/settings/prompts/${promptId}`),
+      versions: (promptId: string) =>
+        apiFetch<PromptVersionSummary[]>(
+          `/api/settings/prompts/${promptId}/versions`
+        ),
+      getVersion: (promptId: string, version: number) =>
+        apiFetch<PromptDetail>(
+          `/api/settings/prompts/${promptId}/versions/${version}`
+        ),
+      propose: (
+        promptId: string,
+        proposedText: string,
+        note: string,
+        source: string = "direct_edit"
+      ) =>
+        apiFetch<PromptDiff>(`/api/settings/prompts/${promptId}/propose`, {
+          method: "POST",
+          body: JSON.stringify({
+            proposed_text: proposedText,
+            modification_note: note,
+            source,
+          }),
+        }),
+      approve: (promptId: string, version: number) =>
+        apiFetch<{ prompt_id: string; new_active_version: number }>(
+          `/api/settings/prompts/${promptId}/approve/${version}`,
+          { method: "POST" }
+        ),
+      discard: (promptId: string, version: number) =>
+        apiFetch<{ status: string }>(
+          `/api/settings/prompts/${promptId}/discard/${version}`,
+          { method: "POST" }
+        ),
+      restore: (promptId: string, version: number) =>
+        apiFetch<PromptDiff>(
+          `/api/settings/prompts/${promptId}/restore/${version}`,
+          { method: "POST" }
+        ),
+    },
+    pipeline: {
+      runs: (params?: Record<string, string>) => {
+        const query = params ? `?${new URLSearchParams(params)}` : "";
+        return apiFetch<PipelineRunSummary[]>(
+          `/api/settings/pipeline/runs${query}`
+        );
+      },
+      runDetail: (runId: string) =>
+        apiFetch<PipelineRunDetail>(`/api/settings/pipeline/runs/${runId}`),
+      health: () =>
+        apiFetch<HealthStats>("/api/settings/pipeline/health"),
+    },
   },
 };

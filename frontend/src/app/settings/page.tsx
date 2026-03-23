@@ -1,0 +1,63 @@
+"use client";
+
+import { Suspense, useState } from "react";
+import { SettingsTabs, type TabId } from "./settings-tabs";
+import { PromptTable } from "./prompts/prompt-table";
+import { PromptEditor } from "./prompts/prompt-editor";
+import { HealthDashboard } from "./pipeline/health-dashboard";
+import { RunTable } from "./pipeline/run-table";
+import { VersionHistory } from "./versions/version-history";
+
+function SettingsContent() {
+  const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+        <p className="mt-1 text-gray-600">
+          Manage prompts, inspect pipeline runs, and review version history
+        </p>
+      </div>
+
+      <SettingsTabs>
+        {(activeTab: TabId) => {
+          if (activeTab === "prompts") {
+            if (selectedPrompt) {
+              return (
+                <PromptEditor
+                  promptId={selectedPrompt}
+                  onBack={() => setSelectedPrompt(null)}
+                />
+              );
+            }
+            return <PromptTable onSelect={setSelectedPrompt} />;
+          }
+
+          if (activeTab === "pipeline") {
+            return (
+              <div>
+                <HealthDashboard />
+                <RunTable />
+              </div>
+            );
+          }
+
+          if (activeTab === "versions") {
+            return <VersionHistory />;
+          }
+
+          return null;
+        }}
+      </SettingsTabs>
+    </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="text-gray-400 py-8">Loading settings...</div>}>
+      <SettingsContent />
+    </Suspense>
+  );
+}

@@ -24,6 +24,7 @@ const navItems = [
   { href: "/laws", label: "Legal Library" },
   { href: "/assistant", label: "Legal Assistant" },
   { href: "/contracts", label: "Contract Review" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export default function RootLayout({

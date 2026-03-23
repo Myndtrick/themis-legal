@@ -13,7 +13,7 @@ const modules = [
     description:
       "Ask legal questions in Romanian or English. Get AI-powered answers with precise citations.",
     href: "/assistant",
-    status: "Coming Soon",
+    status: "Active",
   },
   {
     title: "Contract Review",
