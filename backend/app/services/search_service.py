@@ -319,17 +319,35 @@ def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
         number = parts.group(2) if parts else ""
         date = parts.group(3) if parts else ""
 
-        # Get the full title from the next <p> sibling
+        # Get the full title and metadata from the next <p> sibling.
+        # The <p> contains spans for: title, description, EMITENT, PUBLICAT ÎN.
+        # We extract just the description (before EMITENT:) and the issuer.
         description = ""
+        issuer = ""
         parent_p = link.find_parent("p")
         if parent_p:
             next_p = parent_p.find_next_sibling("p")
             if next_p:
-                description = next_p.get_text(strip=True)
+                # Collect text parts before EMITENT: marker.
+                # Use get_text with " " separator to avoid words running together
+                # across <br/> and <span> boundaries, then stop at EMITENT.
+                raw_desc = next_p.get_text(" ", strip=True)
+                emitent_pos = raw_desc.find("EMITENT:")
+                if emitent_pos > 0:
+                    description = raw_desc[:emitent_pos].strip()
+                else:
+                    description = raw_desc.strip()
+                # Clean up BOM and excess whitespace
+                description = re.sub(r"\s+", " ", description).strip().lstrip("\ufeff")
 
-        # Get the issuer from the nearby table
-        issuer = ""
-        if parent_p:
+                # Extract issuer from the span right after "EMITENT:"
+                full_text = next_p.get_text(" ", strip=True)
+                emitent_match = re.search(r"EMITENT:\s*(.+?)(?:\s*PUBLICAT\s|$)", full_text)
+                if emitent_match:
+                    issuer = emitent_match.group(1).strip()
+
+        # Fallback: try getting issuer from a nearby table (older format)
+        if not issuer and parent_p:
             table = parent_p.find_next("table")
             if table:
                 cells = table.find_all("td")
