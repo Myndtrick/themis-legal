@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Legalese API",
+    title="Themis API",
     description="Legal & Compliance AI for Romanian Wealth Management",
     version="0.1.0",
     lifespan=lifespan,

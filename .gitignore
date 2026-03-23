@@ -29,3 +29,4 @@ backend/data/
 
 # ChromaDB
 chroma_data/
+.superpowers/
