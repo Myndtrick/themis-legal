@@ -137,16 +137,8 @@ def query_articles(
     law_ids: list[int] | None = None,
     law_version_ids: list[int] | None = None,
     n_results: int = 20,
-    db: Session | None = None,
 ) -> list[dict]:
-    """Combined semantic + keyword search for relevant articles.
-
-    Semantic search finds conceptually related articles.
-    Keyword search catches short articles that semantic search misses
-    (e.g., "numărul asociaților nu poate fi mai mare de 50").
-    Results are merged and deduplicated.
-    """
-    # 1. Semantic search via ChromaDB
+    """Semantic search for relevant articles via ChromaDB embeddings."""
     collection = get_collection()
 
     where_filter = None
@@ -168,15 +160,12 @@ def query_articles(
         include=["documents", "metadatas", "distances"],
     )
 
-    seen_ids = set()
     articles = []
     if results["ids"] and results["ids"][0]:
         for i in range(len(results["ids"][0])):
             meta = results["metadatas"][0][i]
-            aid = meta["article_id"]
-            seen_ids.add(aid)
             articles.append({
-                "article_id": aid,
+                "article_id": meta["article_id"],
                 "law_number": meta["law_number"],
                 "law_year": meta["law_year"],
                 "law_title": meta.get("law_title", ""),
@@ -187,163 +176,4 @@ def query_articles(
                 "distance": results["distances"][0][i],
             })
 
-    # 2. Keyword search via SQLite (catches short articles missed by embeddings)
-    if db:
-        keyword_results = _keyword_search(
-            db, query_text, law_version_ids, law_ids, limit=20
-        )
-        for kr in keyword_results:
-            if kr["article_id"] not in seen_ids:
-                seen_ids.add(kr["article_id"])
-                articles.append(kr)
-
     return articles
-
-
-def _keyword_search(
-    db: Session,
-    query_text: str,
-    law_version_ids: list[int] | None = None,
-    law_ids: list[int] | None = None,
-    limit: int = 10,
-) -> list[dict]:
-    """Search articles by keyword matching in SQLite.
-
-    Extracts meaningful terms from the query and finds articles containing them.
-    Prioritizes articles matching multiple terms.
-    """
-    import re
-    from sqlalchemy import func
-
-    # Normalize Romanian diacritics for matching
-    def _normalize(text: str) -> str:
-        """Remove diacritics so 'asociati' matches 'asociați'."""
-        replacements = {
-            "ă": "a", "â": "a", "î": "i", "ș": "s", "ț": "t",
-            "Ă": "A", "Â": "A", "Î": "I", "Ș": "S", "Ț": "T",
-        }
-        for src, dst in replacements.items():
-            text = text.replace(src, dst)
-        return text
-
-    # Extract meaningful keywords (3+ chars, skip common Romanian stop words)
-    stop_words = {
-        "care", "sunt", "este", "din", "sau", "pentru", "prin", "poate",
-        "avea", "fost", "fiind", "cel", "mai", "dar", "daca", "cum",
-        "aceasta", "acest", "intre", "despre", "privind", "legea",
-        "exista", "vreo", "ceea", "priveste", "unei", "unui",
-    }
-    words = re.findall(r"[a-zA-ZăîâșțĂÎÂȘȚ]{3,}", query_text.lower())
-    keywords = [w for w in words if _normalize(w) not in stop_words]
-
-    # Expand abbreviations and related legal terms
-    expansions = {
-        "srl": ["raspundere", "limitata", "societat"],
-        "sa": ["actiuni", "societat"],
-        "nr": ["numar", "numarul"],
-        "asociati": ["asociat", "asociatilor"],
-        "actionari": ["actionar", "actionarilor"],
-    }
-    extra = []
-    for kw in keywords:
-        normalized_kw = _normalize(kw)
-        if normalized_kw in expansions:
-            extra.extend(expansions[normalized_kw])
-    keywords.extend(extra)
-
-    if not keywords:
-        return []
-
-    # Build query — find articles containing any keyword
-    query = db.query(Article).join(LawVersion).join(Law)
-
-    if law_version_ids:
-        query = query.filter(LawVersion.id.in_(law_version_ids))
-    elif law_ids:
-        query = query.filter(Law.id.in_(law_ids))
-
-    # SQLite LIKE search: find articles containing any keyword.
-    # Use REPLACE to normalize diacritics in the database text for matching,
-    # so "asociati" matches "asociați".
-    from sqlalchemy import case, or_, literal_column
-
-    def _normalize_col(col):
-        """Apply diacritic normalization to a SQLAlchemy column for comparison."""
-        result = func.lower(col)
-        for dia, plain in [("ă", "a"), ("â", "a"), ("î", "i"), ("ș", "s"), ("ț", "t")]:
-            result = func.replace(result, dia, plain)
-        return result
-
-    normalized_text = _normalize_col(Article.full_text)
-
-    conditions = []
-    for kw in keywords:
-        kw_normalized = _normalize(kw.lower())
-        conditions.append(normalized_text.contains(kw_normalized))
-
-    if not conditions:
-        return []
-
-    # Score: count how many distinct keywords match
-    match_count = sum(
-        case((cond, 1), else_=0) for cond in conditions
-    )
-
-    # Two-tier scoring:
-    # 1. Articles matching more keywords rank higher
-    # 2. Among ties, shorter articles rank higher (short = focused rule,
-    #    e.g., Art. 12 "max 50 asociați" is more relevant than a 500-word
-    #    article about mergers that also mentions asociați)
-    # Get matching articles, re-rank by relevance
-    matching = (
-        query.filter(or_(*conditions))
-        .all()
-    )
-
-    # Score each article: keyword matches + rule-language boost - length penalty
-    import re as _re
-
-    scored = []
-    for art in matching:
-        lower = _normalize(art.full_text.lower())
-        kw_matches = sum(1 for kw in set(keywords) if _normalize(kw) in lower)
-        rule_boost = 0
-        for term in ["cel putin", "nu poate fi mai mare", "nu poate depasi",
-                     "maxim", "minim", "nu va putea"]:
-            if term in lower:
-                rule_boost += 5
-        if _re.search(r"\d+", lower):
-            rule_boost += 2
-        # Heavier length penalty so short focused articles rank higher
-        length_penalty = len(art.full_text) / 50
-        score = kw_matches * 10 + rule_boost - length_penalty
-        scored.append((score, art))
-
-    scored.sort(key=lambda x: -x[0])
-    matching = [art for _, art in scored[:limit]]
-
-    results = []
-    for art in matching:
-        law = art.law_version.law
-        version = art.law_version
-
-        # Build text with amendment notes (same as indexing)
-        text_parts = [art.full_text]
-        if art.amendment_notes:
-            for note in art.amendment_notes:
-                if note.text and note.text.strip():
-                    text_parts.append(f"[Amendment: {note.text.strip()}]")
-
-        results.append({
-            "article_id": art.id,
-            "law_number": law.law_number,
-            "law_year": str(law.law_year),
-            "law_title": law.title[:200],
-            "article_number": art.article_number,
-            "date_in_force": str(version.date_in_force) if version.date_in_force else "",
-            "is_current": str(version.is_current),
-            "text": "\n".join(text_parts),
-            "distance": 0.1,  # High relevance since it's a keyword match
-        })
-
-    return results
