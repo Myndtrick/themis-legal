@@ -721,6 +721,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             query_text=state["question"],
             law_version_ids=version_ids,
             n_results=20,
+            db=db,
         )
 
     # Fallback: if filtered search returned nothing (or no versions selected),
@@ -729,6 +730,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         retrieved = query_articles(
             query_text=state["question"],
             n_results=15,
+            db=db,
         )
         if retrieved and not version_ids:
             state["flags"].append(
