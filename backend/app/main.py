@@ -44,6 +44,8 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_defaults(db)
+        from app.services.bm25_service import ensure_fts_index
+        ensure_fts_index(db)
     finally:
         db.close()
 
