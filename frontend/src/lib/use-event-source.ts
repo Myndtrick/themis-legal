@@ -123,6 +123,9 @@ async function consumeSSEStream(
 
       buffer += decoder.decode(value, { stream: true });
 
+      // Normalize \r\n to \n (sse-starlette uses \r\n line endings)
+      buffer = buffer.replace(/\r\n/g, "\n");
+
       // Process complete events (separated by double newline)
       while (buffer.includes("\n\n")) {
         const eventEnd = buffer.indexOf("\n\n");
