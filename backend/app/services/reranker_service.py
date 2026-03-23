@@ -26,7 +26,7 @@ def get_reranker() -> CrossEncoder:
 def rerank_articles(
     question: str,
     articles: list[dict],
-    top_k: int = 15,
+    top_k: int = 25,
 ) -> list[dict]:
     """Rerank articles by relevance to the question.
     Uses a cross-encoder model to score each (question, article) pair.

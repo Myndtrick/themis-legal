@@ -259,13 +259,17 @@ def get_law_version(law_id: int, version_id: int, db: Session = Depends(get_db))
         for el in elements:
             if el.parent_id == parent_id:
                 el_articles = [a for a in articles if a.structural_element_id == el.id]
+                children = build_element_tree(el.id)
+                # Skip empty structural elements (no articles, no non-empty children)
+                if not el_articles and not children:
+                    continue
                 result.append({
                     "id": el.id,
                     "type": el.element_type,
                     "number": el.number,
                     "title": el.title,
                     "description": el.description,
-                    "children": build_element_tree(el.id),
+                    "children": children,
                     "articles": [serialize_article(a, law) for a in el_articles],
                 })
         return result

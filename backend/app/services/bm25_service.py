@@ -13,7 +13,13 @@ logger = logging.getLogger(__name__)
 
 def ensure_fts_index(db: Session):
     """Create the FTS5 virtual table if it doesn't exist, then populate."""
-    conn = db.get_bind().raw_connection()
+    # Use a standalone sqlite3 connection to avoid SQLite lock conflicts
+    # with the SQLAlchemy engine's connection pool.
+    import sqlite3
+    db_url = str(db.get_bind().url)
+    # Extract file path from sqlite:///./data/themis.db
+    db_path = db_url.replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     cursor.execute(
@@ -41,17 +47,29 @@ def ensure_fts_index(db: Session):
         )
     """)
 
-    articles = db.query(Article).all()
-    for art in articles:
-        parts = [art.full_text or ""]
-        for note in art.amendment_notes:
-            if note.text:
-                parts.append(note.text)
+    # Query articles via raw SQL to avoid mixing SQLAlchemy session with raw conn
+    cursor.execute("""
+        SELECT a.id, a.full_text, a.law_version_id
+        FROM articles a
+    """)
+    articles = cursor.fetchall()
+
+    # Also fetch amendment notes
+    cursor.execute("SELECT article_id, text FROM amendment_notes")
+    notes_by_article = {}
+    for article_id, text in cursor.fetchall():
+        if text:
+            notes_by_article.setdefault(article_id, []).append(text)
+
+    for art_id, full_text, law_version_id in articles:
+        parts = [full_text or ""]
+        for note_text in notes_by_article.get(art_id, []):
+            parts.append(note_text)
         combined = " ".join(parts)
 
         cursor.execute(
             "INSERT INTO articles_fts(rowid, article_text, law_version_id, article_id) VALUES (?, ?, ?, ?)",
-            (art.id, combined, art.law_version_id, art.id),
+            (art_id, combined, law_version_id, art_id),
         )
 
     conn.commit()
@@ -61,12 +79,27 @@ def ensure_fts_index(db: Session):
 
 def rebuild_fts_index(db: Session):
     """Drop and recreate the FTS5 index."""
-    conn = db.get_bind().raw_connection()
-    cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS articles_fts")
+    import sqlite3
+    db_url = str(db.get_bind().url)
+    db_path = db_url.replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TABLE IF EXISTS articles_fts")
     conn.commit()
     conn.close()
     ensure_fts_index(db)
+
+
+_BM25_EXPANSIONS: dict[str, list[str]] = {
+    "srl": ["raspundere", "limitata"],
+    "sa": ["actiuni", "actionari"],
+    "pfa": ["persoana", "fizica", "autorizata"],
+    "asociat": ["asociati", "asociatii", "asociatilor"],
+    "actionar": ["actionari", "actionarii", "actionarilor"],
+    "minim": ["minimum", "minima", "cel putin"],
+    "maxim": ["maximum", "maxima", "mai mare"],
+    "limita": ["limitare", "limitat", "plafon"],
+    "numar": ["numarul", "nr"],
+}
 
 
 def search_bm25(
@@ -83,9 +116,21 @@ def search_bm25(
     if not words:
         return []
 
-    fts_query = " OR ".join(words)
+    # Expand abbreviations and synonyms for better recall
+    expanded = list(words)
+    for w in words:
+        wl = w.lower()
+        for key, synonyms in _BM25_EXPANSIONS.items():
+            if wl == key or wl.startswith(key):
+                expanded.extend(synonyms)
+                break
 
-    conn = db.get_bind().raw_connection()
+    fts_query = " OR ".join(expanded)
+
+    import sqlite3
+    db_url = str(db.get_bind().url)
+    db_path = db_url.replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     try:

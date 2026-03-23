@@ -186,6 +186,10 @@ def run_pipeline(
             "reasoning": _build_reasoning_panel(state),
         }
 
+    except GeneratorExit:
+        logger.info(f"Pipeline {run_id} interrupted by client disconnect")
+    except (OSError, IOError) as e:
+        logger.info(f"Pipeline {run_id} connection lost: {e}")
     except Exception as e:
         logger.exception(f"Pipeline error in run {run_id}")
         try:
@@ -274,6 +278,10 @@ def resume_pipeline(
             "reasoning": _build_reasoning_panel(state),
         }
 
+    except GeneratorExit:
+        logger.info(f"Pipeline resume {run_id} interrupted by client disconnect")
+    except (OSError, IOError) as e:
+        logger.info(f"Pipeline resume {run_id} connection lost: {e}")
     except Exception as e:
         logger.exception(f"Pipeline resume error in run {run_id}")
         try:
@@ -518,8 +526,8 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     seen_ids = set()
 
     tier_limits = {
-        "tier1_primary": 15,
-        "tier2_secondary": 10,
+        "tier1_primary": 30,
+        "tier2_secondary": 15,
     }
 
     for tier_key, n_results in tier_limits.items():
@@ -620,7 +628,7 @@ def _step6_rerank(state: dict, db: Session) -> dict:
 
     t0 = time.time()
     raw = state.get("retrieved_articles_raw", [])
-    ranked = rerank_articles(state["question"], raw, top_k=15)
+    ranked = rerank_articles(state["question"], raw, top_k=25)
     state["retrieved_articles"] = ranked
 
     duration = time.time() - t0

@@ -200,12 +200,19 @@ def send_message(
                 )
                 gen_db.commit()
 
+        except GeneratorExit:
+            logger.info("Client disconnected from SSE stream")
+        except (OSError, IOError) as e:
+            logger.info("Client connection lost: %s", e)
         except Exception as e:
             logger.exception("Error in SSE event generator")
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)}, ensure_ascii=False),
-            }
+            try:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)}, ensure_ascii=False),
+                }
+            except (OSError, IOError, GeneratorExit):
+                pass
         finally:
             gen_db.close()
 
@@ -298,12 +305,19 @@ def resume_paused_pipeline(
                 )
                 gen_db.commit()
 
+        except GeneratorExit:
+            logger.info("Client disconnected from resume SSE stream")
+        except (OSError, IOError) as e:
+            logger.info("Client connection lost during resume: %s", e)
         except Exception as e:
             logger.exception("Error in resume SSE generator")
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)}, ensure_ascii=False),
-            }
+            try:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)}, ensure_ascii=False),
+                }
+            except (OSError, IOError, GeneratorExit):
+                pass
         finally:
             gen_db.close()
 

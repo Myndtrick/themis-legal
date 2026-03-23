@@ -63,25 +63,30 @@ def stream_claude(
     start = time.time()
     full_text = ""
 
-    with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=system,
-        messages=messages,
-    ) as stream:
-        for text in stream.text_stream:
-            full_text += text
-            yield {"type": "token", "text": text}
+    try:
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                full_text += text
+                yield {"type": "token", "text": text}
 
-        final = stream.get_final_message()
+            final = stream.get_final_message()
 
-    duration = time.time() - start
-    yield {
-        "type": "done",
-        "content": full_text,
-        "tokens_in": final.usage.input_tokens,
-        "tokens_out": final.usage.output_tokens,
-        "duration": duration,
-        "model": CLAUDE_MODEL,
-    }
+        duration = time.time() - start
+        yield {
+            "type": "done",
+            "content": full_text,
+            "tokens_in": final.usage.input_tokens,
+            "tokens_out": final.usage.output_tokens,
+            "duration": duration,
+            "model": CLAUDE_MODEL,
+        }
+    except GeneratorExit:
+        logger.info("Claude stream interrupted by client disconnect")
+    except (OSError, IOError):
+        logger.info("Claude stream connection lost")
