@@ -125,6 +125,10 @@ def check_for_updates(rate_limit_delay: float = 2.0) -> dict:
                         v.is_current = False
                     dated[0][0].is_current = True
 
+                # Re-evaluate law status if not manually overridden
+                if not law.status_override:
+                    law.status = _ls.detect_law_status(db, law)
+
                 # Create notification
                 notification = Notification(
                     title=f"Law updated: {law.title}",
