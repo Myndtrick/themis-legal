@@ -4,11 +4,11 @@ import type { StepProgress } from "./use-chat";
 
 const STEP_LABELS: Record<string, string> = {
   issue_classification: "Classifying question",
-  date_extraction: "Identifying dates",
-  law_identification: "Finding applicable laws",
-  coverage_check: "Checking library",
-  import_permission: "Checking coverage",
-  version_selection: "Selecting versions",
+  law_mapping: "Mapping applicable laws",
+  version_selection: "Selecting law versions",
+  hybrid_retrieval: "Searching articles",
+  expansion: "Expanding context",
+  reranking: "Ranking relevance",
   answer_generation: "Generating answer",
 };
 

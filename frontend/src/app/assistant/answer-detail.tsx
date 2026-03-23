@@ -24,11 +24,13 @@ interface CombinedData {
     sources?: SourceEntry[];
   } | null;
   reasoning?: {
-    step1_classification?: { legal_domain?: string; output_mode?: string; core_issue?: string };
-    step3_laws?: { candidate_laws?: Array<{ law_number: string; law_year: number; source: string; role: string; title?: string }> };
-    step4_coverage?: { coverage_status?: Record<string, string> };
-    step6_versions?: { selected_versions?: Record<string, { date_in_force?: string; is_current?: boolean }> };
-    step7_answer?: { articles_retrieved?: number };
+    step1_classification?: { legal_domain?: string; legal_topic?: string; entity_types?: string[]; output_mode?: string; core_issue?: string };
+    step2_law_mapping?: { candidate_laws?: Array<{ law_number: string; law_year: number; source: string; role: string; title?: string; tier?: string }>; coverage_status?: Record<string, string> };
+    step3_versions?: { selected_versions?: Record<string, { date_in_force?: string; is_current?: boolean }> };
+    step4_retrieval?: { articles_found?: number };
+    step5_expansion?: { articles_after_expansion?: number };
+    step6_reranking?: { top_articles?: Array<{ article_number: string; score: number; law: string }> };
+    step7_answer?: { articles_used?: number; confidence?: string; flags?: string[] };
   } | null;
   confidence?: string | null;
   flags?: string[];
@@ -68,7 +70,7 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
   const s = data.structured;
   const r = data.reasoning;
   const hasStructured = s?.legal_basis || s?.version_logic || s?.nuances || s?.sources?.length;
-  const hasReasoning = r?.step3_laws?.candidate_laws?.length;
+  const hasReasoning = r?.step2_law_mapping?.candidate_laws?.length;
 
   if (!hasStructured && !hasReasoning) return null;
 
@@ -112,16 +114,16 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
             </div>
           )}
 
-          {/* Pipeline reasoning — laws identified, versions selected */}
+          {/* Pipeline reasoning */}
           {r && (
             <div className="mb-3 pt-2 border-t border-gray-100">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Pipeline Reasoning</h4>
 
-              {/* Laws identified */}
-              {r.step3_laws?.candidate_laws && r.step3_laws.candidate_laws.length > 0 && (
+              {/* Laws mapped (Step 2) */}
+              {r.step2_law_mapping?.candidate_laws && r.step2_law_mapping.candidate_laws.length > 0 && (
                 <div className="mb-2">
-                  <div className="text-xs font-medium text-gray-600 mb-1">Laws Identified</div>
-                  {r.step3_laws.candidate_laws.map((law, i) => (
+                  <div className="text-xs font-medium text-gray-600 mb-1">Applicable Laws</div>
+                  {r.step2_law_mapping.candidate_laws.map((law, i) => (
                     <div key={i} className="flex items-center gap-2 text-xs text-gray-600 ml-2">
                       <span className={`px-1.5 py-0.5 rounded font-medium ${
                         law.source === "DB" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
@@ -136,11 +138,11 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
                 </div>
               )}
 
-              {/* Coverage */}
-              {r.step4_coverage?.coverage_status && Object.keys(r.step4_coverage.coverage_status).length > 0 && (
+              {/* Coverage (Step 2) */}
+              {r.step2_law_mapping?.coverage_status && Object.keys(r.step2_law_mapping.coverage_status as Record<string, string>).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Library Coverage</div>
-                  {Object.entries(r.step4_coverage.coverage_status).map(([key, status]) => (
+                  {Object.entries(r.step2_law_mapping.coverage_status as Record<string, string>).map(([key, status]) => (
                     <div key={key} className="flex items-center gap-2 text-xs text-gray-600 ml-2">
                       <span>{status === "full" ? "✅" : status === "partial" ? "⚠️" : "❌"}</span>
                       <span>{key}</span>
@@ -150,23 +152,39 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
                 </div>
               )}
 
-              {/* Versions selected */}
-              {r.step6_versions?.selected_versions && Object.keys(r.step6_versions.selected_versions).length > 0 && (
+              {/* Versions (Step 3) */}
+              {r.step3_versions?.selected_versions && Object.keys(r.step3_versions.selected_versions as Record<string, Record<string, unknown>>).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Versions Selected</div>
-                  {Object.entries(r.step6_versions.selected_versions).map(([key, v]) => (
+                  {Object.entries(r.step3_versions.selected_versions as Record<string, Record<string, unknown>>).map(([key, v]) => (
                     <div key={key} className="text-xs text-gray-600 ml-2">
-                      {key}: version {(v as { date_in_force?: string }).date_in_force || "unknown"}{" "}
-                      {(v as { is_current?: boolean }).is_current ? "(current)" : "(historical)"}
+                      {key}: version {(v.date_in_force as string) || "unknown"}{" "}
+                      {v.is_current ? "(current)" : "(historical)"}
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* Articles retrieved */}
-              {r.step7_answer?.articles_retrieved != null && (
+              {/* Top articles from reranking (Step 6) */}
+              {r.step6_reranking?.top_articles && (r.step6_reranking.top_articles as Array<Record<string, unknown>>).length > 0 && (
+                <div className="mb-2">
+                  <div className="text-xs font-medium text-gray-600 mb-1">Top Articles (by relevance)</div>
+                  {(r.step6_reranking.top_articles as Array<Record<string, unknown>>).map((art, i) => (
+                    <div key={i} className="text-xs text-gray-600 ml-2">
+                      Art. {art.article_number as string} ({art.law as string}) — score: {(art.score as number)?.toFixed(3)}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Summary stats */}
+              {r.step4_retrieval?.articles_found != null && (
                 <div className="text-xs text-gray-400 ml-2">
-                  Articles retrieved: {r.step7_answer.articles_retrieved}
+                  Articles found: {r.step4_retrieval.articles_found as number}
+                  {r.step5_expansion?.articles_after_expansion != null &&
+                    ` → ${r.step5_expansion.articles_after_expansion as number} after expansion`}
+                  {r.step7_answer?.articles_used != null &&
+                    ` → ${r.step7_answer.articles_used as number} sent to Claude`}
                 </div>
               )}
             </div>
