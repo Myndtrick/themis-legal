@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { api, LawSummary } from "@/lib/api";
 import ImportForm from "./import-form";
+import DeleteLawButton from "./delete-law-button";
 
 export const dynamic = "force-dynamic";
 
@@ -64,8 +65,11 @@ export default async function LawsPage() {
                     )}
                   </p>
                 </div>
-                <div className="text-sm text-gray-400">
-                  {law.version_count} version{law.version_count !== 1 ? "s" : ""}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    {law.version_count} version{law.version_count !== 1 ? "s" : ""}
+                  </span>
+                  <DeleteLawButton lawId={law.id} lawTitle={law.title} versionCount={law.version_count} />
                 </div>
               </div>
             </Link>

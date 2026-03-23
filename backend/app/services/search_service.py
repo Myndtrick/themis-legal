@@ -212,17 +212,45 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
 
     # Strategy 2: Title keyword search
     if parsed["TitleText"] and len(all_results) < max_results:
-        keywords = parsed["TitleText"]
-        keywords = re.sub(
+        raw_title = parsed["TitleText"]
+
+        # Detect doc type prefix and extract keywords without it
+        prefix_match = re.match(
             r"^(legea?|oug|hg|og|ordin(?:ul)?|hotarare[a]?|decret(?:ul)?|"
             r"ordona[nț](?:a|ța)?|decizie[a]?|codul?|lege)\s+",
-            "", keywords, flags=re.IGNORECASE,
-        ).strip()
+            raw_title, flags=re.IGNORECASE,
+        )
+        if prefix_match:
+            prefix_word = prefix_match.group(1).lower()
+            keywords = raw_title[prefix_match.end():].strip()
+            # Use the prefix to filter by document type
+            prefix_doc_type = DOC_TYPE_MAP.get(prefix_word, "")
+        else:
+            keywords = raw_title
+            prefix_doc_type = ""
 
         if keywords:
-            token = _refresh_token(session)
-            results = _do_search(session, token, title_text=keywords)
-            _add_results(results)
+            # 2a: Search with doc type filter + stripped keywords
+            if prefix_doc_type:
+                token = _refresh_token(session)
+                results = _do_search(
+                    session, token, title_text=keywords,
+                    doc_type=prefix_doc_type,
+                )
+                _add_results(results)
+
+            # 2b: Search with the full original phrase (including prefix)
+            # The actual law title often includes "Legea X" in it
+            if len(all_results) < max_results:
+                token = _refresh_token(session)
+                results = _do_search(session, token, title_text=raw_title)
+                _add_results(results)
+
+            # 2c: Search stripped keywords without type filter (broader)
+            if len(all_results) < max_results:
+                token = _refresh_token(session)
+                results = _do_search(session, token, title_text=keywords)
+                _add_results(results)
 
             # Strategy 3: Content search if still not enough results
             if len(all_results) < max_results:
@@ -231,7 +259,7 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
                 _add_results(results)
         elif not all_results:
             token = _refresh_token(session)
-            results = _do_search(session, token, title_text=parsed["TitleText"])
+            results = _do_search(session, token, title_text=raw_title)
             _add_results(results)
 
     return all_results[:max_results]

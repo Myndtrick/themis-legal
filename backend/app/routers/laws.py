@@ -57,12 +57,23 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
             detail="Invalid ver_id. Provide a numeric ID or a legislatie.just.ro URL.",
         )
 
-    # Check if already imported
+    # Check if already imported (either this ver_id directly, or as a main page
+    # whose history versions are already stored)
     existing = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
     if existing:
         raise HTTPException(
             status_code=409,
-            detail=f"This version is already imported as part of '{existing.law.title}'",
+            detail=f"This law is already imported as '{existing.law.title}'",
+        )
+
+    # Also check by source_url — the main page ver_id may differ from stored
+    # version ver_ids, but the source_url will match.
+    source_url = f"https://legislatie.just.ro/Public/DetaliiDocument/{ver_id}"
+    existing_law = db.query(Law).filter(Law.source_url == source_url).first()
+    if existing_law:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This law is already imported as '{existing_law.title}'",
         )
 
     try:
@@ -236,6 +247,110 @@ def serialize_article(article: Article, law: Law) -> dict:
             }
             for n in article.amendment_notes
         ],
+    }
+
+
+@router.post("/{law_id}/check-updates")
+def check_law_updates(law_id: int, db: Session = Depends(get_db)):
+    """Check a single law for new versions on legislatie.just.ro."""
+    from app.services.fetcher import fetch_document
+    from app.services.leropa_service import fetch_and_store_version
+    import app.services.leropa_service as _ls
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    current = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id, LawVersion.is_current == True)
+        .first()
+    )
+    if not current:
+        raise HTTPException(status_code=400, detail="No current version found for this law")
+
+    try:
+        result = fetch_document(current.ver_id, use_cache=False)
+        doc = result["document"]
+
+        next_ver = doc.get("next_ver")
+        if next_ver:
+            existing = db.query(LawVersion).filter(LawVersion.ver_id == next_ver).first()
+            if existing:
+                return {"has_update": False, "message": "This law is up to date."}
+
+            _ls._stored_article_ids = set()
+            _, new_version = fetch_and_store_version(db, next_ver, law=law)
+
+        else:
+            history = doc.get("history", [])
+            stored_ver_ids = {
+                v.ver_id
+                for v in db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+            }
+            new_versions = [h for h in history if h["ver_id"] not in stored_ver_ids]
+
+            if not new_versions:
+                return {"has_update": False, "message": "This law is up to date."}
+
+            for entry in new_versions:
+                _ls._stored_article_ids = set()
+                fetch_and_store_version(db, entry["ver_id"], law=law)
+
+        # Update is_current flags
+        all_versions = (
+            db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+        )
+        dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
+        if dated:
+            dated.sort(key=lambda x: x[1], reverse=True)
+            for v in all_versions:
+                v.is_current = False
+            dated[0][0].is_current = True
+
+        db.commit()
+        return {"has_update": True, "message": "New version found and imported!"}
+
+    except Exception as e:
+        logger.exception(f"Error checking updates for law {law_id}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update check failed: {str(e)}")
+
+
+@router.delete("/{law_id}")
+def delete_law(law_id: int, db: Session = Depends(get_db)):
+    """Delete a law and all its versions."""
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    title = law.title
+    version_count = len(law.versions)
+    db.delete(law)
+    db.commit()
+    return {
+        "message": f"Deleted '{title}' with {version_count} version(s)",
+    }
+
+
+@router.delete("/{law_id}/versions/old")
+def delete_old_versions(law_id: int, db: Session = Depends(get_db)):
+    """Delete all non-current versions of a law, keeping only the current one."""
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    old_versions = [v for v in law.versions if not v.is_current]
+    if not old_versions:
+        return {"message": "No old versions to delete", "deleted_count": 0}
+
+    for version in old_versions:
+        db.delete(version)
+    db.commit()
+
+    return {
+        "message": f"Deleted {len(old_versions)} old version(s) of '{law.title}'",
+        "deleted_count": len(old_versions),
     }
 
 

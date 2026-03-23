@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { api } from "@/lib/api";
 import DiffSelector from "./diff-selector";
+import DeleteVersionsButton from "./delete-versions-button";
+import CheckUpdatesButton from "./check-updates-button";
 
 export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
   const { id } = await props.params;
@@ -42,14 +44,23 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
         {law.issuer && (
           <p className="text-sm text-gray-500 mt-1">Issuer: {law.issuer}</p>
         )}
+        <div className="mt-3">
+          <CheckUpdatesButton lawId={law.id} />
+        </div>
       </div>
 
       <DiffSelector lawId={law.id} versions={law.versions} />
 
       <div>
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">
-          Versions ({law.versions.length})
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Versions ({law.versions.length})
+          </h2>
+          <DeleteVersionsButton
+            lawId={law.id}
+            oldVersionCount={law.versions.filter((v) => !v.is_current).length}
+          />
+        </div>
         <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-200">
           {law.versions.map((version) => (
             <Link

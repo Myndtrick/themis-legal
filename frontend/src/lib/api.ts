@@ -151,6 +151,18 @@ export const api = {
       apiFetch<DiffResult>(
         `/api/laws/${lawId}/diff?version_a=${versionA}&version_b=${versionB}`
       ),
+    delete: (id: number) =>
+      apiFetch<{ message: string }>(`/api/laws/${id}`, { method: "DELETE" }),
+    deleteOldVersions: (id: number) =>
+      apiFetch<{ message: string; deleted_count: number }>(
+        `/api/laws/${id}/versions/old`,
+        { method: "DELETE" }
+      ),
+    checkUpdates: (id: number) =>
+      apiFetch<{ has_update: boolean; message: string }>(
+        `/api/laws/${id}/check-updates`,
+        { method: "POST" }
+      ),
   },
   notifications: {
     list: (unreadOnly = false) =>

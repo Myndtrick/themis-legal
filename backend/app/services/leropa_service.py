@@ -20,20 +20,50 @@ from app.models.notification import AuditLog, Notification
 
 logger = logging.getLogger(__name__)
 
-# Map leropa document kind codes to our enum
+# Map leropa document kind codes to our internal type label.
+# Unknown kinds fall back to "other" via KIND_MAP.get(…, "other").
 KIND_MAP = {
     "LEGE": "law",
     "COD": "code",
     "OG": "government_ordinance",
-    "OUG": "government_ordinance",
+    "OUG": "emergency_ordinance",
     "HG": "government_resolution",
     "DECRET": "decree",
     "ORDIN": "order",
     "HOTARARE": "resolution",
+    "HOTAR": "resolution",
     "REGULAMENT": "regulation",
+    "REGULAMENTUL": "regulation",
     "PROCEDURA": "procedure",
     "NORMA": "norm",
     "DECIZIE": "decision",
+    "CONSTITUTIE": "constitution",
+    "DIRECTIVA": "directive",
+    "INSTRUCTIUNE": "instruction",
+    "METODOLOGIE": "methodology",
+    "PROTOCOL": "protocol",
+    "STATUT": "statute",
+    "ACORD": "agreement",
+    "CONVENTIE": "convention",
+    "TRATAT": "treaty",
+    "PACT": "pact",
+    "CARTA": "charter",
+    "DECLARATIE": "declaration",
+    "RECOMANDARE": "recommendation",
+    "CIRCULARA": "circular",
+    "DISPOZITIE": "disposition",
+    "ADRESA": "address",
+    "ANEXA": "annex",
+    "ACT": "act",
+    "PLAN": "plan",
+    "PROGRAM": "program",
+    "RAPORT": "report",
+    "AVIZ": "notice",
+    "PUNCT": "opinion",
+    "MEMORANDUM": "memorandum",
+    "REZOLUTIE": "resolution",
+    "ORDONANTA": "government_ordinance",
+    "ORDONANȚĂ": "government_ordinance",
 }
 
 STATE_MAP = {
@@ -86,12 +116,13 @@ def _extract_law_number_and_year(title: str) -> tuple[str, int]:
         return number, year
 
     # Pattern 2: "Legea NNN din DD.MM.YYYY" or "Ordinul NNN din DD.MM.YYYY"
-    match = re.search(r"(?:Legea|Ordinul|Norma|Hotărârea|Decizia|Codul)\s+(\d+)\s+din\s+\d{1,2}\.\d{1,2}\.(\d{4})", title, re.IGNORECASE)
+    # Also handles multi-word prefixes like "Ordonanța de Urgență a Guvernului NNN"
+    match = re.search(r"(?:Legea|Ordinul|Norma|Hotărârea|Decizia|Codul|Guvernului|Constituția|Directiva|Regulamentul|Instrucțiunea|Metodologia|Acordul|Convenția|Tratatul|Statutul)\s+(\d+)\s+din\s+\d{1,2}\.\d{1,2}\.(\d{4})", title, re.IGNORECASE)
     if match:
         return match.group(1), int(match.group(2))
 
     # Pattern 3: "Legea NNN din DD luna YYYY"
-    match = re.search(r"(?:Legea|Ordinul|Norma|Hotărârea|Decizia)\s+(\d+)\s+din\s+.*?(\d{4})", title, re.IGNORECASE)
+    match = re.search(r"(?:Legea|Ordinul|Norma|Hotărârea|Decizia|Guvernului|Constituția|Directiva|Regulamentul)\s+(\d+)\s+din\s+.*?(\d{4})", title, re.IGNORECASE)
     if match:
         return match.group(1), int(match.group(2))
 
@@ -465,83 +496,100 @@ def import_law(
     doc = result["document"]
     history = doc.get("history", [])
 
-    # Build a date lookup from the history list: ver_id -> consolidation date
-    # The history list contains the dates for all OTHER versions.
-    # The version we're looking at (ver_id) is NOT in its own history list.
+    # How legislatie.just.ro versions work:
+    #
+    # The selected ver_id is the "forma de baza" — the original text of the law.
+    # It is a real version and must be imported.
+    #
+    # The history list ("istoric consolidari") contains all consolidated versions
+    # after amendments.  Each has its own ver_id and consolidation date.
+    #
+    # The main page's history may be incomplete for newer consolidations.  To
+    # discover all versions we cross-reference the newest known history entry —
+    # its history will include any even newer consolidations.
+    #
+    # Together: forma de baza + all consolidations = complete version list.
+    # The newest-dated version is the current one in force.
+
+    # Build date lookup from the history (consolidated versions)
     date_lookup: dict[str, datetime.date | None] = {}
     for entry in history:
         date_lookup[entry["ver_id"]] = _parse_date(entry.get("date"))
 
-    # For the requested ver_id itself, we need to find its date.
-    # Strategy: fetch ANY other version's history to find our ver_id's date.
-    # If history is empty, fall back to the document date.
+    # Cross-reference the newest history entry to discover newer consolidations
+    # that the main page's history doesn't list yet.
     if history:
-        # Fetch the first historical version to get its history list,
-        # which should include our ver_id with the correct date.
-        other_ver_id = history[0]["ver_id"]
+        newest_known = history[0]["ver_id"]
         try:
-            other_result = fetch_document(other_ver_id)
-            other_history = other_result["document"].get("history", [])
-            for entry in other_history:
-                if entry["ver_id"] == ver_id:
-                    date_lookup[ver_id] = _parse_date(entry.get("date"))
-                    break
-                # Also fill in any dates we might be missing
-                if entry["ver_id"] not in date_lookup:
-                    date_lookup[entry["ver_id"]] = _parse_date(entry.get("date"))
+            cross_result = fetch_document(newest_known)
+            for entry in cross_result["document"].get("history", []):
+                entry_vid = entry["ver_id"]
+                if entry_vid not in date_lookup and entry_vid != ver_id:
+                    date_lookup[entry_vid] = _parse_date(entry.get("date"))
+                    history.append(entry)
         except Exception as e:
-            logger.warning(f"Could not fetch cross-reference for date of {ver_id}: {e}")
+            logger.warning(f"Cross-reference failed for {newest_known}: {e}")
 
-    # Fallback for the requested ver_id if we still don't have its date
-    if ver_id not in date_lookup or date_lookup[ver_id] is None:
-        date_lookup[ver_id] = _date_from_list(doc.get("date"))
+    # The forma de baza date is the law's original publication date
+    date_lookup[ver_id] = _date_from_list(doc.get("date"))
 
-    # Now import the requested version with the correct date
-    law, main_version = fetch_and_store_version(
+    # Import the forma de baza (original text)
+    law, base_version = fetch_and_store_version(
         db, ver_id, override_date=date_lookup.get(ver_id)
     )
+    # The main page has the best-formatted metadata — apply it to the Law record
+    title = doc.get("title") or law.title
+    law_number, law_year = _extract_law_number_and_year(title)
+    law.title = title
+    law.law_number = law_number
+    law.law_year = law_year
+    law.document_type = KIND_MAP.get(doc.get("kind", ""), "other")
+    law.description = doc.get("description") or law.description
+    law.keywords = doc.get("keywords") or law.keywords
+    law.issuer = ", ".join(doc.get("issuer") or []) or law.issuer
+    law.source_url = doc.get("source") or law.source_url
 
     versions_imported = [ver_id]
 
-    # Import historical versions
+    # Import consolidated versions
     if import_history and history:
-        logger.info(f"Found {len(history)} historical versions to import")
+        logger.info(f"Importing {len(history)} consolidated versions")
         for entry in history:
             hist_ver_id = entry.get("ver_id")
             if not hist_ver_id or hist_ver_id == ver_id:
                 continue
 
-            hist_date = date_lookup.get(hist_ver_id) or _parse_date(entry.get("date"))
-
             try:
-                _stored_article_ids = set()  # Reset for each version
+                _stored_article_ids = set()
                 _, hist_version = fetch_and_store_version(
                     db, hist_ver_id, law=law,
                     rate_limit_delay=rate_limit_delay,
-                    override_date=hist_date,
+                    override_date=date_lookup.get(hist_ver_id),
                 )
                 versions_imported.append(hist_ver_id)
                 logger.info(
                     f"Imported version {hist_ver_id} "
-                    f"(date={hist_date}, {len(versions_imported)}/{len(history)+1})"
+                    f"(date={date_lookup.get(hist_ver_id)}, "
+                    f"{len(versions_imported)}/{len(history) + 1})"
                 )
             except Exception as e:
                 logger.error(f"Failed to import version {hist_ver_id}: {e}")
-                # Don't let one failed version stop the rest
                 continue
 
-    # Determine which version is current (the one with the latest date)
-    all_versions = db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
-    if all_versions:
-        dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
+    # Mark the newest-dated version as current
+    all_db_versions = (
+        db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+    )
+    if all_db_versions:
+        dated = [(v, v.date_in_force) for v in all_db_versions if v.date_in_force]
+        for v in all_db_versions:
+            v.is_current = False
         if dated:
             dated.sort(key=lambda x: x[1], reverse=True)
-            for v in all_versions:
-                v.is_current = False
             dated[0][0].is_current = True
         else:
-            for v in all_versions:
-                v.is_current = v.ver_id == ver_id
+            # No dates at all — mark the first imported as current
+            all_db_versions[0].is_current = True
 
     # Create notification
     notification = Notification(
