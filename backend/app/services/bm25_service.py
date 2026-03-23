@@ -20,8 +20,15 @@ def ensure_fts_index(db: Session):
         "SELECT name FROM sqlite_master WHERE type='table' AND name='articles_fts'"
     )
     if cursor.fetchone():
-        conn.close()
-        return
+        # Check if it has data
+        cursor.execute("SELECT COUNT(*) FROM articles_fts")
+        count = cursor.fetchone()[0]
+        if count > 0:
+            conn.close()
+            return
+        # Table exists but empty — drop and recreate
+        cursor.execute("DROP TABLE articles_fts")
+        conn.commit()
 
     logger.info("Creating FTS5 index for articles...")
 

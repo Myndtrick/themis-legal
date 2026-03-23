@@ -359,7 +359,7 @@ export default function SearchImportForm() {
 
       {/* Results */}
       {results.length > 0 && (
-        <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+        <div className="mt-4 border border-gray-200 rounded-lg overflow-visible">
           {/* Results header */}
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <span className="text-sm text-gray-600">{total} result{total !== 1 ? "s" : ""} found</span>

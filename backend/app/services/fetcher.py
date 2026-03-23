@@ -107,24 +107,57 @@ HEADERS = {
 }
 
 
+def _fetch_html(
+    url: str, cache_file: Path, use_cache: bool = True, timeout: int = 30
+) -> str:
+    """Fetch HTML from a URL with caching."""
+    if use_cache and cache_file.exists():
+        return cache_file.read_text(encoding="utf-8")
+    response = requests.get(url, headers=HEADERS, timeout=timeout)
+    response.raise_for_status()
+    html = response.text
+    cache_file.write_text(html, encoding="utf-8")
+    return html
+
+
 def fetch_document(
     ver_id: str, cache_dir: Path | None = None, use_cache: bool = True
 ) -> dict[str, Any]:
     """Fetch and parse a document from legislatie.just.ro.
 
     Like leropa's fetch_document but with proper HTTP headers to avoid 403 errors.
+
+    For large laws (e.g. Codul Fiscal) the standard DetaliiDocument page loads
+    articles dynamically via AJAX, so the static HTML has no content.  When this
+    happens we look for a DetaliiDocumentAfis link in the page and fetch from
+    that URL instead — it contains the full inline text.
     """
     cache_dir = cache_dir or CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{ver_id}.html"
 
-    if use_cache and cache_file.exists():
-        html = cache_file.read_text(encoding="utf-8")
-    else:
-        url = f"https://legislatie.just.ro/Public/DetaliiDocument/{ver_id}"
-        response = requests.get(url, headers=HEADERS, timeout=30)
-        response.raise_for_status()
-        html = response.text
-        cache_file.write_text(html, encoding="utf-8")
+    url = f"https://legislatie.just.ro/Public/DetaliiDocument/{ver_id}"
+    html = _fetch_html(url, cache_file, use_cache)
+    result = parse_html(html, ver_id)
 
-    return parse_html(html, ver_id)
+    # If no articles/books were parsed, try the DetaliiDocumentAfis fallback.
+    # Large codes have their content on a separate "Afis" page linked from the
+    # main page via S_REF anchors.
+    if not result.get("articles") and not result.get("books"):
+        afis_ids = re.findall(r"DetaliiDocumentAfis/(\d+)", html)
+        if afis_ids:
+            # Use the last Afis link — it's typically the content reference
+            afis_id = afis_ids[-1]
+            afis_cache = cache_dir / f"{afis_id}_afis.html"
+            afis_url = f"https://legislatie.just.ro/Public/DetaliiDocumentAfis/{afis_id}"
+            try:
+                afis_html = _fetch_html(afis_url, afis_cache, use_cache, timeout=120)
+                afis_result = parse_html(afis_html, afis_id)
+                if afis_result.get("articles") or afis_result.get("books"):
+                    # Merge: keep metadata from the main page, content from Afis
+                    result["articles"] = afis_result["articles"]
+                    result["books"] = afis_result["books"]
+            except Exception:
+                pass  # Fall through — caller will handle empty content
+
+    return result
