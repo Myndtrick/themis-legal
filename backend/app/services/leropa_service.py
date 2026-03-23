@@ -513,7 +513,17 @@ def import_law(
     from app.services.fetcher import fetch_document
     result = fetch_document(ver_id)
     doc = result["document"]
+    articles_data = result["articles"]
+    books_data = result["books"]
     history = doc.get("history", [])
+
+    # Reject documents with no content and no history versions
+    if not articles_data and not books_data and not history:
+        title = doc.get("title") or f"Document {ver_id}"
+        raise ValueError(
+            f"This document has no content: '{title}'. "
+            f"Try importing a different version (e.g., the republished version)."
+        )
 
     # How legislatie.just.ro versions work:
     #

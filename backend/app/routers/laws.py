@@ -151,6 +151,9 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
     try:
         result = do_import(db, ver_id, import_history=req.import_history)
         return result
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception(f"Failed to import ver_id={ver_id}")
         db.rollback()
