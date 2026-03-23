@@ -41,6 +41,7 @@ class SearchResult:
     number: str
     date: str
     issuer: str
+    date_iso: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -113,6 +114,9 @@ def _do_search(
     content_text: str = "",
     doc_type: str = "",
     doc_number: str = "",
+    emitent: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> list[SearchResult]:
     """Execute a single search against legislatie.just.ro."""
     form_data = {
@@ -128,13 +132,13 @@ def _do_search(
         "DocumentType": doc_type,
         "DocumentNumber": doc_number,
         "DataSemnariiTextFrom": "",
-        "DataSemnariiTextTo": "",
+        "DataSemnariiTextTo": date_to,
         "PublishedInName": "",
         "PublishedInNumber": "",
         "DataPublicariiTextFrom": "",
         "DataPublicariiTextTo": "",
-        "ActInForceOnDateTextFrom": "",
-        "EmitentAct": "",
+        "ActInForceOnDateTextFrom": date_from,
+        "EmitentAct": emitent,
         "actiontype": "Căutare",
     }
 
@@ -265,6 +269,19 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
     return all_results[:max_results]
 
 
+def _parse_date_to_iso(date_str: str) -> str | None:
+    """Convert DD/MM/YYYY to YYYY-MM-DD."""
+    if not date_str:
+        return None
+    try:
+        parts = date_str.strip().split("/")
+        if len(parts) == 3:
+            return f"{parts[2]}-{parts[1]}-{parts[0]}"
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
 def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
     """Parse search results from the results page HTML.
 
@@ -330,6 +347,7 @@ def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
             number=number,
             date=date,
             issuer=issuer,
+            date_iso=_parse_date_to_iso(date),
         ))
 
         if len(results) >= max_results:
