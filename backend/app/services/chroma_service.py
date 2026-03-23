@@ -63,9 +63,19 @@ def index_law_version(db: Session, law_id: int, law_version_id: int) -> int:
     for article in articles:
         if not article.full_text or not article.full_text.strip():
             continue
+
+        # Build searchable text: article text + amendment notes
+        # Amendment notes often contain critical information (e.g., new minimum
+        # capital requirements) that isn't in the article text itself.
+        text_parts = [article.full_text]
+        if article.amendment_notes:
+            for note in article.amendment_notes:
+                if note.text and note.text.strip():
+                    text_parts.append(f"[Amendment: {note.text.strip()}]")
+
         doc_id = f"art-{article.id}"
         ids.append(doc_id)
-        documents.append(article.full_text)
+        documents.append("\n".join(text_parts))
         metadatas.append({
             "law_id": law.id,
             "law_version_id": version.id,
