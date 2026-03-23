@@ -74,6 +74,25 @@ STATE_MAP = {
 }
 
 
+def detect_law_status(db: Session, law: Law) -> str:
+    """Auto-detect law status from the newest version's state.
+
+    Returns one of: 'in_force', 'repealed', 'unknown'.
+    """
+    current = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id, LawVersion.is_current == True)
+        .first()
+    )
+    if not current:
+        return "unknown"
+    if current.state == "deprecated":
+        return "repealed"
+    if current.state == "actual":
+        return "in_force"
+    return "unknown"
+
+
 def _parse_date(date_str: str | None) -> datetime.date | None:
     """Parse a DD.MM.YYYY date string into a date object."""
     if not date_str:
@@ -590,6 +609,10 @@ def import_law(
         else:
             # No dates at all — mark the first imported as current
             all_db_versions[0].is_current = True
+
+    # Auto-detect law status from the newest version
+    if not law.status_override:
+        law.status = detect_law_status(db, law)
 
     # Create notification
     notification = Notification(
