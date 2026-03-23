@@ -70,7 +70,7 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
 | `year` | string | Combined with number as `{number}-{year}` |
 | `emitent` | string | `EmitentAct` |
 | `date_from` | string (YYYY-MM-DD) | `ActInForceOnDateTextFrom` |
-| `date_to` | string (YYYY-MM-DD) | Backend post-filtering: exclude results with signing date after this value |
+| `date_to` | string (YYYY-MM-DD) | `DataSemnariiTextTo` (signing date upper bound, sent as form field) |
 | `include_repealed` | string: `only_in_force` / `all` / `only_repealed` | Controls `ActInForceOnDateTextFrom` |
 
 ### Search logic
@@ -111,7 +111,6 @@ Separate from the existing `/api/laws/search` (which stays for backward compatib
 - `date` — display string as parsed from the source
 - `date_iso` — ISO 8601 parsed date (nullable, used for `date_to` filtering and frontend sorting)
 - `total` — `len(results)` after all filtering; no server-side pagination
-```
 
 ---
 
@@ -218,7 +217,7 @@ SearchImportForm
 }
 ```
 
-Setting `"override": false` resets to auto-detection mode (the "Reset to auto" UI action).
+Setting `"override": false` resets to auto-detection mode (the "Reset to auto" UI action). This immediately re-runs auto-detection from the newest version's state and updates the status in the same request, so the user sees the result right away.
 
 ### Update checker integration
 
@@ -251,7 +250,7 @@ The source's search form supports these fields directly:
 
 ### Code changes required
 
-- **`_do_search` in `search_service.py`** — must be extended with new parameters: `emitent: str = ""`, `date_from: str = ""`. These map to the `EmitentAct` and `ActInForceOnDateTextFrom` form fields which are currently hardcoded as empty strings. The `date_to` filtering is done as a post-filter on parsed results using `date_iso`.
+- **`_do_search` in `search_service.py`** — must be extended with new parameters: `emitent: str = ""`, `date_from: str = ""`, `date_to: str = ""`. These map to the `EmitentAct`, `ActInForceOnDateTextFrom`, and `DataSemnariiTextTo` form fields which are currently hardcoded as empty strings.
 - **`_parse_search_results`** — add `date_iso` field by parsing the `DD/MM/YYYY` date string into ISO format.
 - **`import_law()` in `leropa_service.py`** — add status auto-detection at the end of the import flow.
 - **`/api/laws/search` endpoint** — unchanged, stays for backward compatibility.
