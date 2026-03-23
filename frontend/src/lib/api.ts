@@ -25,6 +25,8 @@ export interface LawSummary {
   document_type: string;
   description: string | null;
   version_count: number;
+  status: string;
+  status_override: boolean;
   current_version: {
     id: number;
     ver_id: string;
@@ -43,6 +45,8 @@ export interface LawDetail {
   keywords: string | null;
   issuer: string | null;
   source_url: string | null;
+  status: string;
+  status_override: boolean;
   versions: LawVersionSummary[];
 }
 
@@ -138,6 +142,28 @@ export interface DiffResult {
   changes: DiffChange[];
 }
 
+export interface AdvancedSearchResult {
+  ver_id: string;
+  title: string;
+  doc_type: string;
+  number: string;
+  date: string;
+  date_iso: string | null;
+  issuer: string;
+  description: string;
+  already_imported: boolean;
+  local_law_id: number | null;
+}
+
+export interface AdvancedSearchResponse {
+  results: AdvancedSearchResult[];
+  total: number;
+}
+
+export interface EmitentsResponse {
+  emitents: string[];
+}
+
 // API functions
 export const api = {
   laws: {
@@ -162,6 +188,20 @@ export const api = {
       apiFetch<{ has_update: boolean; message: string }>(
         `/api/laws/${id}/check-updates`,
         { method: "POST" }
+      ),
+    advancedSearch: (params: Record<string, string>) => {
+      const query = new URLSearchParams(params).toString();
+      return apiFetch<AdvancedSearchResponse>(`/api/laws/advanced-search?${query}`);
+    },
+    emitents: (q: string) =>
+      apiFetch<EmitentsResponse>(`/api/laws/emitents?q=${encodeURIComponent(q)}`),
+    updateStatus: (id: number, status: string, override: boolean) =>
+      apiFetch<{ status: string; status_override: boolean }>(
+        `/api/laws/${id}/status`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status, override }),
+        }
       ),
   },
   notifications: {
