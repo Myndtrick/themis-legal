@@ -42,6 +42,14 @@ CRITICAL RULES:
 - When two interpretations exist — present both in the nuances field.
 - Set fields to null if not applicable (don't include empty strings).
 
+COMPLETENESS CHECK:
+Before generating your answer, verify that the provided articles cover ALL aspects of the question:
+- If the question asks about multiple entities (e.g., SRL AND SA), ensure you address each with specific articles
+- If the question asks about both minimum AND maximum, ensure both are covered by cited articles
+- If the question asks about multiple conditions (e.g., formation AND dissolution), address each
+- Short articles that directly state a numerical limit or rule are especially important — do not overlook them
+- If you notice a gap (articles provided don't cover a part of the question), state it explicitly in the missing_info field
+
 LAW CONFLICT RESOLUTION (apply in order):
 1. Lex superior — higher-ranked norm overrides lower
 2. Lex specialis — special law governs its domain, general law fills gaps
