@@ -160,6 +160,7 @@ def fetch_document(
                     # Merge: keep metadata from the main page, content from Afis
                     result["articles"] = afis_result["articles"]
                     result["books"] = afis_result["books"]
+                    result["annexes"] = afis_result.get("annexes", [])
             except Exception:
                 pass  # Fall through — caller will handle empty content
 
