@@ -1375,9 +1375,10 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     if retrieved:
         articles_context = "RETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:\n\n"
         for i, art in enumerate(retrieved, 1):
+            role_tag = f"[{art.get('role', 'SECONDARY')}] " if art.get("role") else ""
             abrogated_tag = " [ABROGATED — this article has been repealed]" if art.get("is_abrogated") else ""
             articles_context += (
-                f"[Article {i}]{abrogated_tag} {art.get('law_title', '')} "
+                f"[Article {i}] {role_tag}{abrogated_tag}{art.get('law_title', '')} "
                 f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
                 f"Art. {art.get('article_number', '')}"
             )
