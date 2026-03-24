@@ -93,6 +93,29 @@ _BM25_EXPANSIONS: dict[str, list[str]] = {
     "dividende": ["dividend", "profit", "distribuire"],
     "administrator": ["administratori", "administratorii", "administratorilor", "consiliu"],
     "contract": ["contractul", "contracte", "contractului", "act constitutiv"],
+    # --- Employment law terms ---
+    "concediu": ["concediul", "concedii", "concediilor", "zile libere", "vacanta"],
+    "angajat": ["angajatul", "angajati", "angajatii", "angajatilor", "salariat", "salariatul"],
+    "salariat": ["salariatul", "salariati", "salariatii", "salariatilor", "angajat", "angajatul"],
+    "angajator": ["angajatorul", "angajatorii", "angajatorilor", "patronat", "patron"],
+    # --- Contract / obligation terms ---
+    "reziliere": ["rezilierea", "rezilierii", "desfacere", "incetare"],
+    "rezolutiune": ["rezolutiunea", "rezolutiunii", "desfiintare"],
+    "locatar": ["locatarul", "locatarului", "chirias", "chiriasul"],
+    "chirias": ["chiriasul", "chiriasului", "locatar", "locatarul"],
+    # --- Property / finance terms ---
+    "dobanda": ["dobanzii", "dobanzi", "rata dobanzii", "dobanda legala"],
+    "ipoteca": ["ipotecii", "ipoteci", "garantie", "garantia", "drept de garantie"],
+    "garantie": ["garantiei", "garantii", "ipoteca", "cautiune", "fidejusiune"],
+    # --- Inheritance terms ---
+    "mostenire": ["mostenirea", "mostenirii", "succesiune", "succesiunea", "legat"],
+    "succesiune": ["succesiunea", "succesiunii", "mostenire", "mostenirea", "testament"],
+    # --- Representation terms ---
+    "procura": ["procurii", "procuri", "imputernicire", "mandat"],
+    "imputernicire": ["imputernicirea", "imputernicirii", "procura", "mandat"],
+    # --- Liability terms ---
+    "raspundere": ["raspunderea", "raspunderii", "responsabilitate", "culpa", "prejudiciu"],
+    "prejudiciu": ["prejudiciul", "prejudiciului", "daune", "despagubire", "despagubiri"],
 }
 
 
