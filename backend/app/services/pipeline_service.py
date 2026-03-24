@@ -146,36 +146,40 @@ def run_pipeline(
         gate_result = _step2_5_early_relevance_gate(state, db)
         gate_duration = time.time() - t0
         if gate_result:
-            # Log the gate decision before short-circuiting
             candidate_laws = state.get("candidate_laws", [])
-            primary_laws = [c for c in candidate_laws if c.get("tier") == "tier1_primary"]
-            missing_primary = [c for c in primary_laws if not c.get("db_law_id")]
+            primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
+            missing_primary = [c for c in primary_laws if c.get("availability") in ("missing", "wrong_version")]
+
             log_step(
                 db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
-                output_summary=f"Gate triggered: pipeline short-circuited ({gate_result.get('mode', 'unknown')})",
+                output_summary=f"Gate triggered: {gate_result.get('type', 'unknown')}",
                 output_data={
                     "gate_triggered": True,
-                    "trigger_reason": gate_result.get("mode", "unknown"),
+                    "trigger_type": gate_result.get("type"),
                     "primary_laws_total": len(primary_laws),
                     "primary_laws_missing": len(missing_primary),
-                    "missing_laws": [
-                        {"law_number": l["law_number"], "law_year": l["law_year"],
-                         "reason": l.get("reason", "")}
-                        for l in missing_primary
-                    ],
-                    "clarification_round": _count_clarification_rounds(state.get("session_context", [])),
                 },
-                warnings=["Pipeline stopped early — insufficient law coverage"],
+                warnings=["Pipeline stopped — law coverage issue"],
             )
-            yield _step_event(25, "early_relevance_gate", "done", {
-                "gate_triggered": True,
-                "reason": gate_result.get("mode", "unknown"),
-            }, gate_duration)
-            # Pipeline short-circuits: yield the gate result and stop
-            complete_run(db, run_id, "clarification", None, state.get("flags"))
-            db.commit()
-            yield gate_result
-            return
+
+            if gate_result.get("type") == "pause":
+                # Pipeline pauses — frontend will show import prompt
+                yield _step_event(25, "early_relevance_gate", "done", {
+                    "gate_triggered": True,
+                    "reason": "pause_for_import",
+                }, gate_duration)
+                yield gate_result
+                return
+            else:
+                # Pipeline terminates (e.g., no laws identified)
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield _step_event(25, "early_relevance_gate", "done", {
+                    "gate_triggered": True,
+                    "reason": gate_result.get("mode", "unknown"),
+                }, gate_duration)
+                yield gate_result
+                return
         else:
             log_step(
                 db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
@@ -628,178 +632,79 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
 
 
 def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
-    """Check if the primary laws needed for this question exist in the database.
-
-    Returns None if the pipeline should continue, or a 'done' event dict
-    if the pipeline should short-circuit with a clarification/import message.
-    """
+    """Check law availability. Returns None to continue, or a pause/done event dict."""
     candidate_laws = state.get("candidate_laws", [])
-    primary_laws = [c for c in candidate_laws if c.get("tier") == "tier1_primary"]
-    missing_primary = [c for c in primary_laws if not c.get("db_law_id")]
-    has_any_primary_in_db = any(c.get("db_law_id") for c in primary_laws)
 
-    # Count how many clarification rounds have happened in this session
-    clarification_round = _count_clarification_rounds(state.get("session_context", []))
+    if not candidate_laws:
+        # No laws identified at all — return a done event
+        return {
+            "type": "done",
+            "run_id": state["run_id"],
+            "content": "Nu am putut identifica legile aplicabile pentru această întrebare. Vă rog să reformulați întrebarea cu mai multe detalii.",
+            "structured": None,
+            "mode": "clarification",
+            "output_mode": "clarification",
+            "confidence": "LOW",
+            "flags": state.get("flags", []),
+            "reasoning": _build_reasoning_panel(state),
+        }
 
-    if not primary_laws:
-        # Domain mapped to nothing (e.g., "other") — no laws identified at all
-        if clarification_round >= 1:
-            # Already asked once — don't loop. Suggest import or give up.
-            return _build_cannot_answer_event(state, missing_primary)
+    # Check if any PRIMARY law needs import or has wrong version
+    primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
+    needs_pause = any(
+        law.get("availability") in ("missing", "wrong_version")
+        for law in primary_laws
+    )
 
-        clarification = _generate_clarification_question(state, db)
-        if clarification:
-            return {
-                "type": "done",
-                "run_id": state["run_id"],
-                "content": clarification["clarification_question"],
-                "structured": None,
-                "mode": "clarification",
-                "output_mode": "clarification",
-                "confidence": "LOW",
-                "flags": state.get("flags", []),
-                "reasoning": _build_reasoning_panel(state),
-                "clarification_type": "missing_context",
-                "missing_laws": [],
+    if needs_pause:
+        # Save state for resume
+        save_paused_state(db, state["run_id"], state)
+
+        # Build law preview for frontend
+        laws_preview = []
+        for law in candidate_laws:
+            preview = {
+                "law_number": law["law_number"],
+                "law_year": law["law_year"],
+                "title": law.get("title", ""),
+                "role": law["role"],
+                "availability": law.get("availability", "missing"),
+                "version_info": law.get("available_version_date"),
+                "reason": law.get("reason", ""),
             }
+            laws_preview.append(preview)
 
-    elif missing_primary and not has_any_primary_in_db:
-        # ALL primary laws are missing — refuse and suggest import
-        return _build_needs_import_event(state, missing_primary)
+        # Build user-friendly message
+        missing = [l for l in primary_laws if l.get("availability") == "missing"]
+        wrong_ver = [l for l in primary_laws if l.get("availability") == "wrong_version"]
+        parts = []
+        if missing:
+            names = ", ".join(f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})" for l in missing)
+            parts.append(f"lipsesc din bibliotecă: {names}")
+        if wrong_ver:
+            names = ", ".join(f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})" for l in wrong_ver)
+            parts.append(f"au versiune incorectă: {names}")
+        message = "Am identificat legile aplicabile. " + "; ".join(parts) + ". Doriți să le importăm?"
 
-    elif missing_primary:
-        # SOME primary laws missing — flag but continue (partial coverage)
+        return {
+            "type": "pause",
+            "run_id": state["run_id"],
+            "message": message,
+            "laws": laws_preview,
+        }
+
+    # Flag missing SECONDARY laws but don't pause
+    secondary_missing = [
+        c for c in candidate_laws
+        if c["role"] == "SECONDARY" and c.get("availability") in ("missing", "wrong_version")
+    ]
+    for law in secondary_missing:
         state["flags"].append(
-            "Partial coverage: some primary laws are not in the Legal Library"
+            f"SECONDARY law {law['law_number']}/{law['law_year']} ({law.get('title', '')}) "
+            f"not available — answer may be incomplete"
         )
 
     return None
-
-
-def _count_clarification_rounds(session_context: list[dict]) -> int:
-    """Count how many clarification rounds have happened in this session.
-
-    Looks for assistant messages that were clarification/needs_import responses.
-    Uses multiple signals since the mode field may not be preserved in stored messages.
-    """
-    count = 0
-    for msg in session_context[-10:]:
-        if msg.get("role") == "assistant":
-            mode = msg.get("mode", "")
-            content = msg.get("content", "")
-            # Check mode field if available
-            if mode in ("clarification", "needs_import"):
-                count += 1
-            # Heuristic: assistant messages that end with "?" and are under 600 chars
-            # are likely clarification questions (not full legal answers)
-            elif content.strip().endswith("?") and len(content) < 600:
-                count += 1
-    return count
-
-
-def _generate_clarification_question(state: dict, db: Session) -> dict | None:
-    """Use Claude to generate a targeted follow-up question."""
-    try:
-        prompt_text, _ = load_prompt("LA-S2.5", db)
-    except ValueError:
-        # Prompt not yet seeded — use a simple fallback
-        return {
-            "clarification_question": (
-                "Nu am putut identifica legea relevantă pentru întrebarea dumneavoastră. "
-                "Puteți preciza despre ce lege sau domeniu juridic este vorba?"
-            ),
-            "reasoning": "Fallback — LA-S2.5 prompt not available",
-        }
-
-    # Build context about what laws are available
-    from app.models.law import Law
-    available_laws = db.query(Law).limit(20).all()
-    available_list = ", ".join(f"{l.title} ({l.law_number}/{l.law_year})" for l in available_laws)
-
-    user_msg = (
-        f"USER QUESTION: {state['question']}\n"
-        f"CLASSIFIED DOMAIN: {state.get('legal_domain', 'other')}\n"
-        f"AVAILABLE LAWS IN LIBRARY: {available_list}\n"
-        f"MISSING LAWS: None identified\n"
-    )
-
-    result = call_claude(
-        system=prompt_text,
-        messages=[{"role": "user", "content": user_msg}],
-        max_tokens=512,
-    )
-
-    log_api_call(
-        db, state["run_id"], "clarification_generation",
-        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
-    )
-
-    parsed = _extract_json(result["content"])
-    return parsed
-
-
-def _build_needs_import_event(state: dict, missing_laws: list[dict]) -> dict:
-    """Build a 'done' event that tells the frontend to offer law import."""
-    law_names = ", ".join(
-        f"{l.get('reason', '')} ({l['law_number']}/{l['law_year']})"
-        for l in missing_laws
-    )
-    content = (
-        f"Nu pot răspunde corect la această întrebare deoarece nu am în biblioteca juridică "
-        f"legea necesară: {law_names}. "
-        f"Doriți să o importăm din legislatie.just.ro?"
-    )
-    return {
-        "type": "done",
-        "run_id": state["run_id"],
-        "content": content,
-        "structured": None,
-        "mode": "needs_import",
-        "output_mode": "needs_import",
-        "confidence": "LOW",
-        "flags": state.get("flags", []),
-        "reasoning": _build_reasoning_panel(state),
-        "clarification_type": "missing_law",
-        "missing_laws": [
-            {
-                "law_number": l["law_number"],
-                "law_year": l["law_year"],
-                "title": l.get("title", l.get("reason", "")),
-                "reason": l.get("reason", ""),
-            }
-            for l in missing_laws
-        ],
-    }
-
-
-def _build_cannot_answer_event(state: dict, missing_laws: list[dict]) -> dict:
-    """Build a 'done' event when we've exhausted clarification attempts."""
-    content = (
-        "Din păcate, nu am putut identifica legea relevantă pentru întrebarea dumneavoastră. "
-        "Vă rog să verificați dacă legea necesară este disponibilă în Biblioteca Juridică "
-        "sau să o importați de pe legislatie.just.ro."
-    )
-    return {
-        "type": "done",
-        "run_id": state["run_id"],
-        "content": content,
-        "structured": None,
-        "mode": "needs_import",
-        "output_mode": "needs_import",
-        "confidence": "LOW",
-        "flags": state.get("flags", []) + ["Exhausted clarification attempts"],
-        "reasoning": _build_reasoning_panel(state),
-        "clarification_type": "missing_law",
-        "missing_laws": [
-            {
-                "law_number": l["law_number"],
-                "law_year": l["law_year"],
-                "title": l.get("title", l.get("reason", "")),
-                "reason": l.get("reason", ""),
-            }
-            for l in missing_laws
-        ],
-    }
 
 
 # ---------------------------------------------------------------------------
