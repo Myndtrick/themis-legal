@@ -100,10 +100,17 @@ def advanced_search_endpoint(
     return {"results": enriched, "total": len(enriched)}
 
 
+@router.get("/filter-options")
+def get_filter_options():
+    """Return dropdown options (doc types + emitents) scraped from legislatie.just.ro."""
+    from app.services.filter_options import get_filter_options
+    return get_filter_options()
+
+
 @router.get("/emitents")
 def get_emitents(q: str = ""):
     """Autocomplete emitent (issuer) names."""
-    from app.services.emitent_service import search_emitents
+    from app.services.filter_options import search_emitents
     return {"emitents": search_emitents(q)}
 
 
@@ -199,6 +206,20 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
+
+    category_info = None
+    if law.category_id and law.category:
+        cat = law.category
+        category_info = {
+            "id": cat.id,
+            "slug": cat.slug,
+            "name_ro": cat.name_ro,
+            "name_en": cat.name_en,
+            "group_name_ro": cat.group.name_ro,
+            "group_name_en": cat.group.name_en,
+            "group_color_hex": cat.group.color_hex,
+        }
+
     return {
         "id": law.id,
         "title": law.title,
@@ -211,6 +232,8 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
         "source_url": law.source_url,
         "status": law.status,
         "status_override": law.status_override,
+        "category": category_info,
+        "category_confidence": law.category_confidence,
         "versions": [
             {
                 "id": v.id,

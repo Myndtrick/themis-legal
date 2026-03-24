@@ -35,6 +35,21 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
       </div>
 
       <div className="mb-8">
+        {law.category ? (
+          <div className="flex items-center gap-2 text-sm mb-2">
+            <div
+              className="w-2.5 h-2.5 rounded-full"
+              style={{ backgroundColor: law.category.group_color_hex }}
+            />
+            <span className="text-gray-500">{law.category.group_name_en}</span>
+            <span className="text-gray-300">&rsaquo;</span>
+            <span className="text-gray-700">{law.category.name_en}</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-sm mb-2">
+            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">Necategorizat</span>
+          </div>
+        )}
         <h1 className="text-2xl font-bold text-gray-900">{law.title}</h1>
         <p className="text-gray-600 mt-1">
           Legea {law.law_number}/{law.law_year}
