@@ -1208,8 +1208,9 @@ def _step6_select_articles(state: dict, db: Session) -> dict:
         text_preview = full_text[:1500]
         if len(full_text) > 1500:
             text_preview += f" [...truncated, full text: {len(full_text)} chars]"
+        abrogated_prefix = "[ABROGATED] " if art.get("is_abrogated") else ""
         summary = (
-            f"[ID:{art['article_id']}] Art. {art.get('article_number', '?')}, "
+            f"{abrogated_prefix}[ID:{art['article_id']}] Art. {art.get('article_number', '?')}, "
             f"Legea {art.get('law_number', '?')}/{art.get('law_year', '?')} — "
             f"{text_preview}"
         )
@@ -1576,8 +1577,9 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     if retrieved:
         articles_context = "RETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:\n\n"
         for i, art in enumerate(retrieved, 1):
+            abrogated_tag = " [ABROGATED — this article has been repealed]" if art.get("is_abrogated") else ""
             articles_context += (
-                f"[Article {i}] {art.get('law_title', '')} "
+                f"[Article {i}]{abrogated_tag} {art.get('law_title', '')} "
                 f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
                 f"Art. {art.get('article_number', '')}"
             )

@@ -86,6 +86,7 @@ def index_law_version(db: Session, law_id: int, law_version_id: int) -> int:
             "article_number": article.article_number,
             "date_in_force": str(version.date_in_force) if version.date_in_force else "",
             "is_current": str(version.is_current),
+            "is_abrogated": str(getattr(article, 'is_abrogated', False)),
         })
 
     # Batch upsert (keep batches manageable)
@@ -173,6 +174,7 @@ def query_articles(
                 "date_in_force": meta.get("date_in_force", ""),
                 "is_current": meta.get("is_current", ""),
                 "text": results["documents"][0][i],
+                "is_abrogated": meta.get("is_abrogated", "False") == "True",
                 "distance": results["distances"][0][i],
             })
 

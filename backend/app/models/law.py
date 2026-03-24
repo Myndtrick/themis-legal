@@ -134,6 +134,7 @@ class Article(Base):
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     full_text: Mapped[str] = mapped_column(Text, nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
+    is_abrogated: Mapped[bool] = mapped_column(Boolean, default=False)
 
     law_version: Mapped["LawVersion"] = relationship(back_populates="articles")
     structural_element: Mapped["StructuralElement | None"] = relationship(

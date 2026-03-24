@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -443,13 +444,17 @@ def _store_single_article(
     parent: StructuralElement | None,
     order_index: int,
 ) -> None:
+    full_text = art_data.get("full_text", "")
+    is_abrogated = bool(re.search(r"^\s*\(?\s*[Aa]brogat", full_text[:200]))
+
     article = Article(
         law_version_id=version.id,
         structural_element_id=parent.id if parent else None,
         article_number=art_data.get("label", "?"),
         label=art_data.get("label"),
-        full_text=art_data.get("full_text", ""),
+        full_text=full_text,
         order_index=order_index,
+        is_abrogated=is_abrogated,
     )
     db.add(article)
     db.flush()

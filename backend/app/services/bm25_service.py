@@ -189,6 +189,7 @@ def search_bm25(
             "date_in_force": str(version.date_in_force) if version.date_in_force else "",
             "is_current": str(version.is_current),
             "text": "\n".join(text_parts),
+            "is_abrogated": getattr(art, 'is_abrogated', False),
             "bm25_rank": rank,
             "source": "bm25",
         })
