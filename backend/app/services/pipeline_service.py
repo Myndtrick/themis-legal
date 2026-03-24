@@ -1048,6 +1048,14 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _derive_role(law_number: str, law_year: str, state: dict) -> str:
+    """Determine if an article's law is PRIMARY or SECONDARY based on law mapping."""
+    for law in state.get("law_mapping", {}).get("tier1_primary", []):
+        if str(law["law_number"]) == str(law_number) and str(law["law_year"]) == str(law_year):
+            return "PRIMARY"
+    return "SECONDARY"
+
+
 def _step5_expand(state: dict, db: Session) -> dict:
     """Expand with neighbors and cross-references."""
     from app.services.article_expander import expand_articles
@@ -1085,6 +1093,7 @@ def _step5_expand(state: dict, db: Session) -> dict:
                 "text": "\n".join(text_parts),
                 "source": "expansion",
                 "tier": "expansion",
+                "role": _derive_role(law.law_number, str(law.law_year), state),
             })
             added += 1
 
@@ -1145,6 +1154,7 @@ def _step5_5_exception_retrieval(state: dict, db: Session) -> dict:
                 "text": "\n".join(text_parts),
                 "source": "exception",
                 "tier": "exception",
+                "role": _derive_role(law.law_number, str(law.law_year), state),
             })
             added += 1
 
