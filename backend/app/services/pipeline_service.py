@@ -314,16 +314,47 @@ def resume_pipeline(
             if decision in ("import", "import_version"):
                 try:
                     law_number, law_year = law_key.split("/")
-                    from app.services.leropa_service import import_law as do_import
+                    from app.services.leropa_service import import_law_smart, import_remaining_versions
                     from app.services.fetcher import search_legislatie
+                    from app.scheduler import scheduler
 
                     ver_id = search_legislatie(law_number, law_year)
                     if ver_id:
                         yield {"type": "step", "step": 25, "name": "importing", "status": "running",
                                "data": {"importing": law_key}}
-                        do_import(db, ver_id, import_history=True)
-                        db.commit()
+
+                        result = import_law_smart(
+                            db, ver_id,
+                            primary_date=state.get("primary_date"),
+                        )
+                        # import_law_smart commits internally
                         state["flags"].append(f"Imported {law_key} from legislatie.just.ro")
+
+                        # Rebuild FTS5 so hybrid retrieval finds the just-imported articles
+                        try:
+                            from app.services.bm25_service import rebuild_fts_index
+                            rebuild_fts_index(db)
+                        except Exception as e:
+                            logger.warning(f"FTS5 rebuild failed (non-fatal): {e}")
+
+                        # Schedule background import of remaining versions
+                        if result.get("remaining_ver_ids"):
+                            scheduler.add_job(
+                                import_remaining_versions,
+                                args=[
+                                    result["law_id"],
+                                    result["remaining_ver_ids"],
+                                    result["date_lookup"],
+                                ],
+                                trigger="date",
+                                id=f"bg_import_{law_key}",
+                                replace_existing=True,
+                            )
+                            state["flags"].append(
+                                f"Background: importing {len(result['remaining_ver_ids'])} "
+                                f"remaining versions of {law_key}"
+                            )
+
                         yield {"type": "step", "step": 25, "name": "importing", "status": "done",
                                "data": {"imported": law_key}}
                     else:
@@ -334,6 +365,69 @@ def resume_pipeline(
 
         # Re-run law mapping to pick up newly imported laws
         state = _step2_law_mapping(state, db)
+
+        # Re-check gate: if PRIMARY laws are still unavailable, stop
+        candidate_laws = state.get("candidate_laws", [])
+        primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
+        still_missing = [
+            c for c in primary_laws
+            if c.get("availability") == "missing"
+        ]
+        still_wrong_version = [
+            c for c in primary_laws
+            if c.get("availability") == "wrong_version"
+        ]
+
+        if still_missing:
+            names = ", ".join(
+                f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})"
+                for l in still_missing
+            )
+            content = (
+                f"Importul nu a reușit pentru: {names}. "
+                f"Nu pot genera un răspuns fiabil fără aceste legi. "
+                f"Vă rugăm să le importați manual din Biblioteca Juridică."
+            )
+            complete_run(db, run_id, "error", None, state.get("flags"))
+            db.commit()
+            yield {
+                "type": "done",
+                "run_id": run_id,
+                "content": content,
+                "structured": None,
+                "mode": "error",
+                "output_mode": "error",
+                "confidence": "LOW",
+                "flags": state.get("flags", []),
+                "reasoning": _build_reasoning_panel(state),
+            }
+            return
+
+        if still_wrong_version:
+            names = ", ".join(
+                f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})"
+                for l in still_wrong_version
+            )
+            content = (
+                f"Legile au fost importate, dar versiunile corecte pentru data solicitată "
+                f"nu sunt disponibile: {names}. "
+                f"Răspunsul nu poate fi generat cu versiunea corectă a legii. "
+                f"Puteți reformula întrebarea fără o dată specifică pentru a folosi versiunea curentă."
+            )
+            complete_run(db, run_id, "error", None, state.get("flags"))
+            db.commit()
+            yield {
+                "type": "done",
+                "run_id": run_id,
+                "content": content,
+                "structured": None,
+                "mode": "error",
+                "output_mode": "error",
+                "confidence": "LOW",
+                "flags": state.get("flags", []),
+                "reasoning": _build_reasoning_panel(state),
+            }
+            return
 
         # Re-run from Step 3: Version Selection
         yield _step_event(3, "version_selection", "running")
