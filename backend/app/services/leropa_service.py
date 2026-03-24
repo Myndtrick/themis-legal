@@ -707,6 +707,117 @@ def import_law_smart(
     }
 
 
+def import_remaining_versions(
+    law_id: int,
+    remaining_ver_ids: list[str],
+    date_lookup_iso: dict[str, str | None],
+    rate_limit_delay: float = 2.0,
+):
+    """Background job: import remaining versions of a law.
+
+    Runs in a separate thread via APScheduler. Creates its own DB session.
+    Handles SQLite lock contention with retries.
+    """
+    global _stored_article_ids
+    from app.database import SessionLocal
+    from sqlalchemy.exc import OperationalError
+
+    logger.info(
+        f"Background import starting for law_id={law_id}: "
+        f"{len(remaining_ver_ids)} versions"
+    )
+
+    db = SessionLocal()
+    try:
+        law = db.get(Law, law_id)
+        if not law:
+            logger.error(f"Background import: law_id={law_id} not found")
+            return
+
+        # Convert ISO date strings back to date objects
+        date_lookup: dict[str, datetime.date | None] = {}
+        for vid, iso_str in date_lookup_iso.items():
+            date_lookup[vid] = (
+                datetime.date.fromisoformat(iso_str) if iso_str else None
+            )
+
+        imported_count = 0
+        for vid in remaining_ver_ids:
+            retries = 0
+            while retries < 3:
+                try:
+                    _stored_article_ids = set()
+                    _, version = fetch_and_store_version(
+                        db, vid, law=law,
+                        rate_limit_delay=rate_limit_delay,
+                        override_date=date_lookup.get(vid),
+                    )
+                    imported_count += 1
+                    logger.info(
+                        f"Background import: {vid} "
+                        f"({imported_count}/{len(remaining_ver_ids)})"
+                    )
+                    break  # success
+                except OperationalError as e:
+                    if "database is locked" in str(e):
+                        retries += 1
+                        wait = 2 ** (retries - 1)  # 1s, 2s, 4s
+                        logger.warning(
+                            f"SQLite locked, retry {retries}/3 in {wait}s"
+                        )
+                        db.rollback()
+                        time.sleep(wait)
+                    else:
+                        raise
+                except Exception as e:
+                    logger.error(f"Background import failed for {vid}: {e}")
+                    break
+
+        # Re-mark is_current on newest version
+        all_versions = (
+            db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+        )
+        if all_versions:
+            dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
+            for v in all_versions:
+                v.is_current = False
+            if dated:
+                dated.sort(key=lambda x: x[1], reverse=True)
+                dated[0][0].is_current = True
+
+        if not law.status_override:
+            law.status = detect_law_status(db, law)
+
+        db.commit()
+
+        # Index new versions into ChromaDB
+        try:
+            from app.services.chroma_service import index_law_version as chroma_index
+            for v in all_versions:
+                chroma_index(db, law.id, v.id)
+        except Exception as e:
+            logger.warning(f"Background ChromaDB indexing failed: {e}")
+
+        # Rebuild BM25/FTS5 index
+        try:
+            from app.services.bm25_service import rebuild_fts_index
+            rebuild_fts_index(db)
+        except Exception as e:
+            logger.warning(f"Background FTS5 rebuild failed: {e}")
+
+        _stored_article_ids = set()
+
+        logger.info(
+            f"Background import complete for law_id={law_id}: "
+            f"{imported_count}/{len(remaining_ver_ids)} versions imported"
+        )
+
+    except Exception as e:
+        logger.exception(f"Background import error for law_id={law_id}: {e}")
+    finally:
+        db.close()
+
+
 def import_law(
     db: Session,
     ver_id: str,
