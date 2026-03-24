@@ -974,7 +974,8 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
 
         # Merge and deduplicate
         for art in bm25_results + semantic_results:
-            aid = art["article_id"]
+            doc_type = art.get("doc_type", "article")
+            aid = f"{doc_type}:{art['article_id']}"
             if aid not in seen_ids:
                 seen_ids.add(aid)
                 art["tier"] = tier_key
@@ -1405,13 +1406,23 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     if retrieved:
         articles_context = "RETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:\n\n"
         for i, art in enumerate(retrieved, 1):
+            doc_type = art.get("doc_type", "article")
             role_tag = f"[{art.get('role', 'SECONDARY')}] " if art.get("role") else ""
             abrogated_tag = " [ABROGATED — this article has been repealed]" if art.get("is_abrogated") else ""
-            articles_context += (
-                f"[Article {i}] {role_tag}{abrogated_tag}{art.get('law_title', '')} "
-                f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
-                f"Art. {art.get('article_number', '')}"
-            )
+
+            if doc_type == "annex":
+                articles_context += (
+                    f"[Annex {i}] {role_tag}{art.get('law_title', '')} "
+                    f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
+                    f"{art.get('annex_title', art.get('article_number', ''))}"
+                )
+            else:
+                articles_context += (
+                    f"[Article {i}] {role_tag}{abrogated_tag}{art.get('law_title', '')} "
+                    f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
+                    f"Art. {art.get('article_number', '')}"
+                )
+
             if art.get("date_in_force"):
                 articles_context += f", version {art['date_in_force']}"
             if art.get("reranker_score") is not None:
