@@ -295,10 +295,10 @@ def resume_pipeline(
     import_decisions: dict[str, str],
     db: Session,
 ) -> Generator[dict, None, None]:
-    """Resume a paused pipeline — re-run from Step 3 (version selection) onwards.
+    """Resume a paused pipeline after user import decisions.
 
-    The import-pause flow is deprecated in the new pipeline (missing laws are
-    flagged but don't pause). This function is kept for backward compatibility.
+    Imports requested laws, re-runs law mapping to pick up new data,
+    then continues from Step 3 (version selection) onwards.
     """
     state = load_paused_state(db, run_id)
     if not state:
@@ -311,8 +311,29 @@ def resume_pipeline(
     try:
         # Handle imports if user approved
         for law_key, decision in import_decisions.items():
-            if decision == "import":
-                state["flags"].append(f"User approved import of {law_key}")
+            if decision in ("import", "import_version"):
+                try:
+                    law_number, law_year = law_key.split("/")
+                    from app.services.leropa_service import import_law as do_import
+                    from app.services.fetcher import search_legislatie
+
+                    ver_id = search_legislatie(law_number, law_year)
+                    if ver_id:
+                        yield {"type": "step", "step": 25, "name": "importing", "status": "running",
+                               "data": {"importing": law_key}}
+                        do_import(db, ver_id, import_history=True)
+                        db.commit()
+                        state["flags"].append(f"Imported {law_key} from legislatie.just.ro")
+                        yield {"type": "step", "step": 25, "name": "importing", "status": "done",
+                               "data": {"imported": law_key}}
+                    else:
+                        state["flags"].append(f"Could not find {law_key} on legislatie.just.ro — continuing without")
+                except Exception as e:
+                    logger.warning(f"Failed to import {law_key}: {e}")
+                    state["flags"].append(f"Import failed for {law_key}: {str(e)[:100]}")
+
+        # Re-run law mapping to pick up newly imported laws
+        state = _step2_law_mapping(state, db)
 
         # Re-run from Step 3: Version Selection
         yield _step_event(3, "version_selection", "running")
