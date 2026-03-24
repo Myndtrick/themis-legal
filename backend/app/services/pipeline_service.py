@@ -1245,112 +1245,60 @@ def _step6_select_articles(state: dict, db: Session) -> dict:
 
 
 def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict | None]:
-    """Check if selected articles are actually relevant to the question's domain.
+    """Check if selected articles are relevant using reranker scores (no Claude call).
 
-    Returns (step_events, gate_result). gate_result is None to continue
-    the pipeline, or a 'done' event dict to short-circuit.
+    Called from both run_pipeline and resume_pipeline.
     """
-    events: list[dict] = []
+    t0 = time.time()
     retrieved = state.get("retrieved_articles", [])
+    events = []
 
     if not retrieved:
-        # No articles at all — will be handled by Step 7
+        events.append(_step_event(7, "relevance_check", "done", {"skipped": True}, 0))
         return events, None
 
-    events.append(_step_event(7, "relevance_check", "running"))
-    t0 = time.time()
+    # Use the top reranker score as a relevance proxy
+    # Cross-encoder ms-marco-MiniLM-L-6-v2 scores range roughly -10 to +10
+    top_score = max((a.get("reranker_score", 0) for a in retrieved), default=0)
+    avg_score = sum(a.get("reranker_score", 0) for a in retrieved) / len(retrieved)
 
-    try:
-        prompt_text, prompt_ver = load_prompt("LA-S6.5", db)
-    except ValueError:
-        # Prompt not yet seeded — skip this gate
-        logger.warning("LA-S6.5 prompt not available, skipping relevance gate")
-        return events, None
-
-    # Build compact article context
-    articles_summary = []
-    for i, art in enumerate(retrieved[:15], 1):
-        articles_summary.append(
-            f"[{i}] Art. {art.get('article_number', '?')}, "
-            f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')}) — "
-            f"{art.get('text', '')[:300]}"
-        )
-
-    user_msg = (
-        f"QUESTION: {state['question']}\n"
-        f"CLASSIFIED DOMAIN: {state.get('legal_domain', 'other')}\n"
-        f"CORE ISSUE: {state.get('core_issue', '')}\n\n"
-        f"SELECTED ARTICLES ({len(retrieved)} total, showing first 15):\n\n"
-        + "\n\n".join(articles_summary)
-    )
-
-    result = call_claude(
-        system=prompt_text,
-        messages=[{"role": "user", "content": user_msg}],
-        max_tokens=512,
-        temperature=0.0,
-    )
-
-    log_api_call(
-        db, state["run_id"], "relevance_check",
-        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
-    )
-
-    parsed = _extract_json(result["content"])
-    duration = time.time() - t0
-
-    if not parsed:
-        logger.warning("Failed to parse relevance check response, continuing pipeline")
-        events.append(_step_event(7, "relevance_check", "done", {"skipped": True}, duration))
-        return events, None
-
-    relevance_score = parsed.get("relevance_score", 1.0)
+    # Normalize to 0-1: score of -5 → 0.0, score of +10 → 1.0
+    relevance_score = min(1.0, max(0.0, (top_score + 5) / 15))
     state["relevance_score"] = relevance_score
 
+    gate_will_trigger = relevance_score < 0.2  # ~top_score < -2 (clearly irrelevant)
+    gate_will_warn = 0.2 <= relevance_score < 0.4  # ~top_score < 1
+
+    duration = time.time() - t0
     events.append(_step_event(7, "relevance_check", "done", {
-        "relevance_score": relevance_score,
-        "domain_match": parsed.get("domain_match", True),
-        "missing_coverage": parsed.get("missing_coverage"),
+        "relevance_score": round(relevance_score, 3),
+        "top_reranker_score": round(top_score, 3),
+        "avg_reranker_score": round(avg_score, 3),
+        "gate_triggered": gate_will_trigger,
+        "gate_warning": gate_will_warn,
+        "method": "reranker_scores",
     }, duration))
 
-    # Determine if gate will trigger
-    gate_will_trigger = relevance_score < 0.3
-    gate_will_warn = 0.3 <= relevance_score < 0.6
-
-    log_step(
-        db, state["run_id"], "relevance_check", 7, "done", duration,
-        prompt_id="LA-S6.5", prompt_version=prompt_ver,
-        output_summary=f"Relevance score: {relevance_score}" + (" — GATE TRIGGERED" if gate_will_trigger else " — WARNING" if gate_will_warn else " — OK"),
-        output_data={
-            **parsed,
-            "gate_triggered": gate_will_trigger,
-            "gate_warning": gate_will_warn,
-            "decision_boundary": 0.3,
-            "warning_boundary": 0.6,
-        },
-        warnings=(
-            [f"Low relevance ({relevance_score}) — pipeline may short-circuit"]
-            if gate_will_trigger else
-            [f"Partial relevance ({relevance_score}) — answer may be incomplete"]
-            if gate_will_warn else None
-        ),
-    )
-
-    clarification_round = _count_clarification_rounds(state.get("session_context", []))
-
-    if relevance_score < 0.3:
-        # Articles are clearly wrong domain
-        missing_coverage = parsed.get("missing_coverage", "")
-        identified_missing = _identify_missing_laws_from_text(
-            missing_coverage + " " + (parsed.get("suggested_clarification") or ""),
-            db,
+    if gate_will_warn:
+        state["flags"].append(
+            f"Low article relevance (score: {relevance_score:.2f}) — answer may be incomplete"
         )
 
-        if identified_missing:
+    if gate_will_trigger:
+        clarification_round = _count_clarification_rounds(state.get("session_context", []))
+
+        # Try to identify missing laws from the domain mapping
+        candidate_laws = state.get("candidate_laws", [])
+        primary_missing = [
+            c for c in candidate_laws
+            if c.get("tier") == "tier1_primary" and not c.get("db_law_id")
+        ]
+
+        if primary_missing:
             # We know which laws are needed → offer import
             law_names = ", ".join(
                 f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})"
-                for l in identified_missing
+                for l in primary_missing
             )
             content = (
                 f"Pentru a răspunde corect la această întrebare, am nevoie de articole din: "
@@ -1366,9 +1314,7 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
                 "mode": "needs_import",
                 "output_mode": "needs_import",
                 "confidence": "LOW",
-                "flags": state.get("flags", []) + [
-                    f"Articles not relevant (score: {relevance_score}): {missing_coverage}"
-                ],
+                "flags": state.get("flags", []),
                 "reasoning": _build_reasoning_panel(state),
                 "clarification_type": "missing_law",
                 "missing_laws": [
@@ -1378,46 +1324,38 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
                         "title": l.get("title", ""),
                         "reason": l.get("reason", ""),
                     }
-                    for l in identified_missing
+                    for l in primary_missing
                 ],
             }
 
         if clarification_round >= 1:
-            # Already asked once — don't ask again. Let the pipeline answer
-            # with what it has (the answer prompt will flag missing coverage).
             state["flags"].append(
-                f"Low relevance (score: {relevance_score}) but proceeding after "
-                f"{clarification_round} clarification round(s): {missing_coverage}"
+                f"Low relevance (score: {relevance_score:.2f}) but proceeding after "
+                f"{clarification_round} clarification round(s)"
             )
             state["confidence"] = "MEDIUM"
             return events, None
 
-        # First time, no specific laws identified — ask ONE clarification question
-        suggested = parsed.get("suggested_clarification")
-        if suggested:
-            return events, {
-                "type": "done",
-                "run_id": state["run_id"],
-                "content": suggested,
-                "structured": None,
-                "mode": "clarification",
-                "output_mode": "clarification",
-                "confidence": "LOW",
-                "flags": state.get("flags", []) + [
-                    f"Articles not relevant (score: {relevance_score}): {missing_coverage}"
-                ],
-                "reasoning": _build_reasoning_panel(state),
-                "clarification_type": "missing_context",
-                "missing_laws": [],
-            }
-
-    elif relevance_score < 0.6:
-        # Partial match — flag but continue
-        state["flags"].append(
-            f"Retrieved articles may not fully cover the question (relevance: {relevance_score})"
+        # First time: trigger clarification
+        state["confidence"] = "LOW"
+        clarification_msg = (
+            "Nu am putut identifica articole suficient de relevante pentru "
+            "întrebarea dumneavoastră. Puteți preciza despre ce lege sau "
+            "domeniu juridic este vorba?"
         )
-        if state.get("confidence") != "LOW":
-            state["confidence"] = "MEDIUM"
+        return events, {
+            "type": "done",
+            "run_id": state["run_id"],
+            "content": clarification_msg,
+            "structured": None,
+            "mode": "clarification",
+            "output_mode": "clarification",
+            "confidence": "LOW",
+            "flags": state.get("flags", []),
+            "reasoning": _build_reasoning_panel(state),
+            "clarification_type": "missing_context",
+            "missing_laws": [],
+        }
 
     return events, None
 
