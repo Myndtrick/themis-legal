@@ -57,6 +57,24 @@ DOMAIN_LAW_MAP: dict[str, dict[str, list[dict]]] = {
         "secondary": [],
         "connected": [],
     },
+    "criminal": {
+        "primary": [
+            {"law_number": "286", "law_year": 2009, "reason": "Codul Penal"},
+        ],
+        "secondary": [
+            {"law_number": "135", "law_year": 2010, "reason": "Codul de Procedură Penală"},
+        ],
+        "connected": [],
+    },
+    "criminal_procedure": {
+        "primary": [
+            {"law_number": "135", "law_year": 2010, "reason": "Codul de Procedură Penală"},
+        ],
+        "secondary": [
+            {"law_number": "286", "law_year": 2009, "reason": "Codul Penal"},
+        ],
+        "connected": [],
+    },
 }
 
 

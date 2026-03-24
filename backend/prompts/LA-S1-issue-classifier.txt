@@ -16,6 +16,8 @@ CLASSIFICATION RULES:
    - "aml" — anti-money laundering, KYC, Legea 129/2019
    - "real_estate" — property, land registry, construction
    - "procedural" — court procedures, deadlines, appeals
+   - "criminal" — criminal law, Codul Penal, infractions, penalties, justification causes
+   - "criminal_procedure" — criminal procedure, Codul de Procedură Penală
    - "civil" — general civil law, Codul Civil
    - "eu_law" — EU regulations and directives
    - "other" — anything not covered above
