@@ -43,6 +43,75 @@ export interface LawSummary {
   } | null;
 }
 
+export interface CategoryData {
+  id: number;
+  slug: string;
+  name_ro: string;
+  name_en: string;
+  description: string | null;
+  law_count: number;
+}
+
+export interface CategoryGroupData {
+  id: number;
+  slug: string;
+  name_ro: string;
+  name_en: string;
+  color_hex: string;
+  sort_order: number;
+  categories: CategoryData[];
+}
+
+export interface LibraryLaw {
+  id: number;
+  title: string;
+  law_number: string;
+  law_year: number;
+  document_type: string;
+  version_count: number;
+  status: string;
+  category_id: number | null;
+  category_group_slug: string | null;
+  category_confidence: string | null;
+  current_version: {
+    id: number;
+    state: string;
+  } | null;
+}
+
+export interface SuggestedLaw {
+  id: number;
+  title: string;
+  law_number: string | null;
+  category_id: number;
+  category_slug: string;
+  group_slug: string;
+}
+
+export interface LibraryData {
+  groups: CategoryGroupData[];
+  laws: LibraryLaw[];
+  stats: {
+    total_laws: number;
+    total_versions: number;
+    last_imported: string | null;
+  };
+  suggested_laws: SuggestedLaw[];
+}
+
+export interface LocalSearchResult {
+  id: number;
+  title: string;
+  law_number: string;
+  law_year: number;
+  version_count: number;
+  category_name: string | null;
+  current_version: {
+    id: number;
+    state: string;
+  } | null;
+}
+
 export interface LawDetail {
   id: number;
   title: string;
@@ -375,6 +444,17 @@ export const api = {
         {
           method: "PATCH",
           body: JSON.stringify({ status, override }),
+        }
+      ),
+    library: () => apiFetch<LibraryData>("/api/laws/library"),
+    localSearch: (q: string) =>
+      apiFetch<{ results: LocalSearchResult[] }>(`/api/laws/local-search?q=${encodeURIComponent(q)}`),
+    assignCategory: (lawId: number, categoryId: number) =>
+      apiFetch<{ category_id: number; category_confidence: string }>(
+        `/api/laws/${lawId}/category`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ category_id: categoryId }),
         }
       ),
   },
