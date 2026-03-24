@@ -1187,7 +1187,10 @@ def _step6_select_articles(state: dict, db: Session) -> dict:
     # Build compact article summaries for Claude
     article_summaries = []
     for art in raw:
-        text_preview = art.get("text", "")[:500]
+        full_text = art.get("text", "")
+        text_preview = full_text[:1500]
+        if len(full_text) > 1500:
+            text_preview += f" [...truncated, full text: {len(full_text)} chars]"
         summary = (
             f"[ID:{art['article_id']}] Art. {art.get('article_number', '?')}, "
             f"Legea {art.get('law_number', '?')}/{art.get('law_year', '?')} — "
