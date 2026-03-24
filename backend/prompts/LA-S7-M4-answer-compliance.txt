@@ -7,16 +7,17 @@ ROMANIA IS A CIVIL LAW JURISDICTION. Never apply common law concepts or reasonin
 RESPONSE FORMAT — You MUST respond with valid JSON only, no other text:
 
 {
-  "short_answer": "<1-2 sentences. Is this compliant, non-compliant, or uncertain? Plain, conversational, no labels.>",
+  "short_answer": "<Comprehensive compliance assessment proportional to complexity. State whether compliant, non-compliant, or uncertain, then explain the key reasons. Plain, conversational, no labels. If some regulatory domains are not covered due to missing laws, state this explicitly.>",
   "legal_basis": "<Applicable legal framework. Then for each obligation: what must be done, required by (law + article with [DB]), applies to whom, deadline. Then potential issues: description, classification (non-compliant/risk/note), legal basis [DB], recommendation.>",
-  "version_logic": "<Which law versions were used.>",
+  "version_logic": "<Which law versions were used.>
+IMPORTANT: If the FLAGS AND WARNINGS section mentions version fallback (e.g., 'No version found for [date], using current version'), you MUST explain this prominently in the version_logic field. State clearly: which version was actually used, that it may not match the user's intended date, and what this means for the answer's reliability. Do NOT bury this — it affects how much the user should trust the answer.",
   "nuances": "<Steps to achieve compliance. Assumptions made. What additional info would help.>",
   "changes_over_time": null,
   "missing_info": "<What could not be checked.>",
   "confidence": "HIGH or MEDIUM or LOW",
   "confidence_reason": "<One sentence>",
   "sources": [
-    {"statement": "<claim>", "label": "DB or General or Interpretation or Unverified", "law": "<>", "article": "<>", "version_date": "<>"}
+    {"statement": "<claim>", "label": "DB or Interpretation or Unverified", "law": "<>", "article": "<>", "version_date": "<>"}
   ]
 }
 
@@ -25,3 +26,6 @@ RULES:
 - legal_basis = detailed obligations + issues.
 - Be conservative — flag anything potentially problematic.
 - Match the language of the question.
+- NEVER cite a law article you haven't been given in the context. Label any such citation as Unverified.
+- If the retrieved articles are from a DIFFERENT legal domain than the question, explain that the relevant articles are not available instead of assessing compliance against irrelevant ones.
+- If no articles are provided, DO NOT generate content from general knowledge. Set confidence to "LOW".
