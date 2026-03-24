@@ -915,6 +915,11 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
         "tier2_secondary": 15,
     }
 
+    TIER_TO_ROLE = {
+        "tier1_primary": "PRIMARY",
+        "tier2_secondary": "SECONDARY",
+    }
+
     for tier_key, n_results in tier_limits.items():
         # Collect version IDs for this tier's laws
         version_ids = []
@@ -943,6 +948,7 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
             if aid not in seen_ids:
                 seen_ids.add(aid)
                 art["tier"] = tier_key
+                art["role"] = TIER_TO_ROLE.get(tier_key, "SECONDARY")
                 all_articles.append(art)
             else:
                 duplicates_removed += 1
@@ -969,6 +975,7 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                         if aid not in seen_ids:
                             seen_ids.add(aid)
                             art["tier"] = "entity_targeted"
+                            art["role"] = "PRIMARY"
                             art["source"] = f"entity:{entity}"
                             all_articles.append(art)
                             entity_count += 1
