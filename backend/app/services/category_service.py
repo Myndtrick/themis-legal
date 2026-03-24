@@ -1,5 +1,6 @@
 """Category taxonomy seed and management service."""
 import logging
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.category import CategoryGroup, Category, LawMapping
@@ -304,3 +305,123 @@ def seed_categories(db: Session) -> None:
 
     db.commit()
     logger.info("Category taxonomy seeded successfully.")
+
+
+def get_library_data(db: Session) -> dict:
+    """Assemble all data needed for the Legal Library page."""
+    from app.models.law import LawVersion
+
+    groups = (
+        db.query(CategoryGroup)
+        .order_by(CategoryGroup.sort_order)
+        .all()
+    )
+    groups_out = []
+    for g in groups:
+        cats_out = []
+        for c in sorted(g.categories, key=lambda x: x.sort_order):
+            count = db.query(func.count(Law.id)).filter(Law.category_id == c.id).scalar()
+            cats_out.append({
+                "id": c.id, "slug": c.slug, "name_ro": c.name_ro,
+                "name_en": c.name_en, "description": c.description, "law_count": count,
+            })
+        groups_out.append({
+            "id": g.id, "slug": g.slug, "name_ro": g.name_ro, "name_en": g.name_en,
+            "color_hex": g.color_hex, "sort_order": g.sort_order, "categories": cats_out,
+        })
+
+    laws = db.query(Law).order_by(Law.law_year.desc(), Law.law_number).all()
+    laws_out = []
+    for law in laws:
+        current = next((v for v in law.versions if v.is_current), None)
+        cat = law.category
+        group_slug = cat.group.slug if cat else None
+        laws_out.append({
+            "id": law.id, "title": law.title, "law_number": law.law_number,
+            "law_year": law.law_year, "document_type": law.document_type,
+            "version_count": len(law.versions), "status": law.status,
+            "category_id": law.category_id, "category_group_slug": group_slug,
+            "category_confidence": law.category_confidence,
+            "current_version": {"id": current.id, "state": current.state} if current else None,
+        })
+
+    total_versions = db.query(func.count(LawVersion.id)).scalar()
+    last_imported = db.query(func.max(LawVersion.date_imported)).scalar()
+
+    all_mappings = db.query(LawMapping).all()
+    imported_numbers = {law.law_number for law in laws}
+    imported_titles = {law.title.lower() for law in laws}
+    suggested = []
+    for m in all_mappings:
+        if m.law_number and m.law_number in imported_numbers:
+            continue
+        if any(t in m.title.lower() or m.title.lower() in t for t in imported_titles):
+            continue
+        cat = db.query(Category).filter(Category.id == m.category_id).first()
+        if cat:
+            suggested.append({
+                "id": m.id, "title": m.title, "law_number": m.law_number,
+                "category_id": m.category_id, "category_slug": cat.slug,
+                "group_slug": cat.group.slug,
+            })
+
+    return {
+        "groups": groups_out, "laws": laws_out,
+        "stats": {
+            "total_laws": len(laws), "total_versions": total_versions,
+            "last_imported": str(last_imported.date()) if last_imported else None,
+        },
+        "suggested_laws": suggested,
+    }
+
+
+def assign_category(db: Session, law_id: int, category_id: int) -> dict:
+    """Assign a category to a law and update law_mappings."""
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise ValueError("Law not found")
+    cat = db.query(Category).filter(Category.id == category_id).first()
+    if not cat:
+        raise ValueError("Category not found")
+
+    law.category_id = category_id
+    law.category_confidence = "manual"
+
+    existing = (
+        db.query(LawMapping)
+        .filter(
+            LawMapping.category_id == category_id,
+            (LawMapping.law_number == law.law_number) | (LawMapping.title.ilike(law.title))
+        )
+        .first()
+    )
+    if not existing:
+        mapping = LawMapping(title=law.title, law_number=law.law_number,
+                            category_id=category_id, source="user")
+        db.add(mapping)
+
+    db.commit()
+    return {"category_id": category_id, "category_confidence": "manual"}
+
+
+def local_search(db: Session, query: str) -> list[dict]:
+    """Search imported laws by title or law_number."""
+    q = f"%{query}%"
+    laws = (
+        db.query(Law)
+        .filter((Law.title.ilike(q)) | (Law.law_number.ilike(q)))
+        .order_by(Law.law_year.desc())
+        .limit(10)
+        .all()
+    )
+    results = []
+    for law in laws:
+        current = next((v for v in law.versions if v.is_current), None)
+        cat = law.category
+        results.append({
+            "id": law.id, "title": law.title, "law_number": law.law_number,
+            "law_year": law.law_year, "version_count": len(law.versions),
+            "category_name": cat.group.name_en if cat else None,
+            "current_version": {"id": current.id, "state": current.state} if current else None,
+        })
+    return results

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category  # noqa: F401 — register models
 from app.routers import assistant as assistant_router
-from app.routers import laws, notifications
+from app.routers import categories, laws, notifications
 from app.routers import settings_pipeline, settings_prompts
 from app.scheduler import scheduler
 
@@ -82,6 +82,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(categories.router)
 app.include_router(laws.router)
 app.include_router(notifications.router)
 app.include_router(assistant_router.router)
