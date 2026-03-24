@@ -1483,8 +1483,8 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
 
     # Build conversation history for session memory
     history_msgs = []
-    for msg in state.get("session_context", [])[-10:]:
-        history_msgs.append({"role": msg["role"], "content": msg["content"]})
+    for msg in state.get("session_context", [])[-5:]:
+        history_msgs.append({"role": msg["role"], "content": msg["content"][:500]})
 
     user_msg = (
         f"CLASSIFICATION:\n"
