@@ -551,6 +551,162 @@ def _fetch_law_metadata(ver_id: str) -> dict:
     }
 
 
+def _apply_law_metadata(db: Session, law: Law, doc: dict):
+    """Apply metadata from the document to the Law record and mark is_current."""
+    title = doc.get("title") or law.title
+    law_number, law_year = _extract_law_number_and_year(title)
+    law.title = title
+    law.law_number = law_number
+    law.law_year = law_year
+    law.document_type = KIND_MAP.get(doc.get("kind", ""), "other")
+    law.description = doc.get("description") or law.description
+    law.keywords = doc.get("keywords") or law.keywords
+    law.issuer = ", ".join(doc.get("issuer") or []) or law.issuer
+    law.source_url = doc.get("source") or law.source_url
+
+    # Mark the newest-dated version as current
+    all_db_versions = (
+        db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+    )
+    if all_db_versions:
+        dated = [(v, v.date_in_force) for v in all_db_versions if v.date_in_force]
+        for v in all_db_versions:
+            v.is_current = False
+        if dated:
+            dated.sort(key=lambda x: x[1], reverse=True)
+            dated[0][0].is_current = True
+        else:
+            all_db_versions[0].is_current = True
+
+    # Auto-detect law status
+    if not law.status_override:
+        law.status = detect_law_status(db, law)
+
+
+def import_law_smart(
+    db: Session,
+    ver_id: str,
+    primary_date: str | None = None,
+) -> dict:
+    """Import only the needed version + current version of a law.
+
+    Used by the Q&A pipeline for fast imports. Returns info needed to
+    schedule background import of remaining versions.
+
+    Commits internally — the transaction MUST be committed before any
+    background job is scheduled, so the background job's separate DB
+    session can see the committed versions.
+
+    Args:
+        db: Database session.
+        ver_id: The forma de baza ver_id from legislatie.just.ro.
+        primary_date: ISO date string (YYYY-MM-DD) for the version the user needs.
+                      If None, only the current version is imported.
+    """
+    global _stored_article_ids
+
+    logger.info(f"Smart import for ver_id={ver_id}, primary_date={primary_date}")
+
+    meta = _fetch_law_metadata(ver_id)
+    doc = meta["doc"]
+    history = meta["history"]
+    date_lookup = meta["date_lookup"]
+
+    # Build sorted list of (ver_id, date) for all versions with dates
+    dated_versions = [
+        (vid, d) for vid, d in date_lookup.items() if d is not None
+    ]
+    dated_versions.sort(key=lambda x: x[1])  # oldest first
+
+    # Identify the current version (newest dated)
+    current_vid = None
+    if dated_versions:
+        current_vid = dated_versions[-1][0]
+
+    # Identify the needed version (newest with date <= primary_date)
+    needed_vid = None
+    if primary_date and dated_versions:
+        pd = datetime.date.fromisoformat(primary_date)
+        candidates = [(vid, d) for vid, d in dated_versions if d <= pd]
+        if candidates:
+            needed_vid = candidates[-1][0]  # newest that fits
+        else:
+            # All versions are newer than primary_date — import the oldest
+            needed_vid = dated_versions[0][0]
+
+    # Deduplicate: if needed == current, or no needed, just import current
+    vids_to_import = set()
+    if current_vid:
+        vids_to_import.add(current_vid)
+    if needed_vid:
+        vids_to_import.add(needed_vid)
+    if not vids_to_import:
+        # No dated versions at all — import the forma de baza
+        vids_to_import.add(ver_id)
+
+    # Import the selected versions synchronously
+    law = None
+    for vid in vids_to_import:
+        _stored_article_ids = set()
+        law, _ = fetch_and_store_version(
+            db, vid, law=law,
+            override_date=date_lookup.get(vid),
+        )
+
+    # Apply metadata
+    _apply_law_metadata(db, law, doc)
+
+    # Create notification + audit log
+    notification = Notification(
+        title=f"Law imported: {law.title}",
+        message=(
+            f"Imported {len(vids_to_import)} version(s) of "
+            f"Legea {law.law_number}/{law.law_year} (remaining versions importing in background)"
+        ),
+        notification_type="law_update",
+    )
+    db.add(notification)
+
+    audit = AuditLog(
+        action="import_law",
+        module="legal_library",
+        details=(
+            f"Smart import: {law.title} — "
+            f"{len(vids_to_import)} sync, {len(date_lookup) - len(vids_to_import)} background"
+        ),
+    )
+    db.add(audit)
+
+    # MUST commit before background job starts (so its session sees these versions)
+    db.commit()
+
+    # Index imported versions into ChromaDB
+    try:
+        from app.services.chroma_service import index_law_version as chroma_index
+        all_db_versions = (
+            db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+        )
+        for v in all_db_versions:
+            chroma_index(db, law.id, v.id)
+    except Exception as e:
+        logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
+
+    _stored_article_ids = set()
+
+    # Build list of remaining ver_ids for background import
+    remaining = [vid for vid in date_lookup if vid not in vids_to_import]
+
+    return {
+        "law_id": law.id,
+        "title": law.title,
+        "law_number": law.law_number,
+        "law_year": law.law_year,
+        "versions_imported": len(vids_to_import),
+        "remaining_ver_ids": remaining,
+        "date_lookup": {k: v.isoformat() if v else None for k, v in date_lookup.items()},
+    }
+
+
 def import_law(
     db: Session,
     ver_id: str,
@@ -653,36 +809,7 @@ def import_law(
                     logger.error(f"Failed to import version {hist_ver_id}: {e}")
                     continue
 
-    # Apply metadata from the main page (it has the best-formatted info)
-    title = doc.get("title") or law.title
-    law_number, law_year = _extract_law_number_and_year(title)
-    law.title = title
-    law.law_number = law_number
-    law.law_year = law_year
-    law.document_type = KIND_MAP.get(doc.get("kind", ""), "other")
-    law.description = doc.get("description") or law.description
-    law.keywords = doc.get("keywords") or law.keywords
-    law.issuer = ", ".join(doc.get("issuer") or []) or law.issuer
-    law.source_url = doc.get("source") or law.source_url
-
-    # Mark the newest-dated version as current
-    all_db_versions = (
-        db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
-    )
-    if all_db_versions:
-        dated = [(v, v.date_in_force) for v in all_db_versions if v.date_in_force]
-        for v in all_db_versions:
-            v.is_current = False
-        if dated:
-            dated.sort(key=lambda x: x[1], reverse=True)
-            dated[0][0].is_current = True
-        else:
-            # No dates at all — mark the first imported as current
-            all_db_versions[0].is_current = True
-
-    # Auto-detect law status from the newest version
-    if not law.status_override:
-        law.status = detect_law_status(db, law)
+    _apply_law_metadata(db, law, doc)
 
     # Create notification
     notification = Notification(
