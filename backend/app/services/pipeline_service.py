@@ -512,6 +512,13 @@ def _step3_version_selection(state: dict, db: Session) -> dict:
     return state
 
 
+_ENTITY_KEYWORDS: dict[str, list[str]] = {
+    "SRL": ["raspundere limitata", "asociati", "parte sociala", "parti sociale"],
+    "SA": ["actiuni", "actionar", "societate pe actiuni", "capital social", "adunarea generala"],
+    "PFA": ["persoana fizica autorizata", "activitate independenta"],
+}
+
+
 # ---------------------------------------------------------------------------
 # Step 4: Hybrid Retrieval (BM25 + semantic)
 # ---------------------------------------------------------------------------
@@ -557,6 +564,30 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                 seen_ids.add(aid)
                 art["tier"] = tier_key
                 all_articles.append(art)
+
+    # Entity-aware targeted retrieval
+    entity_types = state.get("entity_types", [])
+    if entity_types:
+        # Get all version IDs from primary tier
+        primary_version_ids = []
+        for law in state.get("law_mapping", {}).get("tier1_primary", []):
+            key = f"{law['law_number']}/{law['law_year']}"
+            v = state.get("selected_versions", {}).get(key)
+            if v:
+                primary_version_ids.append(v["law_version_id"])
+
+        if primary_version_ids:
+            for entity in entity_types:
+                keywords = _ENTITY_KEYWORDS.get(entity.upper(), [])
+                for kw in keywords:
+                    entity_results = search_bm25(db, kw, primary_version_ids, limit=10)
+                    for art in entity_results:
+                        aid = art["article_id"]
+                        if aid not in seen_ids:
+                            seen_ids.add(aid)
+                            art["tier"] = "entity_targeted"
+                            art["source"] = f"entity:{entity}"
+                            all_articles.append(art)
 
     state["retrieved_articles_raw"] = all_articles
 
