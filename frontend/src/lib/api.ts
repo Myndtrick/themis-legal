@@ -231,6 +231,16 @@ export interface MissingLaw {
   reason: string;
 }
 
+export interface LawPreview {
+  law_number: string;
+  law_year: string;
+  title: string;
+  role: "PRIMARY" | "SECONDARY";
+  availability: "available" | "wrong_version" | "missing";
+  version_info: string | null;
+  reason?: string;
+}
+
 // --- Settings: Prompts types ---
 
 export interface PromptSummary {

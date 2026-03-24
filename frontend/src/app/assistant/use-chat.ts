@@ -5,7 +5,7 @@ import {
   api,
   type ChatMessage,
   type ChatSession,
-  type MissingLaw,
+  type LawPreview,
   type StructuredAnswer,
 } from "@/lib/api";
 import { streamChat, streamResume, type SSEHandlers } from "@/lib/use-event-source";
@@ -21,7 +21,7 @@ export interface StepProgress {
 export interface PauseData {
   run_id: string;
   message: string;
-  missing_laws: MissingLaw[];
+  laws: LawPreview[];
 }
 
 export function useChat() {

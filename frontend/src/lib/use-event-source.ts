@@ -5,7 +5,7 @@
  * Parses the SSE protocol: "event: <type>\ndata: <json>\n\n"
  */
 
-import type { StructuredAnswer } from "@/lib/api";
+import type { LawPreview, StructuredAnswer } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -21,12 +21,7 @@ export interface SSEHandlers {
   onPause?: (data: {
     run_id: string;
     message: string;
-    missing_laws: Array<{
-      law_number: string;
-      law_year: number;
-      title: string;
-      reason: string;
-    }>;
+    laws: LawPreview[];
   }) => void;
   onDone?: (data: {
     content: string;
@@ -38,12 +33,7 @@ export interface SSEHandlers {
     flags: string[];
     reasoning: Record<string, unknown>;
     clarification_type?: "missing_context" | "missing_law";
-    missing_laws?: Array<{
-      law_number: string;
-      law_year: number;
-      title: string;
-      reason: string;
-    }>;
+    missing_laws?: LawPreview[];
   }) => void;
   onError?: (error: string) => void;
 }
