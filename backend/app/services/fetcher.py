@@ -1,10 +1,13 @@
 """Custom fetcher that wraps leropa with proper HTTP headers."""
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 from leropa.parser import document_info
 from leropa.parser.document_info import DocumentType
@@ -161,3 +164,24 @@ def fetch_document(
                 pass  # Fall through — caller will handle empty content
 
     return result
+
+
+def search_legislatie(law_number: str, law_year: str) -> str | None:
+    """Search legislatie.just.ro for a law by number/year, return ver_id if found."""
+    search_url = "https://legislatie.just.ro/Public/RezultateCautare"
+    params = {
+        "numar": law_number,
+        "an": law_year,
+    }
+
+    try:
+        resp = requests.get(search_url, params=params, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        # Extract ver_id from result page links (DetaliiDocument or DetaliiDocumentAfis)
+        matches = re.findall(r'/Public/DetaliiDocument(?:Afis)?/(\d+)', resp.text)
+        if matches:
+            return matches[0]
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to search legislatie.just.ro for {law_number}/{law_year}: {e}")
+        return None
