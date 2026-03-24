@@ -10,7 +10,7 @@ Steps:
   3. Version Selection (DB query)
   4. Hybrid Retrieval (BM25 + semantic)
   5. Article Expansion (neighbors + cross-refs)
-  6. Reranking (local cross-encoder)
+  6. Article Selection (Claude-based, with local reranker fallback)
   7. Answer Generation (RAG + Claude streaming)
 """
 
@@ -156,11 +156,11 @@ def run_pipeline(
             "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 6: Reranking (local cross-encoder)
-        yield _step_event(6, "reranking", "running")
+        # Step 6: Article Selection (Claude-based)
+        yield _step_event(6, "article_selection", "running")
         t0 = time.time()
-        state = _step6_rerank(state, db)
-        yield _step_event(6, "reranking", "done", {
+        state = _step6_select_articles(state, db)
+        yield _step_event(6, "article_selection", "done", {
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
@@ -248,11 +248,11 @@ def resume_pipeline(
             "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 6: Reranking
-        yield _step_event(6, "reranking", "running")
+        # Step 6: Article Selection (Claude-based)
+        yield _step_event(6, "article_selection", "running")
         t0 = time.time()
-        state = _step6_rerank(state, db)
-        yield _step_event(6, "reranking", "done", {
+        state = _step6_select_articles(state, db)
+        yield _step_event(6, "article_selection", "done", {
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
@@ -618,28 +618,129 @@ def _step5_expand(state: dict, db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Reranking (local cross-encoder)
+# Step 6: Article Selection (Claude-based, with local reranker fallback)
 # ---------------------------------------------------------------------------
 
 
-def _step6_rerank(state: dict, db: Session) -> dict:
-    """Rerank articles using local cross-encoder."""
+def _step6_select_articles(state: dict, db: Session) -> dict:
+    """Use Claude to select relevant articles from the candidate set.
+    Falls back to local cross-encoder reranker if Claude call fails.
+    """
+    t0 = time.time()
+    raw = state.get("retrieved_articles_raw", [])
+
+    if not raw:
+        state["retrieved_articles"] = []
+        log_step(db, state["run_id"], "article_selection", 6, "done", 0,
+                 output_summary="No articles to select from")
+        return state
+
+    # Build compact article summaries for Claude
+    article_summaries = []
+    for art in raw:
+        text_preview = art.get("text", "")[:500]
+        summary = (
+            f"[ID:{art['article_id']}] Art. {art.get('article_number', '?')}, "
+            f"Legea {art.get('law_number', '?')}/{art.get('law_year', '?')} — "
+            f"{text_preview}"
+        )
+        article_summaries.append(summary)
+
+    articles_block = "\n\n".join(article_summaries)
+
+    # Build the user message with question context
+    entity_types = state.get("entity_types", [])
+    legal_topic = state.get("legal_topic", "")
+
+    user_msg = (
+        f"QUESTION: {state['question']}\n"
+    )
+    if entity_types:
+        user_msg += f"ENTITY TYPES: {', '.join(entity_types)}\n"
+    if legal_topic:
+        user_msg += f"LEGAL TOPIC: {legal_topic}\n"
+    user_msg += f"\nCANDIDATE ARTICLES ({len(raw)} total):\n\n{articles_block}"
+
+    # Load the article selector prompt
+    prompt_text, prompt_ver = load_prompt("LA-S6", db)
+
+    try:
+        result = call_claude(
+            system=prompt_text,
+            messages=[{"role": "user", "content": user_msg}],
+            max_tokens=1024,
+            temperature=0.0,
+        )
+        content = result["content"]
+
+        # Parse JSON response
+        import json as _json
+        # Strip markdown code fences if present
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        parsed = _json.loads(cleaned)
+        selected_ids = set(parsed.get("selected_ids", []))
+        selection_reasoning = parsed.get("reasoning", "")
+
+        # Filter articles to only those selected by Claude
+        selected = [art for art in raw if art["article_id"] in selected_ids]
+
+        # If Claude selected nothing useful, fall back
+        if not selected:
+            logger.warning("Claude selected 0 articles — falling back to reranker")
+            return _step6_rerank_fallback(state, db, t0)
+
+        # Add a score based on selection order (all selected are equally relevant)
+        for i, art in enumerate(selected):
+            art["reranker_score"] = 1.0 - (i * 0.01)  # Preserve order, all positive
+
+        state["retrieved_articles"] = selected
+
+        duration = time.time() - t0
+        log_step(
+            db, state["run_id"], "article_selection", 6, "done", duration,
+            output_summary=f"Claude selected {len(selected)} from {len(raw)} articles",
+            output_data={
+                "top_articles": [
+                    {"article_number": a.get("article_number"), "law": f"{a.get('law_number')}/{a.get('law_year')}"}
+                    for a in selected[:10]
+                ],
+                "selection_reasoning": selection_reasoning,
+                "prompt_version": prompt_ver,
+                "claude_tokens_in": result.get("tokens_in", 0),
+                "claude_tokens_out": result.get("tokens_out", 0),
+            },
+        )
+        return state
+
+    except Exception as e:
+        logger.warning(f"Claude article selection failed: {e} — falling back to reranker")
+        return _step6_rerank_fallback(state, db, t0)
+
+
+def _step6_rerank_fallback(state: dict, db: Session, t0: float) -> dict:
+    """Fallback: use the local cross-encoder reranker."""
     from app.services.reranker_service import rerank_articles
 
-    t0 = time.time()
     raw = state.get("retrieved_articles_raw", [])
     ranked = rerank_articles(state["question"], raw, top_k=25)
     state["retrieved_articles"] = ranked
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "reranking", 6, "done", duration,
-        output_summary=f"Reranked {len(raw)} -> top {len(ranked)} articles",
+        db, state["run_id"], "article_selection", 6, "done", duration,
+        output_summary=f"FALLBACK reranker: {len(raw)} -> top {len(ranked)} articles",
         output_data={"top_articles": [
             {"article_number": a.get("article_number"), "score": a.get("reranker_score", 0)}
             for a in ranked[:5]
         ]},
     )
+    state["flags"].append("Used local reranker fallback (Claude article selection failed)")
     return state
 
 
@@ -825,7 +926,7 @@ def _build_reasoning_panel(state: dict) -> dict:
         "step5_expansion": {
             "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
         },
-        "step6_reranking": {
+        "step6_selection": {
             "top_articles": [
                 {"article_number": a.get("article_number"), "score": round(a.get("reranker_score", 0), 3), "law": f"{a.get('law_number')}/{a.get('law_year')}"}
                 for a in state.get("retrieved_articles", [])[:10]
