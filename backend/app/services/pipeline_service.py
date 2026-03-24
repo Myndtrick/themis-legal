@@ -1200,149 +1200,29 @@ def _step5_5_exception_retrieval(state: dict, db: Session) -> dict:
 
 
 def _step6_select_articles(state: dict, db: Session) -> dict:
-    """Use Claude to select relevant articles from the candidate set.
-    Falls back to local cross-encoder reranker if Claude call fails.
-    """
+    """Select top articles using local cross-encoder reranker."""
+    from app.services.reranker_service import rerank_articles
+
     t0 = time.time()
     raw = state.get("retrieved_articles_raw", [])
-
     if not raw:
         state["retrieved_articles"] = []
         log_step(db, state["run_id"], "article_selection", 6, "done", 0,
                  output_summary="No articles to select from")
         return state
 
-    # Build compact article summaries for Claude
-    article_summaries = []
-    for art in raw:
-        full_text = art.get("text", "")
-        text_preview = full_text[:1500]
-        if len(full_text) > 1500:
-            text_preview += f" [...truncated, full text: {len(full_text)} chars]"
-        abrogated_prefix = "[ABROGATED] " if art.get("is_abrogated") else ""
-        summary = (
-            f"{abrogated_prefix}[ID:{art['article_id']}] Art. {art.get('article_number', '?')}, "
-            f"Legea {art.get('law_number', '?')}/{art.get('law_year', '?')} — "
-            f"{text_preview}"
-        )
-        article_summaries.append(summary)
-
-    articles_block = "\n\n".join(article_summaries)
-
-    # Build the user message with question context
-    entity_types = state.get("entity_types", [])
-    legal_topic = state.get("legal_topic", "")
-
-    user_msg = (
-        f"QUESTION: {state['question']}\n"
-    )
-    if entity_types:
-        user_msg += f"ENTITY TYPES: {', '.join(entity_types)}\n"
-    if legal_topic:
-        user_msg += f"LEGAL TOPIC: {legal_topic}\n"
-    user_msg += f"\nCANDIDATE ARTICLES ({len(raw)} total):\n\n{articles_block}"
-
-    # Load the article selector prompt
-    prompt_text, prompt_ver = load_prompt("LA-S6", db)
-
-    try:
-        result = call_claude(
-            system=prompt_text,
-            messages=[{"role": "user", "content": user_msg}],
-            max_tokens=1024,
-            temperature=0.0,
-        )
-        content = result["content"]
-
-        # Parse JSON response
-        import json as _json
-        # Strip markdown code fences if present
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = "\n".join(cleaned.split("\n")[1:])
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-
-        parsed = _json.loads(cleaned)
-        selected_ids = set(parsed.get("selected_ids", []))
-        selection_reasoning = parsed.get("reasoning", "")
-
-        # Filter articles to only those selected by Claude
-        selected = [art for art in raw if art["article_id"] in selected_ids]
-
-        # If Claude selected nothing useful, fall back
-        if not selected:
-            logger.warning("Claude selected 0 articles — falling back to reranker")
-            return _step6_rerank_fallback(state, db, t0)
-
-        # Add a score based on selection order (all selected are equally relevant)
-        for i, art in enumerate(selected):
-            art["reranker_score"] = 1.0 - (i * 0.01)  # Preserve order, all positive
-
-        state["retrieved_articles"] = selected
-
-        # Build dropped articles list
-        selected_id_set = {a["article_id"] for a in selected}
-        dropped = [a for a in raw if a["article_id"] not in selected_id_set]
-
-        duration = time.time() - t0
-        log_step(
-            db, state["run_id"], "article_selection", 6, "done", duration,
-            output_summary=f"Claude selected {len(selected)} from {len(raw)} articles",
-            output_data={
-                "method": "claude",
-                "kept_articles": [
-                    {
-                        "article_id": a["article_id"],
-                        "article_number": a.get("article_number"),
-                        "law": f"{a.get('law_number')}/{a.get('law_year')}",
-                        "score": round(a.get("reranker_score", 0), 3),
-                    }
-                    for a in selected
-                ],
-                "dropped_count": len(dropped),
-                "dropped_articles": [
-                    {
-                        "article_id": a["article_id"],
-                        "article_number": a.get("article_number"),
-                        "law": f"{a.get('law_number')}/{a.get('law_year')}",
-                    }
-                    for a in dropped[:20]  # Cap at 20 to avoid huge logs
-                ],
-                "selection_reasoning": selection_reasoning,
-                "fallback_used": False,
-                "prompt_version": prompt_ver,
-                "claude_tokens_in": result.get("tokens_in", 0),
-                "claude_tokens_out": result.get("tokens_out", 0),
-                "total_candidates": len(raw),
-            },
-        )
-        return state
-
-    except Exception as e:
-        logger.warning(f"Claude article selection failed: {e} — falling back to reranker")
-        return _step6_rerank_fallback(state, db, t0)
-
-
-def _step6_rerank_fallback(state: dict, db: Session, t0: float) -> dict:
-    """Fallback: use the local cross-encoder reranker."""
-    from app.services.reranker_service import rerank_articles
-
-    raw = state.get("retrieved_articles_raw", [])
-    ranked = rerank_articles(state["question"], raw, top_k=25)
+    ranked = rerank_articles(state["question"], raw, top_k=20)
     state["retrieved_articles"] = ranked
 
-    # Build dropped articles list (those not in top_k)
     kept_ids = {a["article_id"] for a in ranked}
     dropped = [a for a in raw if a["article_id"] not in kept_ids]
 
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "article_selection", 6, "done", duration,
-        output_summary=f"FALLBACK reranker: {len(raw)} -> top {len(ranked)} articles",
+        output_summary=f"Reranker: {len(raw)} -> top {len(ranked)} articles",
         output_data={
-            "method": "fallback_reranker",
+            "method": "reranker",
             "kept_articles": [
                 {
                     "article_id": a["article_id"],
@@ -1353,22 +1233,9 @@ def _step6_rerank_fallback(state: dict, db: Session, t0: float) -> dict:
                 for a in ranked
             ],
             "dropped_count": len(dropped),
-            "dropped_articles": [
-                {
-                    "article_id": a["article_id"],
-                    "article_number": a.get("article_number"),
-                    "law": f"{a.get('law_number')}/{a.get('law_year')}",
-                    "score": round(a.get("reranker_score", 0), 3),
-                }
-                for a in dropped[:20]
-            ],
-            "fallback_used": True,
-            "fallback_reason": "Claude article selection failed",
             "total_candidates": len(raw),
         },
-        warnings=["Used local reranker fallback (Claude article selection failed)"],
     )
-    state["flags"].append("Used local reranker fallback (Claude article selection failed)")
     return state
 
 
