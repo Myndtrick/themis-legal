@@ -37,8 +37,8 @@ def rerank_articles(
 
     model = get_reranker()
 
-    # Build pairs — truncate long articles to 512 chars for the cross-encoder
-    pairs = [(question, art["text"][:512]) for art in articles]
+    # Build pairs — let tokenizer handle length limits
+    pairs = [(question, art["text"]) for art in articles]
 
     scores = model.predict(pairs)
 
