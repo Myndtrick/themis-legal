@@ -430,12 +430,21 @@ def _step_event(
 def _step1_issue_classification(state: dict, db: Session) -> dict:
     prompt_text, prompt_ver = load_prompt("LA-S1", db)
 
+    from app.models.law import Law as LawModel
+    available_laws = db.query(LawModel).limit(50).all()
+    laws_list = "\n".join(
+        f"- {l.law_number}/{l.law_year}: {l.title}" for l in available_laws
+    )
+    library_context = f"\n\nLAWS CURRENTLY IN LEGAL LIBRARY:\n{laws_list}" if available_laws else ""
+
     context_msg = state["question"]
     if state["session_context"]:
         history = "\n".join(
             f"[{m['role']}]: {m['content'][:500]}" for m in state["session_context"][-5:]
         )
         context_msg = f"CONVERSATION HISTORY:\n{history}\n\nCURRENT QUESTION:\n{state['question']}"
+
+    context_msg += library_context
 
     result = call_claude(
         system=prompt_text,
@@ -460,6 +469,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
             "sub_issues": [],
             "classification_confidence": "LOW",
             "reasoning": "Failed to parse classification response",
+            "applicable_laws": [],
         }
 
     state["question_type"] = parsed.get("question_type", "A")
@@ -469,7 +479,20 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["sub_issues"] = parsed.get("sub_issues", [])
     state["legal_topic"] = parsed.get("legal_topic", "")
     state["entity_types"] = parsed.get("entity_types", [])
-    state["secondary_domain"] = parsed.get("secondary_domain")
+    state["applicable_laws"] = parsed.get("applicable_laws", [])
+
+    # Validate applicable_laws entries
+    valid_laws = []
+    for law_entry in state["applicable_laws"]:
+        if not law_entry.get("law_number") or not law_entry.get("law_year"):
+            state["flags"].append(f"Skipping malformed law entry: {law_entry}")
+            continue
+        law_entry["law_number"] = str(law_entry["law_number"])
+        law_entry["law_year"] = str(law_entry["law_year"])
+        if law_entry.get("role") not in ("PRIMARY", "SECONDARY"):
+            law_entry["role"] = "SECONDARY"
+        valid_laws.append(law_entry)
+    state["applicable_laws"] = valid_laws
 
     # Default to today — will be overridden by Step 1b date extraction
     state["primary_date"] = state["today"]
