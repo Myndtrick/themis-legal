@@ -123,6 +123,14 @@ def run_pipeline(
             "entity_types": state.get("entity_types", []),
         }, time.time() - t0)
 
+        # Step 1b: Date Extraction (Claude)
+        yield _step_event(15, "date_extraction", "running")
+        t0 = time.time()
+        state = _step1b_date_extraction(state, db)
+        yield _step_event(15, "date_extraction", "done", {
+            "primary_date": state.get("primary_date"),
+        }, time.time() - t0)
+
         # Step 2: Law Mapping (rule-based, no Claude)
         yield _step_event(2, "law_mapping", "running")
         t0 = time.time()
@@ -131,6 +139,56 @@ def run_pipeline(
             "candidate_laws": state.get("candidate_laws"),
             "coverage_status": state.get("coverage_status"),
         }, time.time() - t0)
+
+        # Step 2.5: Early Relevance Gate — check if primary laws exist
+        yield _step_event(25, "early_relevance_gate", "running")
+        t0 = time.time()
+        gate_result = _step2_5_early_relevance_gate(state, db)
+        gate_duration = time.time() - t0
+        if gate_result:
+            # Log the gate decision before short-circuiting
+            candidate_laws = state.get("candidate_laws", [])
+            primary_laws = [c for c in candidate_laws if c.get("tier") == "tier1_primary"]
+            missing_primary = [c for c in primary_laws if not c.get("db_law_id")]
+            log_step(
+                db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
+                output_summary=f"Gate triggered: pipeline short-circuited ({gate_result.get('mode', 'unknown')})",
+                output_data={
+                    "gate_triggered": True,
+                    "trigger_reason": gate_result.get("mode", "unknown"),
+                    "primary_laws_total": len(primary_laws),
+                    "primary_laws_missing": len(missing_primary),
+                    "missing_laws": [
+                        {"law_number": l["law_number"], "law_year": l["law_year"],
+                         "reason": l.get("reason", "")}
+                        for l in missing_primary
+                    ],
+                    "clarification_round": _count_clarification_rounds(state.get("session_context", [])),
+                },
+                warnings=["Pipeline stopped early — insufficient law coverage"],
+            )
+            yield _step_event(25, "early_relevance_gate", "done", {
+                "gate_triggered": True,
+                "reason": gate_result.get("mode", "unknown"),
+            }, gate_duration)
+            # Pipeline short-circuits: yield the gate result and stop
+            complete_run(db, run_id, "clarification", None, state.get("flags"))
+            db.commit()
+            yield gate_result
+            return
+        else:
+            log_step(
+                db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
+                output_summary="Gate passed — pipeline continues",
+                output_data={
+                    "gate_triggered": False,
+                    "primary_laws_total": len([c for c in state.get("candidate_laws", []) if c.get("tier") == "tier1_primary"]),
+                    "primary_laws_in_db": len([c for c in state.get("candidate_laws", []) if c.get("tier") == "tier1_primary" and c.get("db_law_id")]),
+                },
+            )
+            yield _step_event(25, "early_relevance_gate", "done", {
+                "gate_triggered": False,
+            }, gate_duration)
 
         # Step 3: Version Selection (DB query)
         yield _step_event(3, "version_selection", "running")
@@ -151,9 +209,21 @@ def run_pipeline(
         # Step 5: Article Expansion (neighbors + cross-refs)
         yield _step_event(5, "expansion", "running")
         t0 = time.time()
+        before_expansion = len(state.get("retrieved_articles_raw", []))
         state = _step5_expand(state, db)
         yield _step_event(5, "expansion", "done", {
+            "articles_before": before_expansion,
             "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+        }, time.time() - t0)
+
+        # Step 5.5: Exception Retrieval
+        yield _step_event(55, "exception_retrieval", "running")
+        t0 = time.time()
+        before_exceptions = len(state.get("retrieved_articles_raw", []))
+        state = _step5_5_exception_retrieval(state, db)
+        exceptions_added = len(state.get("retrieved_articles_raw", [])) - before_exceptions
+        yield _step_event(55, "exception_retrieval", "done", {
+            "exceptions_added": exceptions_added,
         }, time.time() - t0)
 
         # Step 6: Article Selection (Claude-based)
@@ -164,12 +234,28 @@ def run_pipeline(
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
+        # Step 6.5: Late Relevance Gate — check if selected articles match the question
+        gate_events, gate_result = _step6_5_relevance_gate(state, db)
+        for evt in gate_events:
+            yield evt
+        if gate_result:
+            complete_run(db, run_id, "clarification", None, state.get("flags"))
+            db.commit()
+            yield gate_result
+            return
+
         # Step 7: Answer Generation (Claude streaming)
-        yield _step_event(7, "answer_generation", "running")
+        yield _step_event(8, "answer_generation", "running")
         t0 = time.time()
         for event in _step7_answer_generation(state, db):
             yield event
-        yield _step_event(7, "answer_generation", "done", duration=time.time() - t0)
+        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+
+        # Step 7.5: Citation Validation (code-based, no Claude)
+        yield _step_event(85, "citation_validation", "running")
+        t0 = time.time()
+        state = _step7_5_citation_validation(state, db)
+        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
         # Finalize
         complete_run(db, run_id, "ok", state.get("confidence"), state.get("flags"))
@@ -243,9 +329,21 @@ def resume_pipeline(
         # Step 5: Article Expansion
         yield _step_event(5, "expansion", "running")
         t0 = time.time()
+        before_expansion = len(state.get("retrieved_articles_raw", []))
         state = _step5_expand(state, db)
         yield _step_event(5, "expansion", "done", {
+            "articles_before": before_expansion,
             "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+        }, time.time() - t0)
+
+        # Step 5.5: Exception Retrieval
+        yield _step_event(55, "exception_retrieval", "running")
+        t0 = time.time()
+        before_exceptions = len(state.get("retrieved_articles_raw", []))
+        state = _step5_5_exception_retrieval(state, db)
+        exceptions_added = len(state.get("retrieved_articles_raw", [])) - before_exceptions
+        yield _step_event(55, "exception_retrieval", "done", {
+            "exceptions_added": exceptions_added,
         }, time.time() - t0)
 
         # Step 6: Article Selection (Claude-based)
@@ -256,12 +354,28 @@ def resume_pipeline(
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
+        # Step 6.5: Late Relevance Gate
+        gate_events, gate_result = _step6_5_relevance_gate(state, db)
+        for evt in gate_events:
+            yield evt
+        if gate_result:
+            complete_run(db, run_id, "clarification", None, state.get("flags"))
+            db.commit()
+            yield gate_result
+            return
+
         # Step 7: Answer Generation
-        yield _step_event(7, "answer_generation", "running")
+        yield _step_event(8, "answer_generation", "running")
         t0 = time.time()
         for event in _step7_answer_generation(state, db):
             yield event
-        yield _step_event(7, "answer_generation", "done", duration=time.time() - t0)
+        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+
+        # Step 7.5: Citation Validation
+        yield _step_event(85, "citation_validation", "running")
+        t0 = time.time()
+        state = _step7_5_citation_validation(state, db)
+        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
         status = "ok" if not state.get("is_partial") else "partial"
         complete_run(db, run_id, status, state.get("confidence"), state.get("flags"))
@@ -356,7 +470,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["legal_topic"] = parsed.get("legal_topic", "")
     state["entity_types"] = parsed.get("entity_types", [])
 
-    # Use today as the primary date (date extraction removed as separate step)
+    # Default to today — will be overridden by Step 1b date extraction
     state["primary_date"] = state["today"]
 
     update_run_mode(db, state["run_id"], state["output_mode"])
@@ -367,6 +481,60 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
         prompt_id="LA-S1", prompt_version=prompt_ver,
         input_summary=state["question"][:200],
         output_summary=f"Type={state['question_type']}, Domain={state['legal_domain']}, Mode={state['output_mode']}",
+        output_data=parsed,
+        confidence=parsed.get("classification_confidence"),
+    )
+
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Step 1b: Date Extraction (Claude)
+# ---------------------------------------------------------------------------
+
+
+def _step1b_date_extraction(state: dict, db: Session) -> dict:
+    """Extract temporal context from the question using Claude."""
+    prompt_text, prompt_ver = load_prompt("LA-S2", db)
+
+    user_msg = (
+        f"Today's date: {state['today']}\n\n"
+        f"QUESTION: {state['question']}"
+    )
+
+    result = call_claude(
+        system=prompt_text,
+        messages=[{"role": "user", "content": user_msg}],
+        max_tokens=512,
+    )
+
+    log_api_call(
+        db, state["run_id"], "date_extraction",
+        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
+    )
+
+    parsed = _extract_json(result["content"])
+
+    if parsed and parsed.get("primary_date"):
+        state["primary_date"] = parsed["primary_date"]
+        state["date_logic"] = parsed.get("date_logic", "")
+        state["dates_found"] = parsed.get("dates_found", [])
+
+        if parsed.get("needs_clarification"):
+            state["flags"].append(
+                f"Date ambiguous: {parsed.get('date_logic', 'unclear temporal context')} "
+                f"— using {state['primary_date']} as best estimate"
+            )
+    else:
+        # Fallback: keep today's date (already set in Step 1)
+        state["flags"].append("No specific date detected — using current law versions")
+
+    log_step(
+        db, state["run_id"], "date_extraction", 15, "done",
+        result["duration"],
+        prompt_id="LA-S2", prompt_version=prompt_ver,
+        input_summary=state["question"][:200],
+        output_summary=f"primary_date={state.get('primary_date')}",
         output_data=parsed,
     )
 
@@ -430,9 +598,242 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
     log_step(
         db, state["run_id"], "law_mapping", 2, "done", duration,
         output_summary=f"Mapped {len(candidate_laws)} laws ({sum(1 for c in candidate_laws if c['db_law_id'])} in DB)",
-        output_data={"mapping": mapping, "coverage": coverage},
+        output_data={
+            "mapping": mapping,
+            "coverage": coverage,
+            "candidate_laws": candidate_laws,
+            "missing_laws": [
+                {"law_number": l["law_number"], "law_year": l["law_year"],
+                 "title": l.get("title", ""), "reason": l.get("reason", ""), "tier": l["tier"]}
+                for l in candidate_laws if not l.get("db_law_id")
+            ],
+        },
     )
     return state
+
+
+# ---------------------------------------------------------------------------
+# Step 2.5: Early Relevance Gate
+# ---------------------------------------------------------------------------
+
+
+def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
+    """Check if the primary laws needed for this question exist in the database.
+
+    Returns None if the pipeline should continue, or a 'done' event dict
+    if the pipeline should short-circuit with a clarification/import message.
+    """
+    candidate_laws = state.get("candidate_laws", [])
+    primary_laws = [c for c in candidate_laws if c.get("tier") == "tier1_primary"]
+    missing_primary = [c for c in primary_laws if not c.get("db_law_id")]
+    has_any_primary_in_db = any(c.get("db_law_id") for c in primary_laws)
+
+    # Count how many clarification rounds have happened in this session
+    clarification_round = _count_clarification_rounds(state.get("session_context", []))
+
+    if not primary_laws:
+        # Domain mapped to nothing (e.g., "other") — no laws identified at all
+        if clarification_round >= 1:
+            # Already asked once — don't loop. Suggest import or give up.
+            return _build_cannot_answer_event(state, missing_primary)
+
+        clarification = _generate_clarification_question(state, db)
+        if clarification:
+            return {
+                "type": "done",
+                "run_id": state["run_id"],
+                "content": clarification["clarification_question"],
+                "structured": None,
+                "mode": "clarification",
+                "output_mode": "clarification",
+                "confidence": "LOW",
+                "flags": state.get("flags", []),
+                "reasoning": _build_reasoning_panel(state),
+                "clarification_type": "missing_context",
+                "missing_laws": [],
+            }
+
+    elif missing_primary and not has_any_primary_in_db:
+        # ALL primary laws are missing — refuse and suggest import
+        return _build_needs_import_event(state, missing_primary)
+
+    elif missing_primary:
+        # SOME primary laws missing — flag but continue (partial coverage)
+        state["flags"].append(
+            "Partial coverage: some primary laws are not in the Legal Library"
+        )
+
+    return None
+
+
+def _count_clarification_rounds(session_context: list[dict]) -> int:
+    """Count how many clarification rounds have happened in this session.
+
+    Looks for assistant messages that were clarification/needs_import responses.
+    Uses multiple signals since the mode field may not be preserved in stored messages.
+    """
+    count = 0
+    for msg in session_context[-10:]:
+        if msg.get("role") == "assistant":
+            mode = msg.get("mode", "")
+            content = msg.get("content", "")
+            # Check mode field if available
+            if mode in ("clarification", "needs_import"):
+                count += 1
+            # Heuristic: assistant messages that end with "?" and are under 600 chars
+            # are likely clarification questions (not full legal answers)
+            elif content.strip().endswith("?") and len(content) < 600:
+                count += 1
+    return count
+
+
+def _generate_clarification_question(state: dict, db: Session) -> dict | None:
+    """Use Claude to generate a targeted follow-up question."""
+    try:
+        prompt_text, _ = load_prompt("LA-S2.5", db)
+    except ValueError:
+        # Prompt not yet seeded — use a simple fallback
+        return {
+            "clarification_question": (
+                "Nu am putut identifica legea relevantă pentru întrebarea dumneavoastră. "
+                "Puteți preciza despre ce lege sau domeniu juridic este vorba?"
+            ),
+            "reasoning": "Fallback — LA-S2.5 prompt not available",
+        }
+
+    # Build context about what laws are available
+    from app.models.law import Law
+    available_laws = db.query(Law).limit(20).all()
+    available_list = ", ".join(f"{l.title} ({l.law_number}/{l.law_year})" for l in available_laws)
+
+    user_msg = (
+        f"USER QUESTION: {state['question']}\n"
+        f"CLASSIFIED DOMAIN: {state.get('legal_domain', 'other')}\n"
+        f"AVAILABLE LAWS IN LIBRARY: {available_list}\n"
+        f"MISSING LAWS: None identified\n"
+    )
+
+    result = call_claude(
+        system=prompt_text,
+        messages=[{"role": "user", "content": user_msg}],
+        max_tokens=512,
+    )
+
+    log_api_call(
+        db, state["run_id"], "clarification_generation",
+        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
+    )
+
+    parsed = _extract_json(result["content"])
+    return parsed
+
+
+def _identify_missing_laws_from_text(text: str, db: Session) -> list[dict]:
+    """Try to identify specific laws mentioned in text that aren't in the database.
+
+    Scans text for known law names (from legal_aliases) and checks if they're imported.
+    Returns a list of missing law dicts with law_number, law_year, title, reason.
+    """
+    from app.services.legal_aliases import ALIASES
+
+    text_lower = text.lower()
+    identified = []
+    seen_keys = set()
+
+    # Check all known aliases against the text
+    for alias_name, alias_entries in ALIASES.items():
+        if alias_name in text_lower:
+            for entry in alias_entries:
+                number_str = entry.get("number", "")
+                if not number_str or "-" not in number_str:
+                    continue
+                parts = number_str.split("-")
+                law_number, law_year = parts[0], parts[1]
+                key = f"{law_number}/{law_year}"
+
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                # Check if this law is in the database
+                existing = (
+                    db.query(Law)
+                    .filter(Law.law_number == law_number, Law.law_year == int(law_year))
+                    .first()
+                )
+                if not existing:
+                    identified.append({
+                        "law_number": law_number,
+                        "law_year": int(law_year),
+                        "title": alias_name.replace("_", " ").title(),
+                        "reason": f"Identified from relevance check: '{alias_name}'",
+                    })
+
+    return identified
+
+
+def _build_needs_import_event(state: dict, missing_laws: list[dict]) -> dict:
+    """Build a 'done' event that tells the frontend to offer law import."""
+    law_names = ", ".join(
+        f"{l.get('reason', '')} ({l['law_number']}/{l['law_year']})"
+        for l in missing_laws
+    )
+    content = (
+        f"Nu pot răspunde corect la această întrebare deoarece nu am în biblioteca juridică "
+        f"legea necesară: {law_names}. "
+        f"Doriți să o importăm din legislatie.just.ro?"
+    )
+    return {
+        "type": "done",
+        "run_id": state["run_id"],
+        "content": content,
+        "structured": None,
+        "mode": "needs_import",
+        "output_mode": "needs_import",
+        "confidence": "LOW",
+        "flags": state.get("flags", []),
+        "reasoning": _build_reasoning_panel(state),
+        "clarification_type": "missing_law",
+        "missing_laws": [
+            {
+                "law_number": l["law_number"],
+                "law_year": l["law_year"],
+                "title": l.get("title", l.get("reason", "")),
+                "reason": l.get("reason", ""),
+            }
+            for l in missing_laws
+        ],
+    }
+
+
+def _build_cannot_answer_event(state: dict, missing_laws: list[dict]) -> dict:
+    """Build a 'done' event when we've exhausted clarification attempts."""
+    content = (
+        "Din păcate, nu am putut identifica legea relevantă pentru întrebarea dumneavoastră. "
+        "Vă rog să verificați dacă legea necesară este disponibilă în Biblioteca Juridică "
+        "sau să o importați de pe legislatie.just.ro."
+    )
+    return {
+        "type": "done",
+        "run_id": state["run_id"],
+        "content": content,
+        "structured": None,
+        "mode": "needs_import",
+        "output_mode": "needs_import",
+        "confidence": "LOW",
+        "flags": state.get("flags", []) + ["Exhausted clarification attempts"],
+        "reasoning": _build_reasoning_panel(state),
+        "clarification_type": "missing_law",
+        "missing_laws": [
+            {
+                "law_number": l["law_number"],
+                "law_year": l["law_year"],
+                "title": l.get("title", l.get("reason", "")),
+                "reason": l.get("reason", ""),
+            }
+            for l in missing_laws
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -502,11 +903,22 @@ def _step3_version_selection(state: dict, db: Session) -> dict:
     if version_notes:
         state["flags"].extend(version_notes)
 
+    # Build amendment flags: mark laws where the selected version is not current
+    amendment_flags = []
+    for key, v in selected_versions.items():
+        if not v.get("is_current"):
+            amendment_flags.append(f"{key}: using historical version from {v.get('date_in_force', 'unknown')}")
+
     log_step(
         db, state["run_id"], "version_selection", 3, "done",
         duration,
         output_summary=f"Selected {len(selected_versions)} law versions",
-        output_data={"selected_versions": selected_versions, "notes": version_notes},
+        output_data={
+            "selected_versions": selected_versions,
+            "notes": version_notes,
+            "amendment_flags": amendment_flags,
+            "primary_date": primary_date,
+        },
     )
 
     return state
@@ -531,6 +943,9 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     t0 = time.time()
     all_articles = []
     seen_ids = set()
+    bm25_count = 0
+    semantic_count = 0
+    duplicates_removed = 0
 
     tier_limits = {
         "tier1_primary": 30,
@@ -551,11 +966,13 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
 
         # BM25 search
         bm25_results = search_bm25(db, state["question"], version_ids, limit=n_results)
+        bm25_count += len(bm25_results)
 
         # Semantic search (ChromaDB)
         semantic_results = query_articles(
             state["question"], law_version_ids=version_ids, n_results=n_results
         )
+        semantic_count += len(semantic_results)
 
         # Merge and deduplicate
         for art in bm25_results + semantic_results:
@@ -564,8 +981,11 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                 seen_ids.add(aid)
                 art["tier"] = tier_key
                 all_articles.append(art)
+            else:
+                duplicates_removed += 1
 
     # Entity-aware targeted retrieval
+    entity_count = 0
     entity_types = state.get("entity_types", [])
     if entity_types:
         # Get all version IDs from primary tier
@@ -588,14 +1008,41 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                             art["tier"] = "entity_targeted"
                             art["source"] = f"entity:{entity}"
                             all_articles.append(art)
+                            entity_count += 1
+                        else:
+                            duplicates_removed += 1
 
     state["retrieved_articles_raw"] = all_articles
+
+    # Build top 10 articles by score for logging
+    def _article_score(art):
+        return art.get("reranker_score") or art.get("bm25_rank") or art.get("distance") or 0
+    sorted_for_log = sorted(all_articles, key=_article_score, reverse=True)
+    top_articles_log = [
+        {
+            "article_id": a["article_id"],
+            "article_number": a.get("article_number"),
+            "law": f"{a.get('law_number', '')}/{a.get('law_year', '')}",
+            "tier": a.get("tier"),
+            "source": a.get("source", "bm25" if a.get("bm25_rank") else "semantic"),
+            "bm25_rank": a.get("bm25_rank"),
+            "distance": round(a["distance"], 4) if a.get("distance") is not None else None,
+        }
+        for a in sorted_for_log[:10]
+    ]
 
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "hybrid_retrieval", 4, "done", duration,
-        output_summary=f"Retrieved {len(all_articles)} articles (BM25 + semantic)",
-        output_data={"article_count": len(all_articles)},
+        output_summary=f"Retrieved {len(all_articles)} articles (BM25: {bm25_count}, semantic: {semantic_count}, entity: {entity_count}, dupes removed: {duplicates_removed})",
+        output_data={
+            "article_count": len(all_articles),
+            "bm25_count": bm25_count,
+            "semantic_count": semantic_count,
+            "entity_count": entity_count,
+            "duplicates_removed": duplicates_removed,
+            "top_articles": top_articles_log,
+        },
     )
     return state
 
@@ -612,7 +1059,7 @@ def _step5_expand(state: dict, db: Session) -> dict:
 
     t0 = time.time()
     raw_ids = [a["article_id"] for a in state.get("retrieved_articles_raw", [])]
-    expanded_ids = expand_articles(db, raw_ids)
+    expanded_ids, expansion_details = expand_articles(db, raw_ids)
 
     existing_ids = {a["article_id"] for a in state["retrieved_articles_raw"]}
     new_ids = [aid for aid in expanded_ids if aid not in existing_ids]
@@ -630,6 +1077,7 @@ def _step5_expand(state: dict, db: Session) -> dict:
             state["retrieved_articles_raw"].append({
                 "article_id": art.id,
                 "article_number": art.article_number,
+                "law_version_id": version.id,
                 "law_number": law.law_number,
                 "law_year": str(law.law_year),
                 "law_title": law.title[:200],
@@ -644,6 +1092,76 @@ def _step5_expand(state: dict, db: Session) -> dict:
     log_step(
         db, state["run_id"], "expansion", 5, "done", duration,
         output_summary=f"Expanded: {len(raw_ids)} -> {len(raw_ids) + added} articles (+{added} from neighbors/cross-refs)",
+        output_data={
+            "articles_before": len(raw_ids),
+            "articles_after": len(raw_ids) + added,
+            "added": added,
+            "neighbors_added": expansion_details.get("neighbors_added", 0),
+            "crossrefs_added": expansion_details.get("crossrefs_added", 0),
+            "expansion_triggers": expansion_details.get("expansion_triggers", []),
+        },
+    )
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Step 5.5: Exception Retrieval
+# ---------------------------------------------------------------------------
+
+
+def _step5_5_exception_retrieval(state: dict, db: Session) -> dict:
+    """Expand retrieved articles with exception/exclusion articles."""
+    from app.services.article_expander import expand_with_exceptions
+    from app.models.law import Article as ArticleModel
+
+    t0 = time.time()
+    raw = state.get("retrieved_articles_raw", [])
+
+    if not raw:
+        return state
+
+    exception_ids, exception_details = expand_with_exceptions(db, raw)
+    existing_ids = {a["article_id"] for a in raw}
+    new_ids = [aid for aid in exception_ids if aid not in existing_ids]
+
+    added = 0
+    if new_ids:
+        for art in db.query(ArticleModel).filter(ArticleModel.id.in_(new_ids)).all():
+            law = art.law_version.law
+            version = art.law_version
+            text_parts = [art.full_text]
+            for note in art.amendment_notes:
+                if note.text and note.text.strip():
+                    text_parts.append(f"[Amendment: {note.text.strip()}]")
+
+            state["retrieved_articles_raw"].append({
+                "article_id": art.id,
+                "article_number": art.article_number,
+                "law_version_id": version.id,
+                "law_number": law.law_number,
+                "law_year": str(law.law_year),
+                "law_title": law.title[:200],
+                "date_in_force": str(version.date_in_force) if version.date_in_force else "",
+                "text": "\n".join(text_parts),
+                "source": "exception",
+                "tier": "exception",
+            })
+            added += 1
+
+    if added:
+        logger.info(f"Exception retrieval added {added} articles")
+
+    duration = time.time() - t0
+    log_step(
+        db, state["run_id"], "exception_retrieval", 55, "done", duration,
+        output_summary=f"Exception retrieval: +{added} articles (forward: {exception_details['forward_count']}, reverse: {exception_details['reverse_count']})",
+        output_data={
+            "added": added,
+            "forward_matches": exception_details.get("forward_matches", []),
+            "reverse_matches": exception_details.get("reverse_matches", []),
+            "forward_count": exception_details.get("forward_count", 0),
+            "reverse_count": exception_details.get("reverse_count", 0),
+        },
     )
     return state
 
@@ -732,19 +1250,40 @@ def _step6_select_articles(state: dict, db: Session) -> dict:
 
         state["retrieved_articles"] = selected
 
+        # Build dropped articles list
+        selected_id_set = {a["article_id"] for a in selected}
+        dropped = [a for a in raw if a["article_id"] not in selected_id_set]
+
         duration = time.time() - t0
         log_step(
             db, state["run_id"], "article_selection", 6, "done", duration,
             output_summary=f"Claude selected {len(selected)} from {len(raw)} articles",
             output_data={
-                "top_articles": [
-                    {"article_number": a.get("article_number"), "law": f"{a.get('law_number')}/{a.get('law_year')}"}
-                    for a in selected[:10]
+                "method": "claude",
+                "kept_articles": [
+                    {
+                        "article_id": a["article_id"],
+                        "article_number": a.get("article_number"),
+                        "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                        "score": round(a.get("reranker_score", 0), 3),
+                    }
+                    for a in selected
+                ],
+                "dropped_count": len(dropped),
+                "dropped_articles": [
+                    {
+                        "article_id": a["article_id"],
+                        "article_number": a.get("article_number"),
+                        "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                    }
+                    for a in dropped[:20]  # Cap at 20 to avoid huge logs
                 ],
                 "selection_reasoning": selection_reasoning,
+                "fallback_used": False,
                 "prompt_version": prompt_ver,
                 "claude_tokens_in": result.get("tokens_in", 0),
                 "claude_tokens_out": result.get("tokens_out", 0),
+                "total_candidates": len(raw),
             },
         )
         return state
@@ -762,17 +1301,226 @@ def _step6_rerank_fallback(state: dict, db: Session, t0: float) -> dict:
     ranked = rerank_articles(state["question"], raw, top_k=25)
     state["retrieved_articles"] = ranked
 
+    # Build dropped articles list (those not in top_k)
+    kept_ids = {a["article_id"] for a in ranked}
+    dropped = [a for a in raw if a["article_id"] not in kept_ids]
+
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "article_selection", 6, "done", duration,
         output_summary=f"FALLBACK reranker: {len(raw)} -> top {len(ranked)} articles",
-        output_data={"top_articles": [
-            {"article_number": a.get("article_number"), "score": a.get("reranker_score", 0)}
-            for a in ranked[:5]
-        ]},
+        output_data={
+            "method": "fallback_reranker",
+            "kept_articles": [
+                {
+                    "article_id": a["article_id"],
+                    "article_number": a.get("article_number"),
+                    "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                    "score": round(a.get("reranker_score", 0), 3),
+                }
+                for a in ranked
+            ],
+            "dropped_count": len(dropped),
+            "dropped_articles": [
+                {
+                    "article_id": a["article_id"],
+                    "article_number": a.get("article_number"),
+                    "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                    "score": round(a.get("reranker_score", 0), 3),
+                }
+                for a in dropped[:20]
+            ],
+            "fallback_used": True,
+            "fallback_reason": "Claude article selection failed",
+            "total_candidates": len(raw),
+        },
+        warnings=["Used local reranker fallback (Claude article selection failed)"],
     )
     state["flags"].append("Used local reranker fallback (Claude article selection failed)")
     return state
+
+
+# ---------------------------------------------------------------------------
+# Step 6.5: Late Relevance Gate
+# ---------------------------------------------------------------------------
+
+
+def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict | None]:
+    """Check if selected articles are actually relevant to the question's domain.
+
+    Returns (step_events, gate_result). gate_result is None to continue
+    the pipeline, or a 'done' event dict to short-circuit.
+    """
+    events: list[dict] = []
+    retrieved = state.get("retrieved_articles", [])
+
+    if not retrieved:
+        # No articles at all — will be handled by Step 7
+        return events, None
+
+    events.append(_step_event(7, "relevance_check", "running"))
+    t0 = time.time()
+
+    try:
+        prompt_text, prompt_ver = load_prompt("LA-S6.5", db)
+    except ValueError:
+        # Prompt not yet seeded — skip this gate
+        logger.warning("LA-S6.5 prompt not available, skipping relevance gate")
+        return events, None
+
+    # Build compact article context
+    articles_summary = []
+    for i, art in enumerate(retrieved[:15], 1):
+        articles_summary.append(
+            f"[{i}] Art. {art.get('article_number', '?')}, "
+            f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')}) — "
+            f"{art.get('text', '')[:300]}"
+        )
+
+    user_msg = (
+        f"QUESTION: {state['question']}\n"
+        f"CLASSIFIED DOMAIN: {state.get('legal_domain', 'other')}\n"
+        f"CORE ISSUE: {state.get('core_issue', '')}\n\n"
+        f"SELECTED ARTICLES ({len(retrieved)} total, showing first 15):\n\n"
+        + "\n\n".join(articles_summary)
+    )
+
+    result = call_claude(
+        system=prompt_text,
+        messages=[{"role": "user", "content": user_msg}],
+        max_tokens=512,
+        temperature=0.0,
+    )
+
+    log_api_call(
+        db, state["run_id"], "relevance_check",
+        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
+    )
+
+    parsed = _extract_json(result["content"])
+    duration = time.time() - t0
+
+    if not parsed:
+        logger.warning("Failed to parse relevance check response, continuing pipeline")
+        events.append(_step_event(7, "relevance_check", "done", {"skipped": True}, duration))
+        return events, None
+
+    relevance_score = parsed.get("relevance_score", 1.0)
+    state["relevance_score"] = relevance_score
+
+    events.append(_step_event(7, "relevance_check", "done", {
+        "relevance_score": relevance_score,
+        "domain_match": parsed.get("domain_match", True),
+        "missing_coverage": parsed.get("missing_coverage"),
+    }, duration))
+
+    # Determine if gate will trigger
+    gate_will_trigger = relevance_score < 0.3
+    gate_will_warn = 0.3 <= relevance_score < 0.6
+
+    log_step(
+        db, state["run_id"], "relevance_check", 7, "done", duration,
+        prompt_id="LA-S6.5", prompt_version=prompt_ver,
+        output_summary=f"Relevance score: {relevance_score}" + (" — GATE TRIGGERED" if gate_will_trigger else " — WARNING" if gate_will_warn else " — OK"),
+        output_data={
+            **parsed,
+            "gate_triggered": gate_will_trigger,
+            "gate_warning": gate_will_warn,
+            "decision_boundary": 0.3,
+            "warning_boundary": 0.6,
+        },
+        warnings=(
+            [f"Low relevance ({relevance_score}) — pipeline may short-circuit"]
+            if gate_will_trigger else
+            [f"Partial relevance ({relevance_score}) — answer may be incomplete"]
+            if gate_will_warn else None
+        ),
+    )
+
+    clarification_round = _count_clarification_rounds(state.get("session_context", []))
+
+    if relevance_score < 0.3:
+        # Articles are clearly wrong domain
+        missing_coverage = parsed.get("missing_coverage", "")
+        identified_missing = _identify_missing_laws_from_text(
+            missing_coverage + " " + (parsed.get("suggested_clarification") or ""),
+            db,
+        )
+
+        if identified_missing:
+            # We know which laws are needed → offer import
+            law_names = ", ".join(
+                f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})"
+                for l in identified_missing
+            )
+            content = (
+                f"Pentru a răspunde corect la această întrebare, am nevoie de articole din: "
+                f"{law_names}. "
+                f"Aceste legi nu sunt în biblioteca juridică. "
+                f"Doriți să le importați din legislatie.just.ro?"
+            )
+            return events, {
+                "type": "done",
+                "run_id": state["run_id"],
+                "content": content,
+                "structured": None,
+                "mode": "needs_import",
+                "output_mode": "needs_import",
+                "confidence": "LOW",
+                "flags": state.get("flags", []) + [
+                    f"Articles not relevant (score: {relevance_score}): {missing_coverage}"
+                ],
+                "reasoning": _build_reasoning_panel(state),
+                "clarification_type": "missing_law",
+                "missing_laws": [
+                    {
+                        "law_number": l["law_number"],
+                        "law_year": l["law_year"],
+                        "title": l.get("title", ""),
+                        "reason": l.get("reason", ""),
+                    }
+                    for l in identified_missing
+                ],
+            }
+
+        if clarification_round >= 1:
+            # Already asked once — don't ask again. Let the pipeline answer
+            # with what it has (the answer prompt will flag missing coverage).
+            state["flags"].append(
+                f"Low relevance (score: {relevance_score}) but proceeding after "
+                f"{clarification_round} clarification round(s): {missing_coverage}"
+            )
+            state["confidence"] = "MEDIUM"
+            return events, None
+
+        # First time, no specific laws identified — ask ONE clarification question
+        suggested = parsed.get("suggested_clarification")
+        if suggested:
+            return events, {
+                "type": "done",
+                "run_id": state["run_id"],
+                "content": suggested,
+                "structured": None,
+                "mode": "clarification",
+                "output_mode": "clarification",
+                "confidence": "LOW",
+                "flags": state.get("flags", []) + [
+                    f"Articles not relevant (score: {relevance_score}): {missing_coverage}"
+                ],
+                "reasoning": _build_reasoning_panel(state),
+                "clarification_type": "missing_context",
+                "missing_laws": [],
+            }
+
+    elif relevance_score < 0.6:
+        # Partial match — flag but continue
+        state["flags"].append(
+            f"Retrieved articles may not fully cover the question (relevance: {relevance_score})"
+        )
+        if state.get("confidence") != "LOW":
+            state["confidence"] = "MEDIUM"
+
+    return events, None
 
 
 # ---------------------------------------------------------------------------
@@ -796,17 +1544,12 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     # Use reranked articles from the pipeline (already in state["retrieved_articles"])
     retrieved = state.get("retrieved_articles", [])
 
-    # Fallback: if no articles from the pipeline, try a broad semantic search
+    # No fallback to broad semantic search — if structured retrieval found
+    # nothing relevant, we should not grab random articles from other laws.
+    # The answer prompt will handle the empty-articles case by refusing.
     if not retrieved:
-        retrieved = query_articles(
-            query_text=state["question"],
-            n_results=15,
-        )
-        if retrieved:
-            state["flags"].append(
-                "No articles from structured retrieval -- used broad semantic search as fallback"
-            )
-        state["retrieved_articles"] = retrieved
+        state["flags"].append("No relevant articles found in Legal Library")
+        state["confidence"] = "LOW"
 
     # Build the context for Claude
     articles_context = ""
@@ -918,14 +1661,174 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             state["confidence"] = "MEDIUM"
         state["is_partial"] = True
 
+    # Build output_data with answer details
+    answer_output_data = {
+        "articles_provided": len(retrieved),
+        "confidence": state.get("confidence"),
+        "is_partial": state.get("is_partial", False),
+        "output_mode": mode,
+    }
+    if structured:
+        # Extract sources info without the full answer text
+        sources = structured.get("sources", [])
+        answer_output_data["sources_count"] = len(sources)
+        answer_output_data["sources"] = [
+            {
+                "law": s.get("law", ""),
+                "article": s.get("article", ""),
+                "label": s.get("label", ""),
+            }
+            for s in sources
+        ]
+        # Track which retrieved articles were cited vs not
+        cited_articles = set()
+        for s in sources:
+            if s.get("label") == "DB":
+                cited_articles.add(str(s.get("article", "")))
+        answer_output_data["articles_cited"] = len(cited_articles)
+        answer_output_data["articles_not_cited"] = len(retrieved) - len(cited_articles)
+        if structured.get("confidence_reasoning"):
+            answer_output_data["confidence_reasoning"] = structured["confidence_reasoning"]
+
     log_step(
-        db, state["run_id"], "answer_generation", 7, "done",
+        db, state["run_id"], "answer_generation", 8, "done",
         total_duration,
         prompt_id=prompt_id, prompt_version=prompt_ver,
         input_summary=f"Retrieved {len(retrieved)} articles, mode={mode}",
         output_summary=f"Generated {len(full_text)} chars, confidence={state.get('confidence')}",
+        output_data=answer_output_data,
         confidence=state.get("confidence"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 7.5: Citation Validation (code-based, no Claude)
+# ---------------------------------------------------------------------------
+
+
+def _step7_5_citation_validation(state: dict, db: Session) -> dict:
+    """Verify that every DB-labeled citation was actually in the provided context.
+
+    This is a code-based post-generation check — no Claude call needed.
+    Downgrades phantom citations from 'DB' to 'Unverified' and adjusts confidence.
+    """
+    t0 = time.time()
+    structured = state.get("answer_structured")
+    if not structured:
+        log_step(
+            db, state["run_id"], "citation_validation", 85, "done", time.time() - t0,
+            output_summary="Skipped — no structured answer to validate",
+            output_data={"skipped": True, "reason": "no_structured_answer"},
+        )
+        return state
+
+    sources = structured.get("sources", [])
+    if not sources:
+        log_step(
+            db, state["run_id"], "citation_validation", 85, "done", time.time() - t0,
+            output_summary="Skipped — no sources to validate",
+            output_data={"skipped": True, "reason": "no_sources"},
+        )
+        return state
+
+    # Build a set of (law_number/year, article_number) tuples from provided articles
+    provided = set()
+    for art in state.get("retrieved_articles", []):
+        law_key = f"{art.get('law_number', '')}/{art.get('law_year', '')}"
+        art_num = str(art.get("article_number", "")).strip()
+        provided.add((law_key, art_num))
+
+    # Also build a set of just article numbers per law for fuzzy matching
+    provided_by_law_num = {}
+    for art in state.get("retrieved_articles", []):
+        law_num = str(art.get("law_number", "")).strip()
+        art_num = str(art.get("article_number", "")).strip()
+        provided_by_law_num.setdefault(law_num, set()).add(art_num)
+
+    downgraded = 0
+    validated = 0
+    downgraded_citations = []
+    validated_citations = []
+    for source in sources:
+        if source.get("label") != "DB":
+            continue
+        law_ref = str(source.get("law", "")).strip()
+        art_ref = str(source.get("article", "")).strip()
+
+        # Normalize: strip "Art." prefix, whitespace
+        art_ref_clean = re.sub(r"^art\.?\s*", "", art_ref, flags=re.IGNORECASE).strip()
+
+        # Normalize law reference: extract just "number/year" from formats like
+        # "Legea 31/1990", "Codul Civil 287/2009", "31/1990", etc.
+        law_ref_normalized = law_ref
+        law_match = re.search(r"(\d+)\s*/\s*(\d+)", law_ref)
+        if law_match:
+            law_ref_normalized = f"{law_match.group(1)}/{law_match.group(2)}"
+
+        # Also try matching just by law number (for cases like "287" without year)
+        law_num_only = re.search(r"(\d+)", law_ref)
+        law_num_str = law_num_only.group(1) if law_num_only else ""
+
+        # Check if this citation exists in provided articles
+        found = (
+            (law_ref_normalized, art_ref_clean) in provided
+            or (law_num_str in provided_by_law_num
+                and art_ref_clean in provided_by_law_num[law_num_str])
+        )
+
+        if not found:
+            source["label"] = "Unverified"
+            state["flags"].append(
+                f"Citation Art. {art_ref_clean} from {law_ref} not in provided context — "
+                f"downgraded to Unverified"
+            )
+            downgraded += 1
+            downgraded_citations.append({
+                "law": law_ref,
+                "article": art_ref_clean,
+                "original_label": "DB",
+                "new_label": "Unverified",
+            })
+        else:
+            validated += 1
+            validated_citations.append({
+                "law": law_ref,
+                "article": art_ref_clean,
+            })
+
+    confidence_downgraded = False
+    if downgraded > 0:
+        logger.info(f"Citation validation: downgraded {downgraded} citations to Unverified")
+
+        # If majority are unverified, downgrade confidence
+        total_db = sum(1 for s in sources if s.get("label") in ("DB", "Unverified"))
+        if total_db > 0 and downgraded > total_db / 2:
+            state["confidence"] = "LOW"
+            state["flags"].append(
+                "Majority of citations could not be verified against provided articles"
+            )
+            confidence_downgraded = True
+
+    duration = time.time() - t0
+    log_step(
+        db, state["run_id"], "citation_validation", 85, "done", duration,
+        output_summary=f"Validated {validated}, downgraded {downgraded} citations" + (" — confidence lowered to LOW" if confidence_downgraded else ""),
+        output_data={
+            "skipped": False,
+            "total_db_citations": validated + downgraded,
+            "validated": validated,
+            "downgraded": downgraded,
+            "confidence_downgraded": confidence_downgraded,
+            "downgraded_citations": downgraded_citations,
+            "validated_citations": validated_citations,
+        },
+        warnings=(
+            [f"Downgraded {downgraded} citations to Unverified"]
+            if downgraded > 0 else None
+        ),
+    )
+
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +1838,14 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
 
 def _build_reasoning_panel(state: dict) -> dict:
     """Build the structured reasoning data for the frontend panel."""
+    # Build retrieval breakdown from raw articles
+    raw = state.get("retrieved_articles_raw", [])
+    bm25_articles = [a for a in raw if a.get("source") == "bm25" or a.get("bm25_rank")]
+    semantic_articles = [a for a in raw if a.get("distance") is not None and not a.get("bm25_rank")]
+    entity_articles = [a for a in raw if a.get("tier") == "entity_targeted"]
+    expansion_articles = [a for a in raw if a.get("source") == "expansion"]
+    exception_articles = [a for a in raw if a.get("source") == "exception"]
+
     return {
         "step1_classification": {
             "question_type": state.get("question_type"),
@@ -943,6 +1854,7 @@ def _build_reasoning_panel(state: dict) -> dict:
             "entity_types": state.get("entity_types", []),
             "output_mode": state.get("output_mode"),
             "core_issue": state.get("core_issue"),
+            "sub_issues": state.get("sub_issues", []),
         },
         "step2_law_mapping": {
             "candidate_laws": state.get("candidate_laws", []),
@@ -950,18 +1862,29 @@ def _build_reasoning_panel(state: dict) -> dict:
         },
         "step3_versions": {
             "selected_versions": state.get("selected_versions", {}),
+            "version_notes": state.get("version_notes", []),
         },
         "step4_retrieval": {
-            "articles_found": len(state.get("retrieved_articles_raw", [])),
+            "articles_found": len(raw),
+            "bm25_count": len(bm25_articles),
+            "semantic_count": len(semantic_articles),
+            "entity_count": len(entity_articles),
         },
         "step5_expansion": {
-            "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+            "articles_after_expansion": len(raw),
+            "expansion_added": len(expansion_articles),
+            "exceptions_added": len(exception_articles),
         },
         "step6_selection": {
+            "total_candidates": len(raw),
+            "selected_count": len(state.get("retrieved_articles", [])),
             "top_articles": [
                 {"article_number": a.get("article_number"), "score": round(a.get("reranker_score", 0), 3), "law": f"{a.get('law_number')}/{a.get('law_year')}"}
                 for a in state.get("retrieved_articles", [])[:10]
             ],
+        },
+        "step6_5_relevance": {
+            "relevance_score": state.get("relevance_score"),
         },
         "step7_answer": {
             "articles_used": len(state.get("retrieved_articles", [])),
