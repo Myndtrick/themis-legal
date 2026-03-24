@@ -433,7 +433,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     context_msg = state["question"]
     if state["session_context"]:
         history = "\n".join(
-            f"[{m['role']}]: {m['content'][:200]}" for m in state["session_context"][-5:]
+            f"[{m['role']}]: {m['content'][:500]}" for m in state["session_context"][-5:]
         )
         context_msg = f"CONVERSATION HISTORY:\n{history}\n\nCURRENT QUESTION:\n{state['question']}"
 
