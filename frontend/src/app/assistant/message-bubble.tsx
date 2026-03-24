@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { ChatMessage, StructuredAnswer } from "@/lib/api";
 import { AnswerDetail } from "./answer-detail";
 import { ConfidenceBadge } from "./confidence-badge";
@@ -52,7 +53,15 @@ function parseReasoningData(
   }
 }
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+export function MessageBubble({
+  message,
+  onRetry,
+}: {
+  message: ChatMessage;
+  onRetry?: (runId: string, mode: "full" | "resume") => void;
+}) {
+  const [showRetryOptions, setShowRetryOptions] = useState(false);
+
   if (message.role === "user") {
     return (
       <div className="flex justify-end mb-4">
@@ -79,6 +88,47 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           <ModeBadge mode={message.mode} />
           <ConfidenceBadge level={confidence} />
         </div>
+
+        {/* Retry button for error messages */}
+        {onRetry && message.run_id && (
+          <div className="mt-3">
+            {!showRetryOptions ? (
+              <button
+                onClick={() => setShowRetryOptions(true)}
+                className="px-3 py-1.5 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 transition-colors"
+              >
+                Retry analysis
+              </button>
+            ) : (
+              <div className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-600 font-medium">How would you like to retry?</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setShowRetryOptions(false);
+                      onRetry(message.run_id!, "resume");
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors"
+                  >
+                    Resume from where it stopped
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowRetryOptions(false);
+                      onRetry(message.run_id!, "full");
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                  >
+                    Restart full analysis
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Resume reuses the classification step (saves tokens). Full restart re-analyzes from scratch.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Collapsible details (legal basis, sources, etc.) */}
         <AnswerDetail reasoningData={message.reasoning_data} />

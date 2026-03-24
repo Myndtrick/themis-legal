@@ -168,6 +168,7 @@ export default function LibraryPage() {
                   suggestedLaws={suggestions}
                   defaultExpanded={!!selectedGroup}
                   onAssign={setAssigningLawId}
+                  onDelete={fetchData}
                 />
               );
             })}
@@ -188,6 +189,7 @@ export default function LibraryPage() {
           <UnclassifiedSection
             laws={unclassifiedLaws}
             onAssign={setAssigningLawId}
+            onDelete={fetchData}
           />
         </div>
       </div>

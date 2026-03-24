@@ -68,6 +68,8 @@ export interface LibraryLaw {
   law_number: string;
   law_year: number;
   document_type: string;
+  description: string | null;
+  issuer: string | null;
   version_count: number;
   status: string;
   category_id: number | null;

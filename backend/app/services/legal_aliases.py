@@ -170,10 +170,32 @@ CODE_ABBREVIATIONS: dict[str, tuple[str, int]] = {
 }
 
 
+def _normalize_for_alias(text: str) -> str:
+    """Normalize text for alias matching — strip diacritics and definite articles."""
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text)
+    stripped = "".join(c for c in nfkd if not unicodedata.combining(c))
+    # Remove common definite article suffixes so "codul" matches "cod",
+    # "legea" matches "lege", etc.
+    words = stripped.split()
+    normalized = []
+    for w in words:
+        for suffix in ("ul", "ul", "a", "ea", "ua", "ului", "ei", "iei", "elor"):
+            base = w[: -len(suffix)] if w.endswith(suffix) and len(w) > len(suffix) + 1 else None
+            if base:
+                normalized.append(base)
+                break
+        else:
+            normalized.append(w)
+    return " ".join(normalized)
+
+
 def expand_query(query: str) -> list[dict] | None:
     """Check if query matches a known alias and return search parameters.
 
     Returns a list of search parameter dicts, or None if no alias matches.
+    Uses fuzzy matching: "cod penal" matches "codul penal", "lege societati"
+    matches "legea societatilor", etc.
     """
     q = query.strip().lower()
 
@@ -190,6 +212,15 @@ def expand_query(query: str) -> list[dict] | None:
         return ALIASES[q]
     if stripped in ALIASES:
         return ALIASES[stripped]
+
+    # Try normalized match: strip definite articles from both query and keys
+    # so "cod penal" matches "codul penal", "lege societati" matches "legea societatilor"
+    q_norm = _normalize_for_alias(q)
+    stripped_norm = _normalize_for_alias(stripped)
+    for key, params in ALIASES.items():
+        key_norm = _normalize_for_alias(key)
+        if key_norm == q_norm or key_norm == stripped_norm:
+            return params
 
     # Try partial match: if any alias key is contained in the query
     for key, params in ALIASES.items():

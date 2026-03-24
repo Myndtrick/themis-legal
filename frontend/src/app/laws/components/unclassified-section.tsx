@@ -4,9 +4,10 @@ import LawCard from "./law-card";
 interface UnclassifiedSectionProps {
   laws: LibraryLaw[];
   onAssign: (lawId: number) => void;
+  onDelete?: () => void;
 }
 
-export default function UnclassifiedSection({ laws, onAssign }: UnclassifiedSectionProps) {
+export default function UnclassifiedSection({ laws, onAssign, onDelete }: UnclassifiedSectionProps) {
   if (laws.length === 0) return null;
 
   return (
@@ -19,7 +20,7 @@ export default function UnclassifiedSection({ laws, onAssign }: UnclassifiedSect
       </div>
       <div className="space-y-1.5">
         {laws.map((law) => (
-          <LawCard key={law.id} law={law} showAssignButton onAssign={onAssign} />
+          <LawCard key={law.id} law={law} showAssignButton onAssign={onAssign} onDelete={onDelete} />
         ))}
       </div>
     </div>

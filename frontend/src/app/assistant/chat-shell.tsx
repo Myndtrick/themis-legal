@@ -22,6 +22,7 @@ export function ChatShell() {
     deleteSession,
     sendMessage,
     handleImportDecision,
+    retryRun,
     cancelStream,
   } = useChat();
 
@@ -51,6 +52,7 @@ export function ChatShell() {
               pendingPause={pendingPause}
               error={error}
               onImportDecision={handleImportDecision}
+              onRetry={retryRun}
             />
             <ChatInput
               onSend={sendMessage}

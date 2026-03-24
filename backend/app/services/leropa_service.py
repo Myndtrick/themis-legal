@@ -976,7 +976,10 @@ def import_law(
     try:
         from app.services.chroma_service import index_law_version as chroma_index
 
-        for v in all_db_versions:
+        db_versions = (
+            db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+        )
+        for v in db_versions:
             chroma_index(db, law.id, v.id)
     except Exception as e:
         logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")

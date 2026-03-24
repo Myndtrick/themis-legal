@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -18,20 +18,25 @@ interface SearchResult {
   local_law_id: number | null;
 }
 
-const ACT_TYPES = [
-  { label: "All types", value: "" },
-  { label: "Constituție", value: "constitutie" },
-  { label: "Cod", value: "cod" },
-  { label: "Lege", value: "lege" },
-  { label: "OG", value: "og" },
-  { label: "OUG", value: "oug" },
-  { label: "HG", value: "hg" },
-  { label: "Decret", value: "decret" },
-  { label: "Ordin", value: "ordin" },
-  { label: "Normă", value: "norma" },
-  { label: "Regulament", value: "regulament" },
-  { label: "Directivă EU", value: "directiva_eu" },
-  { label: "Decizie", value: "decizie" },
+interface FilterOption {
+  value: string;
+  label: string;
+}
+
+// Fallback doc types used until the dynamic list loads from the API
+const DEFAULT_ACT_TYPES: FilterOption[] = [
+  { label: "LEGE", value: "1" },
+  { label: "ORDONANȚĂ DE URGENȚĂ", value: "18" },
+  { label: "ORDONANȚĂ", value: "13" },
+  { label: "HOTĂRÂRE", value: "2" },
+  { label: "ORDIN", value: "5" },
+  { label: "DECIZIE", value: "17" },
+  { label: "DECRET", value: "3" },
+  { label: "CONSTITUȚIE", value: "22" },
+  { label: "COD", value: "170" },
+  { label: "NORMĂ", value: "11" },
+  { label: "REGULAMENT", value: "12" },
+  { label: "DIRECTIVĂ", value: "113" },
 ];
 
 const STATUS_OPTIONS = [
@@ -42,30 +47,48 @@ const STATUS_OPTIONS = [
 
 const DOC_TYPE_COLORS: Record<string, string> = {
   CONSTITUTIE: "bg-red-100 text-red-800",
+  "CONSTITUȚIE": "bg-red-100 text-red-800",
   COD: "bg-emerald-100 text-emerald-800",
   LEGE: "bg-blue-100 text-blue-800",
   OG: "bg-orange-100 text-orange-800",
+  "ORDONANȚĂ": "bg-orange-100 text-orange-800",
   OUG: "bg-amber-100 text-amber-800",
+  "ORDONANȚĂ DE URGENȚĂ": "bg-amber-100 text-amber-800",
   HG: "bg-indigo-100 text-indigo-800",
+  "HOTĂRÂRE": "bg-indigo-100 text-indigo-800",
   DECRET: "bg-rose-100 text-rose-800",
   ORDIN: "bg-purple-100 text-purple-800",
   NORMA: "bg-cyan-100 text-cyan-800",
+  "NORMĂ": "bg-cyan-100 text-cyan-800",
   DECIZIE: "bg-teal-100 text-teal-800",
 };
 
 export default function SearchImportForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Pre-fill from URL query params (e.g. /laws?number=85&year=2014)
+  const initialNumber = searchParams.get("number") || "";
+  const initialYear = searchParams.get("year") || "";
+
+  // Filter options fetched from the API
+  const [actTypes, setActTypes] = useState<FilterOption[]>(DEFAULT_ACT_TYPES);
 
   // Search state
+  const [selectedDocTypes, setSelectedDocTypes] = useState<Set<string>>(new Set());
+  const [docTypeSearch, setDocTypeSearch] = useState("");
+  const [showDocTypeDropdown, setShowDocTypeDropdown] = useState(false);
+  const docTypeRef = useRef<HTMLDivElement>(null);
+
   const [keyword, setKeyword] = useState("");
-  const [docType, setDocType] = useState("");
-  const [lawNumber, setLawNumber] = useState("");
-  const [year, setYear] = useState("");
+  const [lawNumber, setLawNumber] = useState(initialNumber);
+  const [year, setYear] = useState(initialYear);
   const [emitent, setEmitent] = useState("");
+  const [emitentLabel, setEmitentLabel] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [includeRepealed, setIncludeRepealed] = useState("only_in_force");
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(!!(initialNumber || initialYear));
 
   // Results state
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -90,15 +113,30 @@ export default function SearchImportForm() {
   );
 
   // Emitent autocomplete
-  const [emitentSuggestions, setEmitentSuggestions] = useState<string[]>([]);
+  const [emitentSuggestions, setEmitentSuggestions] = useState<FilterOption[]>([]);
   const [showEmitentDropdown, setShowEmitentDropdown] = useState(false);
   const emitentTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const emitentRef = useRef<HTMLDivElement>(null);
+
+  // Fetch filter options on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/api/laws/filter-options`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.doc_types?.length) {
+          setActTypes(data.doc_types);
+        }
+      })
+      .catch(() => { /* keep defaults */ });
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (emitentRef.current && !emitentRef.current.contains(e.target as Node)) {
         setShowEmitentDropdown(false);
+      }
+      if (docTypeRef.current && !docTypeRef.current.contains(e.target as Node)) {
+        setShowDocTypeDropdown(false);
       }
       // Close import dropdown if clicking outside
       if (pendingImportId) {
@@ -126,10 +164,32 @@ export default function SearchImportForm() {
   }, []);
 
   function handleEmitentChange(value: string) {
-    setEmitent(value);
+    setEmitentLabel(value);
+    // If user clears the field, clear the code too
+    if (!value) setEmitent("");
     if (emitentTimeout.current) clearTimeout(emitentTimeout.current);
     emitentTimeout.current = setTimeout(() => fetchEmitents(value), 500);
   }
+
+  function toggleDocType(value: string) {
+    setSelectedDocTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) {
+        next.delete(value);
+      } else {
+        next.add(value);
+      }
+      return next;
+    });
+  }
+
+  // Filtered doc types list based on search
+  const filteredActTypes = docTypeSearch
+    ? actTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
+    : actTypes;
+
+  // Labels for selected types (for displaying chips)
+  const selectedDocTypeLabels = actTypes.filter((t) => selectedDocTypes.has(t.value));
 
   async function handleSearch(e?: React.FormEvent) {
     e?.preventDefault();
@@ -138,7 +198,9 @@ export default function SearchImportForm() {
 
     const params = new URLSearchParams();
     if (keyword) params.set("keyword", keyword);
-    if (docType) params.set("doc_type", docType);
+    if (selectedDocTypes.size > 0) {
+      params.set("doc_type", Array.from(selectedDocTypes).join(","));
+    }
     if (lawNumber) params.set("number", lawNumber);
     if (year) params.set("year", year);
     if (emitent) params.set("emitent", emitent);
@@ -163,6 +225,16 @@ export default function SearchImportForm() {
       setSearching(false);
     }
   }
+
+  // Auto-search when pre-filled from URL query params
+  const autoSearched = useRef(false);
+  useEffect(() => {
+    if (!autoSearched.current && (initialNumber || initialYear)) {
+      autoSearched.current = true;
+      handleSearch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNumber, initialYear]);
 
   async function handleImport(verId: string, importHistory: boolean) {
     setPendingImportId(null);
@@ -227,10 +299,12 @@ export default function SearchImportForm() {
 
   function handleClearFilters() {
     setKeyword("");
-    setDocType("");
+    setSelectedDocTypes(new Set());
+    setDocTypeSearch("");
     setLawNumber("");
     setYear("");
     setEmitent("");
+    setEmitentLabel("");
     setDateFrom("");
     setDateTo("");
     setIncludeRepealed("only_in_force");
@@ -330,24 +404,94 @@ export default function SearchImportForm() {
         >
           <span className="text-xs">{showFilters ? "▲" : "▼"}</span>
           Advanced Filters
+          {selectedDocTypes.size > 0 && (
+            <span className="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
+              {selectedDocTypes.size}
+            </span>
+          )}
         </button>
 
         {/* Collapsible filters */}
         {showFilters && (
           <div className="p-4 bg-gray-50 rounded-lg space-y-3">
             <div className="grid grid-cols-3 gap-3">
-              {/* Act Type */}
-              <div>
+              {/* Act Type — searchable multi-select */}
+              <div ref={docTypeRef} className="relative">
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Act Type</label>
-                <select
-                  value={docType}
-                  onChange={(e) => setDocType(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm bg-white"
+                <div
+                  className="w-full min-h-[38px] rounded-md border border-gray-300 px-2 py-1.5 bg-white cursor-text flex flex-wrap gap-1 items-center"
+                  onClick={() => setShowDocTypeDropdown(true)}
                 >
-                  {ACT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
+                  {selectedDocTypeLabels.map((t) => (
+                    <span
+                      key={t.value}
+                      className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded"
+                    >
+                      {t.label}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleDocType(t.value);
+                        }}
+                        className="text-blue-500 hover:text-blue-700 font-bold leading-none"
+                      >
+                        x
+                      </button>
+                    </span>
                   ))}
-                </select>
+                  <input
+                    type="text"
+                    value={docTypeSearch}
+                    onChange={(e) => {
+                      setDocTypeSearch(e.target.value);
+                      setShowDocTypeDropdown(true);
+                    }}
+                    onFocus={() => setShowDocTypeDropdown(true)}
+                    placeholder={selectedDocTypes.size === 0 ? "All types — search..." : ""}
+                    className="flex-1 min-w-[80px] text-sm outline-none bg-transparent py-0.5"
+                  />
+                </div>
+
+                {showDocTypeDropdown && (
+                  <div className="absolute z-50 w-full mt-1 bg-white rounded-md border border-gray-200 shadow-lg max-h-60 overflow-y-auto">
+                    {selectedDocTypes.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDocTypes(new Set());
+                          setDocTypeSearch("");
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-50 border-b border-gray-100"
+                      >
+                        Clear selection
+                      </button>
+                    )}
+                    {filteredActTypes.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-400">No matching types</div>
+                    )}
+                    {filteredActTypes.map((t) => {
+                      const isSelected = selectedDocTypes.has(t.value);
+                      return (
+                        <button
+                          key={t.value}
+                          type="button"
+                          onClick={() => toggleDocType(t.value)}
+                          className={`w-full text-left px-3 py-1.5 text-sm border-b border-gray-50 last:border-b-0 flex items-center gap-2 ${
+                            isSelected ? "bg-blue-50 text-blue-800" : "hover:bg-gray-50 text-gray-700"
+                          }`}
+                        >
+                          <span className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center text-xs ${
+                            isSelected ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300"
+                          }`}>
+                            {isSelected && "✓"}
+                          </span>
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Law Number */}
@@ -381,9 +525,9 @@ export default function SearchImportForm() {
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Emitent</label>
                 <input
                   type="text"
-                  value={emitent}
+                  value={emitentLabel}
                   onChange={(e) => handleEmitentChange(e.target.value)}
-                  onFocus={() => fetchEmitents(emitent)}
+                  onFocus={() => fetchEmitents(emitentLabel)}
                   placeholder="Search issuers..."
                   className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
                 />
@@ -391,15 +535,16 @@ export default function SearchImportForm() {
                   <div className="absolute z-50 w-full mt-1 bg-white rounded-md border border-gray-200 shadow-lg max-h-48 overflow-y-auto">
                     {emitentSuggestions.map((e) => (
                       <button
-                        key={e}
+                        key={e.value}
                         type="button"
                         onClick={() => {
-                          setEmitent(e);
+                          setEmitent(e.value);
+                          setEmitentLabel(e.label);
                           setShowEmitentDropdown(false);
                         }}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b border-gray-50 last:border-b-0"
                       >
-                        {e}
+                        {e.label}
                       </button>
                     ))}
                   </div>
@@ -559,7 +704,7 @@ export default function SearchImportForm() {
       )}
 
       {/* No results message — shown after any search attempt with no results */}
-      {!searching && results.length === 0 && total === 0 && searchError === null && (keyword || docType || lawNumber || year || emitent || dateFrom || dateTo) && (
+      {!searching && results.length === 0 && total === 0 && searchError === null && (keyword || selectedDocTypes.size > 0 || lawNumber || year || emitent || dateFrom || dateTo) && (
         <div className="mt-4 text-center py-6 text-sm text-gray-500">
           No results found. Try different filters or keywords.
         </div>

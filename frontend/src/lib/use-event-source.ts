@@ -101,6 +101,38 @@ export async function streamResume(
   await consumeSSEStream(response, handlers);
 }
 
+export async function streamRetry(
+  sessionId: string,
+  runId: string,
+  mode: "full" | "resume",
+  handlers: SSEHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/assistant/sessions/${sessionId}/retry`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: runId, mode }),
+        signal,
+      }
+    );
+  } catch {
+    handlers.onError?.("Cannot reach the backend. Is the server running?");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    handlers.onError?.(text || `HTTP ${response.status}`);
+    return;
+  }
+
+  await consumeSSEStream(response, handlers);
+}
+
 async function consumeSSEStream(
   response: Response,
   handlers: SSEHandlers

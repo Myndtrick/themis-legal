@@ -14,6 +14,7 @@ export function MessageList({
   pendingPause,
   error,
   onImportDecision,
+  onRetry,
 }: {
   messages: ChatMessage[];
   streamingText: string;
@@ -22,6 +23,7 @@ export function MessageList({
   pendingPause: PauseData | null;
   error: string | null;
   onImportDecision: (decisions: Record<string, string>) => void;
+  onRetry: (runId: string, mode: "full" | "resume") => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -47,7 +49,11 @@ export function MessageList({
         )}
 
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            onRetry={msg.mode === "error" && msg.run_id ? onRetry : undefined}
+          />
         ))}
 
         {/* Streaming state */}

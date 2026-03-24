@@ -339,6 +339,7 @@ def get_library_data(db: Session) -> dict:
         laws_out.append({
             "id": law.id, "title": law.title, "law_number": law.law_number,
             "law_year": law.law_year, "document_type": law.document_type,
+            "description": law.description, "issuer": law.issuer,
             "version_count": len(law.versions), "status": law.status,
             "category_id": law.category_id, "category_group_slug": group_slug,
             "category_confidence": law.category_confidence,

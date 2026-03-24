@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import type { PauseData } from "./use-chat";
 
 export function ImportPrompt({
@@ -81,6 +82,15 @@ export function ImportPrompt({
                 </div>
               )}
             </div>
+            {law.availability !== "available" && (
+              <Link
+                href={`/laws?number=${encodeURIComponent(law.law_number)}&year=${encodeURIComponent(law.law_year)}`}
+                target="_blank"
+                className="shrink-0 text-[10px] text-indigo-600 hover:text-indigo-800 underline"
+              >
+                Search in Library
+              </Link>
+            )}
           </div>
         ))}
       </div>

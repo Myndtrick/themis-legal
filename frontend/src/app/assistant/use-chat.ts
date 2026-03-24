@@ -8,7 +8,7 @@ import {
   type LawPreview,
   type StructuredAnswer,
 } from "@/lib/api";
-import { streamChat, streamResume, type SSEHandlers } from "@/lib/use-event-source";
+import { streamChat, streamResume, streamRetry, type SSEHandlers } from "@/lib/use-event-source";
 
 export interface StepProgress {
   step: number;
@@ -276,6 +276,84 @@ export function useChat() {
     [activeSessionId, pendingPause]
   );
 
+  const retryRun = useCallback(
+    async (runId: string, mode: "full" | "resume") => {
+      if (!activeSessionId || isStreaming) return;
+
+      setError(null);
+      setIsStreaming(true);
+      setStreamingText("");
+      setSteps([]);
+      setPendingPause(null);
+
+      const abort = new AbortController();
+      abortRef.current = abort;
+
+      const handlers: SSEHandlers = {
+        onStep: (data) => {
+          setSteps((prev) => {
+            const existing = prev.findIndex((s) => s.step === data.step);
+            if (existing >= 0) {
+              const updated = [...prev];
+              updated[existing] = data;
+              return updated;
+            }
+            return [...prev, data];
+          });
+        },
+        onToken: (text) => {
+          setStreamingText((prev) => prev + text);
+        },
+        onPause: (data) => {
+          setPendingPause(data);
+          setIsStreaming(false);
+        },
+        onDone: (data) => {
+          const outputMode = data.output_mode || data.mode;
+
+          const combinedData = {
+            structured: data.structured,
+            reasoning: data.reasoning,
+            confidence: data.confidence,
+            flags: data.flags,
+          };
+          const assistantMsg: ChatMessage = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: data.structured?.short_answer || data.content,
+            mode: outputMode === "clarification" || outputMode === "needs_import"
+              ? outputMode
+              : data.mode,
+            run_id: data.run_id,
+            reasoning_data: JSON.stringify(combinedData),
+            created_at: new Date().toISOString(),
+            clarification_type: data.clarification_type,
+            missing_laws: data.missing_laws,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          setStreamingText("");
+          setIsStreaming(false);
+        },
+        onError: (err) => {
+          setError(err);
+          setIsStreaming(false);
+          setStreamingText("");
+        },
+      };
+
+      try {
+        await streamRetry(activeSessionId, runId, mode, handlers, abort.signal);
+      } catch (e) {
+        if ((e as Error).name !== "AbortError") {
+          setError((e as Error).message);
+        }
+        setIsStreaming(false);
+        setStreamingText("");
+      }
+    },
+    [activeSessionId, isStreaming]
+  );
+
   const cancelStream = useCallback(() => {
     abortRef.current?.abort();
     setIsStreaming(false);
@@ -297,6 +375,7 @@ export function useChat() {
     deleteSession,
     sendMessage,
     handleImportDecision,
+    retryRun,
     cancelStream,
   };
 }

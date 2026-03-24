@@ -44,3 +44,8 @@ class SessionDetailResponse(BaseModel):
 class ResumeRequest(BaseModel):
     run_id: str
     decisions: dict[str, str]  # law_key -> "import" | "skip"
+
+
+class RetryRequest(BaseModel):
+    run_id: str
+    mode: str  # "full" = restart from step 1, "resume" = reuse classification & resume from step 3

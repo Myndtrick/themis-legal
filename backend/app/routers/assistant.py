@@ -13,6 +13,7 @@ from app.schemas.assistant import (
     MessageRequest,
     MessageResponse,
     ResumeRequest,
+    RetryRequest,
     SessionDetailResponse,
     SessionSummary,
 )
@@ -311,6 +312,149 @@ def resume_paused_pipeline(
             logger.info("Client connection lost during resume: %s", e)
         except Exception as e:
             logger.exception("Error in resume SSE generator")
+            try:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)}, ensure_ascii=False),
+                }
+            except (OSError, IOError, GeneratorExit):
+                pass
+        finally:
+            gen_db.close()
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/sessions/{session_id}/retry")
+def retry_pipeline(
+    session_id: str,
+    req: RetryRequest,
+    db: Session = Depends(get_db),
+):
+    """Retry a failed pipeline run.
+
+    mode="full"   — restart the entire pipeline from step 1
+    mode="resume" — reuse classification/mapping and resume from step 3
+                    (useful after manually importing missing laws)
+    """
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    def event_generator():
+        from app.database import SessionLocal
+
+        gen_db = SessionLocal()
+        try:
+            final_content = ""
+            final_mode = None
+            final_run_id = None
+            final_reasoning = None
+
+            if req.mode == "full":
+                # Find original question from the PipelineRun
+                from app.models.pipeline import PipelineRun
+
+                run = gen_db.query(PipelineRun).filter(
+                    PipelineRun.run_id == req.run_id
+                ).first()
+                if not run:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({"error": "Original run not found"}),
+                    }
+                    return
+
+                question = run.question_summary
+                context = build_conversation_context(gen_db, session_id)
+
+                from app.services.pipeline_service import run_pipeline
+
+                pipeline = run_pipeline(question, context, gen_db)
+            else:
+                # Resume: re-check law mapping (laws should be imported now)
+                from app.services.pipeline_service import resume_pipeline
+
+                pipeline = resume_pipeline(req.run_id, {}, gen_db)
+
+            for event in pipeline:
+                event_type = event.get("type", "unknown")
+
+                if event_type == "token":
+                    yield {
+                        "event": "token",
+                        "data": json.dumps({"text": event["text"]}, ensure_ascii=False),
+                    }
+                elif event_type == "step":
+                    yield {
+                        "event": "step",
+                        "data": json.dumps(event, ensure_ascii=False),
+                    }
+                elif event_type == "pause":
+                    yield {
+                        "event": "pause",
+                        "data": json.dumps(event, ensure_ascii=False),
+                    }
+                    add_message(
+                        gen_db, session_id, "assistant",
+                        event.get("message", "Import needed"),
+                        run_id=event.get("run_id"),
+                    )
+                    gen_db.commit()
+                    return
+                elif event_type == "done":
+                    final_content = event.get("content", "")
+                    final_mode = event.get("mode")
+                    final_run_id = event.get("run_id")
+                    final_reasoning = event.get("reasoning")
+                    final_structured = event.get("structured")
+                    final_confidence = event.get("confidence")
+                    final_flags = event.get("flags", [])
+
+                    yield {
+                        "event": "done",
+                        "data": json.dumps({
+                            "content": final_content,
+                            "structured": final_structured,
+                            "mode": final_mode,
+                            "run_id": final_run_id,
+                            "confidence": final_confidence,
+                            "flags": final_flags,
+                            "reasoning": final_reasoning,
+                        }, ensure_ascii=False),
+                    }
+                elif event_type == "error":
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({
+                            "error": event.get("error", "Unknown error"),
+                            "run_id": event.get("run_id"),
+                        }, ensure_ascii=False),
+                    }
+                    return
+
+            # Store the final assistant message
+            if final_content:
+                add_message(
+                    gen_db, session_id, "assistant",
+                    final_content,
+                    mode=final_mode,
+                    run_id=final_run_id,
+                    reasoning_data=json.dumps({
+                        "structured": final_structured,
+                        "reasoning": final_reasoning,
+                        "confidence": final_confidence,
+                        "flags": final_flags,
+                    }, ensure_ascii=False) if final_reasoning else None,
+                )
+                gen_db.commit()
+
+        except GeneratorExit:
+            logger.info("Client disconnected from retry SSE stream")
+        except (OSError, IOError) as e:
+            logger.info("Client connection lost during retry: %s", e)
+        except Exception as e:
+            logger.exception("Error in retry SSE generator")
             try:
                 yield {
                     "event": "error",

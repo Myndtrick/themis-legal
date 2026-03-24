@@ -32,6 +32,13 @@ const DEFAULT_ACT_TYPES: FilterOption[] = [
   { label: "ORDONANȚĂ", value: "13" },
   { label: "HOTĂRÂRE", value: "2" },
   { label: "ORDIN", value: "5" },
+  { label: "DECIZIE", value: "17" },
+  { label: "DECRET", value: "3" },
+  { label: "CONSTITUȚIE", value: "22" },
+  { label: "COD", value: "170" },
+  { label: "NORMĂ", value: "11" },
+  { label: "REGULAMENT", value: "12" },
+  { label: "DIRECTIVĂ", value: "113" },
 ];
 
 const DOC_TYPE_COLORS: Record<string, string> = {
@@ -79,15 +86,35 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Filters
-  const [selectedDocType, setSelectedDocType] = useState("");
+  // Filter options from API
+  const [actTypes, setActTypes] = useState<FilterOption[]>(DEFAULT_ACT_TYPES);
+
+  // Filters — doc type multi-select
+  const [selectedDocTypes, setSelectedDocTypes] = useState<Set<string>>(new Set());
+  const [docTypeSearch, setDocTypeSearch] = useState("");
+  const [showDocTypeDropdown, setShowDocTypeDropdown] = useState(false);
+  const docTypeRef = useRef<HTMLDivElement>(null);
+
   const [lawNumber, setLawNumber] = useState("");
   const [year, setYear] = useState("");
+
+  // Emitent autocomplete
+  const [emitent, setEmitent] = useState("");
+  const [emitentLabel, setEmitentLabel] = useState("");
+  const [emitentSuggestions, setEmitentSuggestions] = useState<FilterOption[]>([]);
+  const [showEmitentDropdown, setShowEmitentDropdown] = useState(false);
+  const emitentTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const emitentRef = useRef<HTMLDivElement>(null);
+
+  // Date filters
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   // Import state
   const [pendingImportId, setPendingImportId] = useState<string | null>(null);
   const [importingIds, setImportingIds] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
+  const [importErrors, setImportErrors] = useState<Record<string, string>>({});
 
   // Category confirmation after import
   const [importedLawForCategory, setImportedLawForCategory] = useState<{
@@ -101,17 +128,66 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     /legislatie\.just\.ro\/Public\/DetaliiDocument(?:Afis)?\/(\d+)/
   );
 
-  // Close dropdown on outside click
+  // Fetch filter options on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/api/laws/filter-options`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.doc_types?.length) setActTypes(data.doc_types);
+      })
+      .catch(() => { /* keep defaults */ });
+  }, []);
+
+  // Close dropdowns on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setShowResults(false);
         setPendingImportId(null);
       }
+      if (emitentRef.current && !emitentRef.current.contains(e.target as Node)) {
+        setShowEmitentDropdown(false);
+      }
+      if (docTypeRef.current && !docTypeRef.current.contains(e.target as Node)) {
+        setShowDocTypeDropdown(false);
+      }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  const fetchEmitents = useCallback(async (q: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/laws/emitents?q=${encodeURIComponent(q)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setEmitentSuggestions(data.emitents);
+        setShowEmitentDropdown(true);
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  function handleEmitentChange(value: string) {
+    setEmitentLabel(value);
+    if (!value) setEmitent("");
+    if (emitentTimeout.current) clearTimeout(emitentTimeout.current);
+    emitentTimeout.current = setTimeout(() => fetchEmitents(value), 500);
+  }
+
+  function toggleDocType(value: string) {
+    setSelectedDocTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  }
+
+  const filteredActTypes = docTypeSearch
+    ? actTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
+    : actTypes;
+
+  const selectedDocTypeLabels = actTypes.filter((t) => selectedDocTypes.has(t.value));
 
   // Local search as you type
   const doLocalSearch = useCallback(async (q: string) => {
@@ -145,9 +221,12 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
     const params = new URLSearchParams();
     if (keyword) params.set("keyword", keyword);
-    if (selectedDocType) params.set("doc_type", selectedDocType);
+    if (selectedDocTypes.size > 0) params.set("doc_type", Array.from(selectedDocTypes).join(","));
     if (lawNumber) params.set("number", lawNumber);
     if (year) params.set("year", year);
+    if (emitent) params.set("emitent", emitent);
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
     params.set("include_repealed", "only_in_force");
 
     try {
@@ -168,32 +247,49 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
   async function handleImport(verId: string, importHistory: boolean) {
     setPendingImportId(null);
     setImportingIds((prev) => new Set(prev).add(verId));
+    setImportErrors((prev) => { const next = { ...prev }; delete next[verId]; return next; });
     try {
+      // History imports can take minutes — use a 10-minute timeout
+      const controller = new AbortController();
+      const timeoutMs = importHistory ? 600_000 : 120_000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error("Import failed");
+      clearTimeout(timer);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Import failed");
       setImportedIds((prev) => new Set(prev).add(verId));
       // Find the external result to get title/number info
       const r = externalResults.find((x) => x.ver_id === verId);
       if (r) {
-        const match = suggestedLaws.find(
-          (s) =>
-            s.law_number === r.number ||
-            s.title.toLowerCase().includes((r.description || "").toLowerCase())
-        );
+        // Use backend-provided category suggestion first, fall back to suggestedLaws match
+        let prefillId: number | null = data.suggested_category_id ?? null;
+        if (!prefillId) {
+          const match = suggestedLaws.find(
+            (s) =>
+              s.law_number === r.number ||
+              s.title.toLowerCase().includes((r.description || "").toLowerCase())
+          );
+          prefillId = match?.category_id ?? null;
+        }
         setImportedLawForCategory({
           lawId: data.law_id,
           title: r.description || r.title,
-          prefillCategoryId: match?.category_id ?? null,
+          prefillCategoryId: prefillId,
         });
       } else {
         onImportComplete();
       }
-    } catch { /* silent */ } finally {
+    } catch (err) {
+      const msg = err instanceof DOMException && err.name === "AbortError"
+        ? "Import timed out — the law may have too many versions. Try importing current version only."
+        : err instanceof Error ? err.message : "Import failed";
+      setImportErrors((prev) => ({ ...prev, [verId]: msg }));
+    } finally {
       setImportingIds((prev) => {
         const next = new Set(prev);
         next.delete(verId);
@@ -204,26 +300,38 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   // URL import state
   const [urlImporting, setUrlImporting] = useState(false);
+  const [urlImportError, setUrlImportError] = useState<string | null>(null);
 
   async function handleUrlImport(importHistory: boolean) {
     if (!detectedUrl) return;
     const verId = detectedUrl[1];
     setUrlImporting(true);
+    setUrlImportError(null);
     try {
+      const controller = new AbortController();
+      const timeoutMs = importHistory ? 600_000 : 120_000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error("Import failed");
+      clearTimeout(timer);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Import failed");
       setImportedIds((prev) => new Set(prev).add(verId));
       setImportedLawForCategory({
         lawId: data.law_id,
         title: `Imported law (ver ${verId})`,
         prefillCategoryId: null,
       });
-    } catch { /* silent */ } finally {
+    } catch (err) {
+      const msg = err instanceof DOMException && err.name === "AbortError"
+        ? "Import timed out — try importing current version only."
+        : err instanceof Error ? err.message : "Import failed";
+      setUrlImportError(msg);
+    } finally {
       setUrlImporting(false);
     }
   }
@@ -242,7 +350,11 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   async function handleImportCategoryCancel() {
     if (!importedLawForCategory) return;
-    await api.laws.delete(importedLawForCategory.lawId);
+    try {
+      await api.laws.delete(importedLawForCategory.lawId);
+    } catch {
+      // Still close the modal even if delete fails
+    }
     setImportedLawForCategory(null);
     onImportComplete();
   }
@@ -278,6 +390,9 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                 <button onClick={() => setPendingImportId(null)} className="w-full text-left px-3 py-1 text-xs rounded-md hover:bg-gray-50 text-gray-400 mt-1">Cancel</button>
               </div>
             )}
+            {urlImportError && (
+              <p className="absolute right-0 top-full mt-1 text-xs text-red-600 whitespace-nowrap">{urlImportError}</p>
+            )}
           </div>
         ) : (
           <>
@@ -287,6 +402,9 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
               className="rounded-md border border-gray-300 px-4 py-2 text-sm bg-white hover:bg-gray-50"
             >
               Filters {showFilters ? "▴" : "▾"}
+              {selectedDocTypes.size > 0 && (
+                <span className="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">{selectedDocTypes.size}</span>
+              )}
             </button>
             <button
               type="submit"
@@ -301,39 +419,80 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
       {/* Filters */}
       {showFilters && (
-        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Act Type</label>
-            <select
-              value={selectedDocType}
-              onChange={(e) => setSelectedDocType(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm bg-white"
-            >
-              <option value="">All types</option>
-              {DEFAULT_ACT_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>{t.label}</option>
-              ))}
-            </select>
+        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            {/* Act Type — searchable multi-select */}
+            <div ref={docTypeRef} className="relative">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Act Type</label>
+              <div
+                className="w-full min-h-[38px] rounded-md border border-gray-300 px-2 py-1.5 bg-white cursor-text flex flex-wrap gap-1 items-center"
+                onClick={() => setShowDocTypeDropdown(true)}
+              >
+                {selectedDocTypeLabels.map((t) => (
+                  <span key={t.value} className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded">
+                    {t.label}
+                    <button type="button" onClick={(e) => { e.stopPropagation(); toggleDocType(t.value); }} className="text-blue-500 hover:text-blue-700 font-bold leading-none">x</button>
+                  </span>
+                ))}
+                <input
+                  type="text"
+                  value={docTypeSearch}
+                  onChange={(e) => { setDocTypeSearch(e.target.value); setShowDocTypeDropdown(true); }}
+                  onFocus={() => setShowDocTypeDropdown(true)}
+                  placeholder={selectedDocTypes.size === 0 ? "All types — search..." : ""}
+                  className="flex-1 min-w-[80px] text-sm outline-none bg-transparent py-0.5"
+                />
+              </div>
+              {showDocTypeDropdown && (
+                <div className="absolute z-50 w-full mt-1 bg-white rounded-md border border-gray-200 shadow-lg max-h-60 overflow-y-auto">
+                  {selectedDocTypes.size > 0 && (
+                    <button type="button" onClick={() => { setSelectedDocTypes(new Set()); setDocTypeSearch(""); }} className="w-full text-left px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-50 border-b border-gray-100">Clear selection</button>
+                  )}
+                  {filteredActTypes.length === 0 && <div className="px-3 py-2 text-sm text-gray-400">No matching types</div>}
+                  {filteredActTypes.map((t) => {
+                    const isSelected = selectedDocTypes.has(t.value);
+                    return (
+                      <button key={t.value} type="button" onClick={() => toggleDocType(t.value)} className={`w-full text-left px-3 py-1.5 text-sm border-b border-gray-50 last:border-b-0 flex items-center gap-2 ${isSelected ? "bg-blue-50 text-blue-800" : "hover:bg-gray-50 text-gray-700"}`}>
+                        <span className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center text-xs ${isSelected ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300"}`}>{isSelected && "✓"}</span>
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Number</label>
+              <input type="text" value={lawNumber} onChange={(e) => setLawNumber(e.target.value.replace(/\D/g, ""))} placeholder="e.g. 31" className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Year</label>
+              <input type="text" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="e.g. 2015" className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            </div>
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Number</label>
-            <input
-              type="text"
-              value={lawNumber}
-              onChange={(e) => setLawNumber(e.target.value.replace(/\D/g, ""))}
-              placeholder="e.g. 31"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Year</label>
-            <input
-              type="text"
-              value={year}
-              onChange={(e) => setYear(e.target.value.replace(/\D/g, "").slice(0, 4))}
-              placeholder="e.g. 2015"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
+          <div className="grid grid-cols-3 gap-3">
+            {/* Emitent */}
+            <div ref={emitentRef} className="relative">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Emitent</label>
+              <input type="text" value={emitentLabel} onChange={(e) => handleEmitentChange(e.target.value)} onFocus={() => fetchEmitents(emitentLabel)} placeholder="Search issuers..." className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+              {showEmitentDropdown && emitentSuggestions.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white rounded-md border border-gray-200 shadow-lg max-h-48 overflow-y-auto">
+                  {emitentSuggestions.map((e) => (
+                    <button key={e.value} type="button" onClick={() => { setEmitent(e.value); setEmitentLabel(e.label); setShowEmitentDropdown(false); }} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b border-gray-50 last:border-b-0">{e.label}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Date From */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">In Force From</label>
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            </div>
+            {/* Date To */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Signed Before</label>
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            </div>
           </div>
         </div>
       )}
@@ -438,6 +597,9 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                         </div>
                       )}
                     </div>
+                    {importErrors[r.ver_id] && (
+                      <p className="text-xs text-red-600 mt-1 ml-auto max-w-xs text-right">{importErrors[r.ver_id]}</p>
+                    )}
                   </div>
                 );
               })}

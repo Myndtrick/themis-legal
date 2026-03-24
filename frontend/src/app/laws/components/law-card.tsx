@@ -1,5 +1,6 @@
+import { useState } from "react";
 import Link from "next/link";
-import { LibraryLaw } from "@/lib/api";
+import { api, LibraryLaw } from "@/lib/api";
 
 const STATE_COLORS: Record<string, string> = {
   actual: "bg-green-100 text-green-800",
@@ -12,6 +13,7 @@ interface LawCardProps {
   law: LibraryLaw;
   showAssignButton?: boolean;
   onAssign?: (lawId: number) => void;
+  onDelete?: () => void;
 }
 
 const DOC_TYPE_PREFIX: Record<string, string> = {
@@ -27,21 +29,66 @@ const DOC_TYPE_PREFIX: Record<string, string> = {
   other: "Legea",
 };
 
-export default function LawCard({ law, showAssignButton, onAssign }: LawCardProps) {
+function issuerColor(issuer: string): string {
+  const s = issuer.toUpperCase();
+  if (s.includes("PARLAMENT")) return "bg-purple-100 text-purple-800";
+  if (s.includes("GUVERN")) return "bg-amber-100 text-amber-800";
+  if (s.includes("MINISTER")) return "bg-teal-100 text-teal-800";
+  if (s.includes("AGENȚI") || s.includes("AGENTI") || s.includes("AGENȚIA") || s.includes("AGENTIA")) return "bg-cyan-100 text-cyan-800";
+  if (s.includes("DIRECȚI") || s.includes("DIRECTI") || s.includes("DIRECȚIA") || s.includes("DIRECTIA")) return "bg-indigo-100 text-indigo-800";
+  return "bg-gray-100 text-gray-700";
+}
+
+export default function LawCard({ law, showAssignButton, onAssign, onDelete }: LawCardProps) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const state = law.current_version?.state;
   const colorClass = state ? STATE_COLORS[state] || "bg-gray-100 text-gray-600" : "";
   const prefix = DOC_TYPE_PREFIX[law.document_type] || "Legea";
 
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await api.laws.delete(law.id);
+      onDelete?.();
+    } catch {
+      alert("Failed to delete law.");
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  }
+
+  async function handleDeleteOldVersions() {
+    setDeleting(true);
+    try {
+      await api.laws.deleteOldVersions(law.id);
+      onDelete?.();
+    } catch {
+      alert("Failed to delete old versions.");
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  }
+
   return (
     <div className="border border-gray-200 rounded-lg bg-white p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
       <Link href={`/laws/${law.id}`} className="flex-1 min-w-0">
-        <div className="font-semibold text-sm text-gray-900">{law.title}</div>
-        <div className="text-xs text-gray-500 mt-0.5">
-          {prefix} {law.law_number}/{law.law_year}
+        <div className="font-semibold text-sm text-gray-900 line-clamp-2">
+          {prefix} nr. {law.law_number}/{law.law_year}
+          {law.description && (
+            <span className="font-normal text-gray-900"> — {law.description}</span>
+          )}
+        </div>
+        <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
           {state && (
-            <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}>
+            <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}>
               {state}
             </span>
+          )}
+          {law.issuer && (
+            <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${issuerColor(law.issuer)}`}>{law.issuer}</span>
           )}
         </div>
       </Link>
@@ -55,6 +102,39 @@ export default function LawCard({ law, showAssignButton, onAssign }: LawCardProp
             className="text-xs border border-amber-500 text-amber-600 px-2.5 py-1 rounded hover:bg-amber-50 transition-colors"
           >
             Assign category
+          </button>
+        )}
+        {confirming ? (
+          <div className="flex items-center gap-1.5" onClick={(e) => e.preventDefault()}>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="px-2 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:bg-gray-300"
+            >
+              {deleting ? "..." : "Delete all"}
+            </button>
+            {law.version_count > 1 && (
+              <button
+                onClick={handleDeleteOldVersions}
+                disabled={deleting}
+                className="px-2 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 disabled:bg-gray-300"
+              >
+                {deleting ? "..." : "Old only"}
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.preventDefault(); setConfirming(false); }}
+              className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={(e) => { e.preventDefault(); setConfirming(true); }}
+            className="px-2 py-1 text-xs font-medium text-red-600 bg-red-50 rounded hover:bg-red-100 transition-colors"
+          >
+            Delete
           </button>
         )}
       </div>

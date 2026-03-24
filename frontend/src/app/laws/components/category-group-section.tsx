@@ -12,6 +12,7 @@ interface CategoryGroupSectionProps {
   suggestedLaws: SuggestedLaw[];
   defaultExpanded?: boolean;
   onAssign?: (lawId: number) => void;
+  onDelete?: () => void;
 }
 
 const PREVIEW_COUNT = 3;
@@ -24,6 +25,7 @@ export default function CategoryGroupSection({
   suggestedLaws,
   defaultExpanded = false,
   onAssign,
+  onDelete,
 }: CategoryGroupSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const visibleLaws = expanded ? laws : laws.slice(0, PREVIEW_COUNT);
@@ -56,7 +58,7 @@ export default function CategoryGroupSection({
       {/* Law cards */}
       <div className="space-y-1.5">
         {visibleLaws.map((law) => (
-          <LawCard key={law.id} law={law} onAssign={onAssign} />
+          <LawCard key={law.id} law={law} onAssign={onAssign} onDelete={onDelete} />
         ))}
       </div>
 

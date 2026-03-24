@@ -2,12 +2,20 @@
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, asdict
 
 import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_diacritics(text: str) -> str:
+    """Remove diacritics so 'societăților' matches 'societatilor'."""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
 
 # ---------------------------------------------------------------------------
 # Romanian word-form expansion
@@ -102,6 +110,16 @@ def _expand_word_forms(text: str) -> list[str]:
                 return variants
 
     return variants
+
+
+# Romanian stopwords — filler words to skip when splitting keywords into
+# separate AND-connected search fields on legislatie.just.ro.
+_STOPWORDS = {
+    "de", "din", "si", "și", "la", "cu", "nr", "al", "ale", "a", "in", "în",
+    "pe", "prin", "pentru", "sau", "care", "se", "le", "o", "un", "unei",
+    "unui", "unor", "cel", "cea", "cei", "cele", "mai", "nu", "ca", "dar",
+    "este", "sunt", "fie", "ori", "precum", "privind", "referitoare",
+}
 
 
 HEADERS = {
@@ -202,11 +220,21 @@ def _parse_query(query: str) -> dict:
     }
 
 
+def _split_content_keywords(text: str) -> list[str]:
+    """Split text into significant keywords, dropping Romanian stopwords.
+
+    Returns up to 4 words (the max number of content fields on the site).
+    """
+    words = [w for w in text.lower().split() if w not in _STOPWORDS and len(w) >= 2]
+    return words[:4]
+
+
 def _do_search(
     session: requests.Session,
     token: str,
     title_text: str = "",
     content_text: str = "",
+    content_keywords: list[str] | None = None,
     doc_type: str = "",
     doc_number: str = "",
     emitent: str = "",
@@ -214,17 +242,32 @@ def _do_search(
     date_to: str = "",
     date_signed_from: str = "",
 ) -> list[SearchResult]:
-    """Execute a single search against legislatie.just.ro."""
+    """Execute a single search against legislatie.just.ro.
+
+    Args:
+        content_text: Single phrase for ContentText_First (legacy).
+        content_keywords: List of up to 4 keywords to spread across the
+            ContentText_First/Second/Third/Fourth fields with AND (SI) operator.
+            When provided, takes precedence over content_text.
+    """
+    # Spread keywords across the 4 content fields if provided
+    ct = ["", "", "", ""]
+    if content_keywords:
+        for i, kw in enumerate(content_keywords[:4]):
+            ct[i] = kw
+    elif content_text:
+        ct[0] = content_text
+
     form_data = {
         "__RequestVerificationToken": token,
         "TitleText": title_text,
-        "ContentText_First": content_text,
+        "ContentText_First": ct[0],
         "opContentText_Second": "SI",
-        "ContentText_Second": "",
+        "ContentText_Second": ct[1],
         "opContentText_Third": "SI",
-        "ContentText_Third": "",
+        "ContentText_Third": ct[2],
         "opContentText_Fourth": "SI",
-        "ContentText_Fourth": "",
+        "ContentText_Fourth": ct[3],
         "DocumentType": doc_type,
         "DocumentNumber": doc_number,
         "DataSemnariiTextFrom": date_signed_from,
@@ -262,9 +305,10 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
     Uses a multi-strategy approach:
     0. Check for known abbreviations/popular names (PFA, SRL, GDPR, etc.)
     1. If query has a number pattern (e.g., "legea 31/1990"), do precise search.
-    2. Search by title keywords.
-    3. If title search returns few results, also search in document content.
-    Results are merged with deduplication.
+    2. Search by title keywords (with word-form expansion).
+    Results are merged with deduplication, then post-filtered so every keyword
+    word appears as a substring in at least one visible field (title,
+    description, emitent, doc_type, number, date).
     """
     from app.services.legal_aliases import expand_query
 
@@ -361,15 +405,42 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
                     results = _do_search(session, token, title_text=variant)
                     _add_results(results)
 
-            # Strategy 3: Content search if still not enough results
+            # 2e: Content search as broader candidate fetcher — split keywords
+            # across multiple AND-connected content fields for better matching
             if len(all_results) < max_results:
+                split_kw = _split_content_keywords(keywords)
                 token = _refresh_token(session)
-                results = _do_search(session, token, content_text=keywords)
+                results = _do_search(session, token, content_keywords=split_kw)
                 _add_results(results)
         elif not all_results:
             token = _refresh_token(session)
             results = _do_search(session, token, title_text=raw_title)
             _add_results(results)
+
+    # Keyword post-filter: keep only results where every significant query word
+    # appears as a substring in at least one visible field.
+    # Stopwords are skipped, and words are expanded to Romanian inflections.
+    kw_words = [_strip_diacritics(w).lower() for w in query.split()
+                 if w and w.lower() not in _STOPWORDS and len(w) >= 2]
+    if kw_words:
+        def _word_variants(word: str) -> list[str]:
+            forms = _FORM_LOOKUP.get(word)
+            if not forms:
+                return [word]
+            return [word] + [_strip_diacritics(f).lower() for f in forms if _strip_diacritics(f).lower() != word]
+
+        kw_variants = [_word_variants(w) for w in kw_words]
+
+        def _matches(r: SearchResult) -> bool:
+            searchable = _strip_diacritics(" ".join([
+                r.title, r.description, r.issuer, r.doc_type, r.number, r.date,
+            ])).lower()
+            return all(
+                any(v in searchable for v in variants)
+                for variants in kw_variants
+            )
+
+        all_results = [r for r in all_results if _matches(r)]
 
     return all_results[:max_results]
 
@@ -479,7 +550,9 @@ def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
     return results
 
 
-# Map dropdown labels to legislatie.just.ro DocumentType codes
+# Map legacy string keys to legislatie.just.ro DocumentType numeric codes.
+# New flow: frontend sends numeric codes directly from the scraped dropdown.
+# This map is kept for backward compatibility with old string-based keys.
 ADVANCED_DOC_TYPE_MAP = {
     "lege": "1",
     "og": "13",
@@ -488,11 +561,12 @@ ADVANCED_DOC_TYPE_MAP = {
     "decret": "3",
     "ordin": "5",
     "decizie": "17",
-    # constitutie, cod, norma, regulament, directiva_eu have no codes — handled via title keyword
+    "constitutie": "22",
+    "cod": "170",
+    "norma": "11",
+    "regulament": "12",
+    "directiva_eu": "113",
 }
-
-# Types that have no numeric code and use title keyword instead
-TITLE_KEYWORD_TYPES = {"constitutie", "cod", "norma", "regulament", "directiva_eu"}
 
 
 def advanced_search(
@@ -537,25 +611,27 @@ def advanced_search(
         if not date_to:
             date_to = f"{year}-12-31"
 
-    # Resolve doc_type code
-    resolved_doc_type = ADVANCED_DOC_TYPE_MAP.get(doc_type.lower(), "") if doc_type else ""
-    title_prefix = ""
-    if doc_type and doc_type.lower() in TITLE_KEYWORD_TYPES:
-        # No numeric code — prepend type name to title search
-        label_map = {
-            "constitutie": "constitutia",
-            "cod": "codul",
-            "norma": "norma",
-            "regulament": "regulament",
-            "directiva_eu": "directiva",
-        }
-        title_prefix = label_map.get(doc_type.lower(), "")
-        resolved_doc_type = ""
+    # Resolve doc_type code(s).
+    # Supports comma-separated values for multi-select (e.g. "1,18,13").
+    # Each value can be a numeric code or a legacy string key.
+    def _resolve_one_type(t: str) -> str:
+        t = t.strip()
+        if t.isdigit():
+            return t
+        return ADVANCED_DOC_TYPE_MAP.get(t.lower(), "")
+
+    doc_type_codes: list[str] = []
+    if doc_type:
+        for part in doc_type.split(","):
+            code = _resolve_one_type(part)
+            if code:
+                doc_type_codes.append(code)
+
+    # For single type, use it directly.  For multi, we'll loop below.
+    resolved_doc_type = doc_type_codes[0] if len(doc_type_codes) == 1 else ""
 
     # Build title text
     title_text = keyword
-    if title_prefix:
-        title_text = f"{title_prefix} {keyword}".strip()
 
     # Convert YYYY-MM-DD dates to DD.MM.YYYY for legislatie.just.ro
     def _to_ro_date(iso_date: str) -> str:
@@ -615,30 +691,23 @@ def advanced_search(
                     if results:
                         token = _refresh_token(session)
 
-    # Primary search: title
-    if title_text or resolved_doc_type or doc_number or emitent or effective_date_from or ro_date_to or ro_signed_from:
-        results = _do_search(
-            session, token,
-            title_text=title_text,
-            doc_type=resolved_doc_type,
-            doc_number=doc_number,
-            emitent=emitent,
-            date_from=effective_date_from,
-            date_to=ro_date_to,
-            date_signed_from=ro_signed_from,
-        )
-        _add_results(results)
+    # Build list of doc type codes to search.
+    # For multi-select (2+ types), do one search per type and merge.
+    # For 0 or 1 type, search once with that type (or no type filter).
+    search_type_codes = doc_type_codes if len(doc_type_codes) > 1 else [resolved_doc_type]
 
-    # Word-form expansion: try alternative Romanian inflections for the title
-    if title_text and len(all_results) < max_results:
-        for variant in _expand_word_forms(title_text):
-            if len(all_results) >= max_results:
-                break
-            token = _refresh_token(session)
+    for type_code in search_type_codes:
+        if len(all_results) >= max_results:
+            break
+
+        # Primary search: title
+        if title_text or type_code or doc_number or emitent or effective_date_from or ro_date_to or ro_signed_from:
+            if all_results or boosted_results:
+                token = _refresh_token(session)
             results = _do_search(
                 session, token,
-                title_text=variant,
-                doc_type=resolved_doc_type,
+                title_text=title_text,
+                doc_type=type_code,
                 doc_number=doc_number,
                 emitent=emitent,
                 date_from=effective_date_from,
@@ -647,27 +716,75 @@ def advanced_search(
             )
             _add_results(results)
 
-    # Fallback: content search if keyword provided and title search had few results
-    if keyword and len(all_results) < max_results:
-        token = _refresh_token(session)
-        results = _do_search(
-            session, token,
-            content_text=keyword,
-            doc_type=resolved_doc_type,
-            doc_number=doc_number,
-            emitent=emitent,
-            date_from=effective_date_from,
-            date_to=ro_date_to,
-            date_signed_from=ro_signed_from,
-        )
-        _add_results(results)
+        # Word-form expansion: try alternative Romanian inflections for the title
+        if title_text and len(all_results) < max_results:
+            for variant in _expand_word_forms(title_text):
+                if len(all_results) >= max_results:
+                    break
+                token = _refresh_token(session)
+                results = _do_search(
+                    session, token,
+                    title_text=variant,
+                    doc_type=type_code,
+                    doc_number=doc_number,
+                    emitent=emitent,
+                    date_from=effective_date_from,
+                    date_to=ro_date_to,
+                    date_signed_from=ro_signed_from,
+                )
+                _add_results(results)
 
-    # NOTE: "only_repealed" filtering is not possible via legislatie.just.ro since
-    # the ActInForceOnDateTextFrom field does not work. The include_repealed
-    # parameter is preserved for future use but currently has no server-side effect.
-    # Status is determined on import via auto-detection from version state.
+        # Content search as broader candidate fetcher — legislatie.just.ro
+        # does whole-word title matching ("audiovizual" won't find
+        # "audiovizualului"), so we also search document content to cast a
+        # wider net.  We split keywords across multiple AND-connected content
+        # fields so each word is matched independently (not as an exact phrase).
+        if keyword and len(all_results) < max_results:
+            split_kw = _split_content_keywords(keyword)
+            token = _refresh_token(session)
+            results = _do_search(
+                session, token,
+                content_keywords=split_kw,
+                doc_type=type_code,
+                doc_number=doc_number,
+                emitent=emitent,
+                date_from=effective_date_from,
+                date_to=ro_date_to,
+                date_signed_from=ro_signed_from,
+            )
+            _add_results(results)
 
-    # Step 2: Smart sorting — sort non-boosted results by doc type priority.
+    # Keyword post-filter: keep only results where EVERY significant keyword
+    # word appears as a substring in at least one visible field.
+    # We expand each word to all its Romanian word forms so that e.g.
+    # "legea" matches "lege" and "societatilor" matches "societatile".
+    # Stopwords are skipped — "de", "din", etc. don't need to match.
+    if keyword:
+        kw_words = [_strip_diacritics(w).lower() for w in keyword.split()
+                     if w and w.lower() not in _STOPWORDS and len(w) >= 2]
+
+        def _word_variants(word: str) -> list[str]:
+            """Return the word plus all its known Romanian inflections (diacritic-stripped)."""
+            forms = _FORM_LOOKUP.get(word)
+            if not forms:
+                return [word]
+            return [word] + [_strip_diacritics(f).lower() for f in forms if _strip_diacritics(f).lower() != word]
+
+        kw_variants = [_word_variants(w) for w in kw_words]
+
+        def _matches_keyword(r: SearchResult) -> bool:
+            searchable = _strip_diacritics(" ".join([
+                r.title, r.description, r.issuer, r.doc_type, r.number, r.date,
+            ])).lower()
+            return all(
+                any(v in searchable for v in variants)
+                for variants in kw_variants
+            )
+
+        boosted_results = [r for r in boosted_results if _matches_keyword(r)]
+        all_results = [r for r in all_results if _matches_keyword(r)]
+
+    # Smart sorting — sort non-boosted results by doc type priority.
     # COD/LEGE first, ancillary documents (DECIZIE, RECTIFICARE, DECRET) last.
     DOC_TYPE_PRIORITY = {
         "CONSTITUTIE": 0,

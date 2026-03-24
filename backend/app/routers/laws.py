@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.law import Article, Law, LawVersion, StructuralElement
+from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,38 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
 
     try:
         result = do_import(db, ver_id, import_history=req.import_history)
+
+        # Look up suggested category from law_mappings
+        law_number = result.get("law_number")
+        law_year = result.get("law_year")
+        title = (result.get("title") or "").lower()
+        mapping = None
+        if law_number and law_number != "unknown":
+            candidates = db.query(LawMapping).filter(LawMapping.law_number == law_number).all()
+            if len(candidates) == 1:
+                mapping = candidates[0]
+            elif candidates and law_year:
+                # Multiple laws share this number — disambiguate by year
+                year_str = str(law_year)
+                for c in candidates:
+                    if f"/{year_str}" in c.title or f" {year_str}" in c.title:
+                        mapping = c
+                        break
+                if not mapping:
+                    mapping = candidates[0]  # fallback to first
+        if not mapping and title:
+            # Extract core name (strip dates, parenthetical, "din ..." suffix)
+            core = re.sub(r"\s+din\s+.*", "", title).strip()
+            if len(core) >= 4:
+                mappings = db.query(LawMapping).all()
+                for m in mappings:
+                    mt = m.title.lower()
+                    if core in mt or mt in core:
+                        mapping = m
+                        break
+        if mapping:
+            result["suggested_category_id"] = mapping.category_id
+
         return result
     except ValueError as e:
         db.rollback()
