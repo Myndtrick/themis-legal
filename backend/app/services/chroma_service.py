@@ -92,11 +92,46 @@ def index_law_version(db: Session, law_id: int, law_version_id: int) -> int:
             metadatas=metadatas[i : i + batch_size],
         )
 
-    logger.info(
-        f"Indexed {len(ids)} articles for {law.law_number}/{law.law_year} "
-        f"version {version.id}"
+    # Index annexes
+    from app.models.law import Annex as AnnexModel
+    annexes = (
+        db.query(AnnexModel).filter(AnnexModel.law_version_id == law_version_id).all()
     )
-    return len(ids)
+    anx_ids, anx_documents, anx_metadatas = [], [], []
+    for annex in annexes:
+        if not annex.full_text or not annex.full_text.strip():
+            continue
+        doc_id = f"anx-{annex.id}"
+        anx_ids.append(doc_id)
+        anx_documents.append(annex.full_text)
+        anx_metadatas.append({
+            "law_id": law.id,
+            "law_version_id": version.id,
+            "article_id": annex.id,
+            "law_number": law.law_number,
+            "law_year": str(law.law_year),
+            "law_title": law.title[:200],
+            "article_number": annex.title[:100],
+            "date_in_force": str(version.date_in_force) if version.date_in_force else "",
+            "is_current": str(version.is_current),
+            "is_abrogated": "False",
+            "amendment_count": "0",
+            "doc_type": "annex",
+            "annex_title": annex.title[:200],
+        })
+
+    for i in range(0, len(anx_ids), batch_size):
+        collection.upsert(
+            ids=anx_ids[i : i + batch_size],
+            documents=anx_documents[i : i + batch_size],
+            metadatas=anx_metadatas[i : i + batch_size],
+        )
+
+    logger.info(
+        f"Indexed {len(ids)} articles + {len(anx_ids)} annexes for "
+        f"{law.law_number}/{law.law_year} version {version.id}"
+    )
+    return len(ids) + len(anx_ids)
 
 
 def index_all(db: Session) -> int:
@@ -111,7 +146,7 @@ def index_all(db: Session) -> int:
 
 
 def remove_law_articles(db: Session, law_id: int):
-    """Remove all articles for a law from ChromaDB."""
+    """Remove all articles and annexes for a law from ChromaDB."""
     collection = get_collection()
     articles = (
         db.query(Article.id)
@@ -119,12 +154,19 @@ def remove_law_articles(db: Session, law_id: int):
         .filter(LawVersion.law_id == law_id)
         .all()
     )
-    ids = [f"art-{a.id}" for a in articles]
+    from app.models.law import Annex as AnnexModel
+    annexes = (
+        db.query(AnnexModel.id)
+        .join(LawVersion)
+        .filter(LawVersion.law_id == law_id)
+        .all()
+    )
+    ids = [f"art-{a.id}" for a in articles] + [f"anx-{a.id}" for a in annexes]
     if ids:
         batch_size = 500
         for i in range(0, len(ids), batch_size):
             collection.delete(ids=ids[i : i + batch_size])
-    logger.info(f"Removed {len(ids)} articles from ChromaDB for law_id={law_id}")
+    logger.info(f"Removed {len(ids)} items from ChromaDB for law_id={law_id}")
 
 
 def query_articles(
@@ -170,6 +212,8 @@ def query_articles(
                 "text": results["documents"][0][i],
                 "is_abrogated": meta.get("is_abrogated", "False") == "True",
                 "distance": results["distances"][0][i],
+                "doc_type": meta.get("doc_type", "article"),
+                "annex_title": meta.get("annex_title", ""),
             })
 
     return articles
