@@ -234,6 +234,9 @@ def fetch_and_store_version(
     # Store articles that aren't under any structural element
     _store_orphan_articles(db, version, articles_data, books_data)
 
+    # Store annexes
+    _store_annexes(db, version, result.get("annexes", []))
+
     db.flush()
     return law, version
 
@@ -427,6 +430,34 @@ def _store_orphan_articles(
             continue
         _stored_article_ids.add(key)
         _store_single_article(db, version, art_data, None, idx)
+
+
+def _store_annexes(
+    db: Session,
+    version: LawVersion,
+    annexes_data: list[dict],
+) -> None:
+    """Store annexes as flat text blobs. Amendment notes appended to text."""
+    for idx, anx in enumerate(annexes_data):
+        text = anx.get("text", "") or ""
+        # Append amendment notes directly into the text body
+        for note in anx.get("notes", []):
+            note_text = note.get("text", "")
+            if note_text and note_text.strip():
+                text += f"\n[Modificare: {note_text.strip()}]"
+
+        if not text.strip():
+            continue  # Skip empty annexes
+
+        annex = Annex(
+            law_version_id=version.id,
+            source_id=anx.get("annex_id", f"anx_{idx}"),
+            title=anx.get("title", f"Anexa {idx + 1}"),
+            full_text=text,
+            order_index=idx,
+        )
+        db.add(annex)
+    db.flush()
 
 
 def _collect_referenced_ids(nodes: list[dict], result: set) -> None:
