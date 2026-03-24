@@ -16,18 +16,24 @@ New `Annex` table in `law.py`:
 |---|---|---|
 | `id` | int PK | Auto-increment |
 | `law_version_id` | FK → law_versions.id | Parent version |
-| `annex_id` | str | Original HTML id from leropa parser |
+| `source_id` | str | Original HTML id from leropa parser |
 | `title` | str | e.g. "Anexa nr. 1 — Model de contract" |
 | `full_text` | text | Entire annex body as plain text |
 | `order_index` | int | Position among annexes in the document |
 
-New relationship on `LawVersion`: `annexes: Mapped[list["Annex"]]` with cascade delete.
+Relationships (both sides, following existing Article pattern):
+- `LawVersion.annexes: Mapped[list["Annex"]]` with `cascade="all, delete-orphan"`
+- `Annex.law_version: Mapped["LawVersion"]` with `back_populates="annexes"`
 
 No sub-tables for paragraphs or amendment notes — notes are concatenated into `full_text`.
 
-## Import Changes (leropa_service.py)
+## Import Changes
 
-### fetch_and_store_version()
+### fetcher.py — Afis fallback fix
+
+The Afis fallback (line 149-164) currently merges only `articles` and `books` from the Afis page. Add `result["annexes"] = afis_result.get("annexes", [])` so large codes (Codul Fiscal, etc.) also get their annexes.
+
+### leropa_service.py — fetch_and_store_version()
 
 After `_store_orphan_articles()`, call `_store_annexes(db, version, result.get("annexes", []))`.
 
@@ -47,57 +53,64 @@ def _store_annexes(db, version, annexes_data):
 
         annex = Annex(
             law_version_id=version.id,
-            annex_id=anx.get("annex_id", f"anx_{idx}"),
+            source_id=anx.get("annex_id", f"anx_{idx}"),
             title=anx.get("title", f"Anexa {idx + 1}"),
             full_text=text,
             order_index=idx,
         )
         db.add(annex)
+    db.flush()
 ```
 
 ### import_law()
 
-Same change: after fetching the base version result, pass `result.get("annexes", [])` through to storage. Since `fetch_and_store_version` handles its own fetch, annexes are stored automatically for each version.
+No extra change needed — `fetch_and_store_version` handles its own fetch and now stores annexes for each version automatically.
 
 ## Search Indexing
 
 ### ChromaDB (chroma_service.py)
 
-In `index_law_version()`, after indexing articles, also index annexes:
+In `index_law_version()`, after indexing articles, also query and index annexes:
 
 - `doc_id`: `f"anx-{annex.id}"`
 - `document`: `annex.full_text`
-- `metadata`: same fields as articles plus `doc_type: "annex"`, `annex_title: annex.title`; `article_number` replaced with annex title
+- `metadata`: same fields as articles, plus:
+  - `doc_type: "annex"` (articles get `doc_type: "article"`)
+  - `annex_title: annex.title`
+  - `article_number`: use annex title (for display compatibility)
+  - `is_abrogated: "False"`, `amendment_count: "0"` (not applicable to annexes)
 
-In `remove_law_articles()`: also remove `anx-*` IDs.
+In `remove_law_articles()`: also query `Annex.id` from DB and delete `anx-{id}` IDs from ChromaDB.
 
-In `query_articles()`: results already return all doc types from the collection — add `doc_type` to the returned dict so callers can distinguish.
+In `query_articles()`: add `doc_type` from metadata to the returned dict. Existing article results get `doc_type: "article"` (default if not present in metadata, for backwards compat with already-indexed data).
 
 ### BM25 (bm25_service.py)
 
-Create a parallel FTS5 table `annexes_fts` with same schema:
+Create a parallel FTS5 table `annexes_fts`:
 
 ```sql
 CREATE VIRTUAL TABLE annexes_fts USING fts5(
     annex_text,
     law_version_id UNINDEXED,
-    annex_id UNINDEXED,
+    annex_db_id UNINDEXED,
     tokenize='unicode61 remove_diacritics 2'
 )
 ```
 
-In `search_bm25()`: query both `articles_fts` and `annexes_fts`, merge results by rank. Annex results include `doc_type: "annex"` in the returned dict.
+Note: `annex_db_id` is the Annex table PK (integer), not the HTML source ID string.
 
-In `rebuild_fts_index()`: also drop and recreate `annexes_fts`.
+In `search_bm25()`: query both `articles_fts` and `annexes_fts` with the same FTS query and limit, concatenate results. Annex results include `doc_type: "annex"` in the returned dict. The downstream reranker will sort combined results by relevance.
+
+In `ensure_fts_index()` and `rebuild_fts_index()`: handle `annexes_fts` alongside `articles_fts`.
 
 ## RAG Context (pipeline_service.py)
 
-When formatting retrieved results for the Claude prompt, check `doc_type`:
+When formatting retrieved results for the Claude prompt, branch on `doc_type`:
 
 - **Articles** (existing): `[Article {i}] ... Art. {number} ...`
 - **Annexes** (new): `[Annex {i}] {law_title} ({law_number}/{law_year}), {annex_title}, version {date}\n{text}`
 
-This keeps annexes clearly distinguishable from articles in the prompt context.
+The `doc_type` field propagates from search results through reranking and deduplication to the formatting loop.
 
 ## Out of Scope
 
