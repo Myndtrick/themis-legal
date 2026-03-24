@@ -30,3 +30,9 @@ RULES:
 - When you cite [General] sources, the statement field MUST include a qualifier such as "Conform cunoștințelor juridice generale (neverificat din textul legii actuale)" or "Based on general legal knowledge (not verified against current law text)". This prevents users from treating AI training knowledge as equivalent to verified law text.
 - If the retrieved articles are from a DIFFERENT legal domain than the question, explain that the relevant articles are not available instead of generating a checklist from irrelevant ones.
 - If no articles are provided, DO NOT generate content from general knowledge. Set confidence to "LOW".
+
+ARTICLE PRIORITY:
+- Articles marked [PRIMARY] are from the directly applicable law (lex specialis).
+  Articles marked [SECONDARY] apply subsidiarily. Build the checklist primarily from
+  [PRIMARY] articles. Use [SECONDARY] articles only where the primary law is silent
+  or to provide general framework context.
