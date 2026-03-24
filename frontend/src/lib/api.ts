@@ -191,7 +191,7 @@ export interface ChatMessage {
   reasoning_data: string | null;
   created_at: string;
   clarification_type?: "missing_context" | "missing_law";
-  missing_laws?: MissingLaw[];
+  missing_laws?: LawPreview[];
 }
 
 export interface ChatSessionDetail extends ChatSession {
