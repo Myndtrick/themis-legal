@@ -28,6 +28,10 @@ PROMPT_MANIFEST = {
         "file": "LA-S5-import-request.txt",
         "desc": "Step 5 — Import Request Generator",
     },
+    "LA-S6": {
+        "file": "LA-S6-article-selector.txt",
+        "desc": "Step 6 — Article Selector",
+    },
     "LA-S7": {
         "file": "LA-S7-answer-qa.txt",
         "desc": "Step 7 — Answer Generator (Mode 1 Q&A)",
