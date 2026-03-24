@@ -131,6 +131,17 @@ ALIASES: dict[str, list[dict]] = {
     "asigurari": [
         {"title": "asigurarilor reasigurarilor", "type": "1", "number": "237-2015"},
     ],
+
+    # Constitution
+    "constitutia romaniei": [
+        {"title": "constitutia romaniei", "type": "", "number": ""},
+    ],
+    "constitutia": [
+        {"title": "constitutia romaniei", "type": "", "number": ""},
+    ],
+    "constitutie": [
+        {"title": "constitutia romaniei", "type": "", "number": ""},
+    ],
 }
 
 

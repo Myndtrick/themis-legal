@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { ArticleCard } from "./components/article-card";
 import { ArticleList } from "./components/article-list";
 import { StructuralSection } from "./components/structural-section";
+import { LawToolbar } from "./components/law-toolbar";
 
 export default async function VersionDetailPage(
   props: PageProps<"/laws/[id]/versions/[versionId]">
@@ -69,6 +70,8 @@ export default async function VersionDetailPage(
           </span>
         </div>
       </div>
+
+      <LawToolbar />
 
       {version.structure.length > 0 && (
         <div className="space-y-6">

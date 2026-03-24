@@ -9,6 +9,101 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Romanian word-form expansion
+# ---------------------------------------------------------------------------
+# legislatie.just.ro does literal matching — "lege" won't find "legea".
+# This table maps a *base* form to all the inflected forms we should try.
+# We keep it focused on legal vocabulary (not a full stemmer).
+#
+# Strategy: for every word the user types, if it matches any form in a group
+# we generate title-search variants using the *other* forms in that group.
+
+_FORM_GROUPS: list[tuple[str, ...]] = [
+    # singular indef / singular def / plural indef / plural def
+    ("lege", "legea", "legi", "legile", "legii"),
+    ("cod", "codul", "coduri", "codurile", "codului"),
+    ("ordin", "ordinul", "ordine", "ordinele", "ordinului"),
+    ("hotarare", "hotararea", "hotarari", "hotararile", "hotararii"),
+    ("decret", "decretul", "decrete", "decretele", "decretului"),
+    ("decizie", "decizia", "decizii", "deciziile", "deciziei"),
+    ("ordonanta", "ordonanța", "ordonanta", "ordonante", "ordonantele", "ordonanței"),
+    ("regulament", "regulamentul", "regulamente", "regulamentele", "regulamentului"),
+    ("norma", "norma", "norme", "normele", "normei"),
+    ("directiva", "directiva", "directive", "directivele", "directivei"),
+    ("constitutie", "constitutia", "constituția", "constitutiei", "constituției"),
+    ("societate", "societatea", "societati", "societatile", "societatilor", "societăți", "societățile", "societăților"),
+    ("contract", "contractul", "contracte", "contractele", "contractului"),
+    ("articol", "articolul", "articole", "articolele", "articolului"),
+    ("procedura", "procedura", "proceduri", "procedurile", "procedurii"),
+    ("infractiune", "infractiunea", "infracțiunea", "infractiuni", "infractiunile", "infracțiuni"),
+    ("obligatie", "obligatia", "obligația", "obligatii", "obligatiile", "obligații"),
+    ("raspundere", "raspunderea", "răspundere", "răspunderea"),
+    ("protectie", "protectia", "protecția", "protectiei", "protecției"),
+    ("prevenire", "prevenirea", "prevenirii"),
+    ("spalare", "spalarea", "spălare", "spălarea", "spalarii", "spălării"),
+    ("banilor", "bani", "banilor"),
+    ("fiscal", "fiscala", "fiscale", "fiscalul", "fiscală"),
+    ("civil", "civila", "civile", "civilul", "civilă"),
+    ("penal", "penala", "penale", "penalul", "penală"),
+    ("munca", "muncii", "muncă"),
+    ("energie", "energiei", "energii"),
+    ("educatie", "educatiei", "educației"),
+    ("sanatate", "sanatatii", "sănătate", "sănătății"),
+    ("achizitie", "achizitia", "achiziția", "achizitii", "achizitiile", "achiziții", "achizițiile"),
+    ("insolventa", "insolventei", "insolvență", "insolvenței"),
+    ("contabilitate", "contabilitatii", "contabilitatea", "contabilității"),
+    ("concurenta", "concurentei", "concurență", "concurenței"),
+    ("mediu", "mediului", "medii"),
+    ("comert", "comertului", "comerț", "comerțului"),
+    ("capital", "capitalului", "capitaluri"),
+    ("asigurare", "asigurarea", "asigurari", "asigurarile", "asigurarilor", "asigurări", "asigurărilor"),
+    ("consumator", "consumatorului", "consumatori", "consumatorilor"),
+    ("administratie", "administratiei", "administrația", "administrației"),
+    ("pensie", "pensia", "pensii", "pensiile", "pensiilor"),
+]
+
+# Build a lookup: lowercase form -> set of all forms in the same group
+_FORM_LOOKUP: dict[str, set[str]] = {}
+for _group in _FORM_GROUPS:
+    _all = set(_group)
+    for _form in _group:
+        fl = _form.lower()
+        if fl in _FORM_LOOKUP:
+            _FORM_LOOKUP[fl] |= _all
+        else:
+            _FORM_LOOKUP[fl] = set(_all)
+
+
+def _expand_word_forms(text: str) -> list[str]:
+    """Return alternative phrasings of *text* by expanding Romanian word forms.
+
+    Returns a list of up to 3 alternative strings (excluding the original).
+    Each variant replaces ONE word at a time with an alternative form.
+    We pick the forms most likely to appear in official titles (definite article).
+    """
+    words = text.lower().split()
+    variants: list[str] = []
+    seen: set[str] = {text.lower()}
+
+    for i, word in enumerate(words):
+        forms = _FORM_LOOKUP.get(word)
+        if not forms:
+            continue
+        for alt in forms:
+            if alt == word:
+                continue
+            new_words = words[:i] + [alt] + words[i + 1:]
+            candidate = " ".join(new_words)
+            if candidate not in seen:
+                seen.add(candidate)
+                variants.append(candidate)
+            if len(variants) >= 3:
+                return variants
+
+    return variants
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -117,6 +212,7 @@ def _do_search(
     emitent: str = "",
     date_from: str = "",
     date_to: str = "",
+    date_signed_from: str = "",
 ) -> list[SearchResult]:
     """Execute a single search against legislatie.just.ro."""
     form_data = {
@@ -131,7 +227,7 @@ def _do_search(
         "ContentText_Fourth": "",
         "DocumentType": doc_type,
         "DocumentNumber": doc_number,
-        "DataSemnariiTextFrom": "",
+        "DataSemnariiTextFrom": date_signed_from,
         "DataSemnariiTextTo": date_to,
         "PublishedInName": "",
         "PublishedInNumber": "",
@@ -256,6 +352,15 @@ def search_laws(query: str, max_results: int = 10) -> list[SearchResult]:
                 results = _do_search(session, token, title_text=keywords)
                 _add_results(results)
 
+            # 2d: Word-form expansion — try Romanian inflection variants
+            if len(all_results) < max_results:
+                for variant in _expand_word_forms(raw_title):
+                    if len(all_results) >= max_results:
+                        break
+                    token = _refresh_token(session)
+                    results = _do_search(session, token, title_text=variant)
+                    _add_results(results)
+
             # Strategy 3: Content search if still not enough results
             if len(all_results) < max_results:
                 token = _refresh_token(session)
@@ -377,15 +482,17 @@ def _parse_search_results(html: str, max_results: int) -> list[SearchResult]:
 # Map dropdown labels to legislatie.just.ro DocumentType codes
 ADVANCED_DOC_TYPE_MAP = {
     "lege": "1",
+    "og": "13",
     "oug": "18",
     "hg": "2",
+    "decret": "3",
     "ordin": "5",
     "decizie": "17",
-    # Regulament and Directivă EU have no codes — handled via title keyword
+    # constitutie, cod, norma, regulament, directiva_eu have no codes — handled via title keyword
 }
 
 # Types that have no numeric code and use title keyword instead
-TITLE_KEYWORD_TYPES = {"regulament", "directiva_eu"}
+TITLE_KEYWORD_TYPES = {"constitutie", "cod", "norma", "regulament", "directiva_eu"}
 
 
 def advanced_search(
@@ -421,12 +528,27 @@ def advanced_search(
     if number:
         doc_number = f"{number}-{year}" if year else number
 
+    # When year is provided without a number, use signing date range to filter
+    # (DataSemnariiTextFrom/To are the reliable date fields on legislatie.just.ro)
+    year_signed_from = ""
+    if year and not number:
+        if not date_from:
+            year_signed_from = f"{year}-01-01"
+        if not date_to:
+            date_to = f"{year}-12-31"
+
     # Resolve doc_type code
     resolved_doc_type = ADVANCED_DOC_TYPE_MAP.get(doc_type.lower(), "") if doc_type else ""
     title_prefix = ""
     if doc_type and doc_type.lower() in TITLE_KEYWORD_TYPES:
         # No numeric code — prepend type name to title search
-        label_map = {"regulament": "regulament", "directiva_eu": "directiva"}
+        label_map = {
+            "constitutie": "constitutia",
+            "cod": "codul",
+            "norma": "norma",
+            "regulament": "regulament",
+            "directiva_eu": "directiva",
+        }
         title_prefix = label_map.get(doc_type.lower(), "")
         resolved_doc_type = ""
 
@@ -446,6 +568,7 @@ def advanced_search(
         return iso_date
 
     ro_date_to = _to_ro_date(date_to)
+    ro_signed_from = _to_ro_date(year_signed_from) if year_signed_from else _to_ro_date(date_from)
 
     # NOTE: ActInForceOnDateTextFrom does not work reliably on legislatie.just.ro
     # (returns 0 results regardless of format). We only pass it through if the
@@ -466,7 +589,7 @@ def advanced_search(
 
     # Step 1: Alias boost — if keyword matches a known alias, do a precise
     # number search first and put those results at the very top.
-    if keyword and not number and not year:
+    if keyword and not number:
         from app.services.legal_aliases import expand_query
         alias_matches = expand_query(keyword)
         if alias_matches:
@@ -480,9 +603,20 @@ def advanced_search(
                     _add_results(results, target=boosted_results)
                     if results:
                         token = _refresh_token(session)
+                elif alias.get("title"):
+                    results = _do_search(
+                        session, token,
+                        title_text=alias["title"],
+                        doc_type=alias.get("type", ""),
+                        date_signed_from=ro_signed_from,
+                        date_to=ro_date_to,
+                    )
+                    _add_results(results, target=boosted_results)
+                    if results:
+                        token = _refresh_token(session)
 
     # Primary search: title
-    if title_text or resolved_doc_type or doc_number or emitent or effective_date_from or ro_date_to:
+    if title_text or resolved_doc_type or doc_number or emitent or effective_date_from or ro_date_to or ro_signed_from:
         results = _do_search(
             session, token,
             title_text=title_text,
@@ -491,8 +625,27 @@ def advanced_search(
             emitent=emitent,
             date_from=effective_date_from,
             date_to=ro_date_to,
+            date_signed_from=ro_signed_from,
         )
         _add_results(results)
+
+    # Word-form expansion: try alternative Romanian inflections for the title
+    if title_text and len(all_results) < max_results:
+        for variant in _expand_word_forms(title_text):
+            if len(all_results) >= max_results:
+                break
+            token = _refresh_token(session)
+            results = _do_search(
+                session, token,
+                title_text=variant,
+                doc_type=resolved_doc_type,
+                doc_number=doc_number,
+                emitent=emitent,
+                date_from=effective_date_from,
+                date_to=ro_date_to,
+                date_signed_from=ro_signed_from,
+            )
+            _add_results(results)
 
     # Fallback: content search if keyword provided and title search had few results
     if keyword and len(all_results) < max_results:
@@ -505,6 +658,7 @@ def advanced_search(
             emitent=emitent,
             date_from=effective_date_from,
             date_to=ro_date_to,
+            date_signed_from=ro_signed_from,
         )
         _add_results(results)
 
@@ -516,6 +670,7 @@ def advanced_search(
     # Step 2: Smart sorting — sort non-boosted results by doc type priority.
     # COD/LEGE first, ancillary documents (DECIZIE, RECTIFICARE, DECRET) last.
     DOC_TYPE_PRIORITY = {
+        "CONSTITUTIE": 0,
         "COD": 1, "LEGE": 1,
         "OUG": 2, "OG": 2, "ORDONANTA": 2,
         "HG": 3, "ORDIN": 3, "HOTARARE": 3,

@@ -25,7 +25,11 @@ export function ArticleCard({ article }: { article: ArticleData }) {
   const abrogat = isArticleAbrogat(article, title);
 
   return (
-    <div className={`border rounded-lg p-4 ${abrogat ? "border-red-200 bg-red-50/50" : "border-gray-200 bg-white"}`}>
+    <div
+      id={`art-${article.article_number}`}
+      data-article-number={article.article_number}
+      className={`border rounded-lg p-4 ${abrogat ? "border-red-200 bg-red-50/50" : "border-gray-200 bg-white"}`}
+    >
       <div className="flex items-start justify-between mb-2">
         <h4 className={`font-medium ${abrogat ? "text-red-600" : "text-gray-900"}`}>
           Art. {article.article_number}

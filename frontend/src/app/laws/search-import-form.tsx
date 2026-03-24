@@ -20,10 +20,15 @@ interface SearchResult {
 
 const ACT_TYPES = [
   { label: "All types", value: "" },
+  { label: "Constituție", value: "constitutie" },
+  { label: "Cod", value: "cod" },
   { label: "Lege", value: "lege" },
+  { label: "OG", value: "og" },
   { label: "OUG", value: "oug" },
   { label: "HG", value: "hg" },
+  { label: "Decret", value: "decret" },
   { label: "Ordin", value: "ordin" },
+  { label: "Normă", value: "norma" },
   { label: "Regulament", value: "regulament" },
   { label: "Directivă EU", value: "directiva_eu" },
   { label: "Decizie", value: "decizie" },
@@ -36,10 +41,15 @@ const STATUS_OPTIONS = [
 ];
 
 const DOC_TYPE_COLORS: Record<string, string> = {
+  CONSTITUTIE: "bg-red-100 text-red-800",
+  COD: "bg-emerald-100 text-emerald-800",
   LEGE: "bg-blue-100 text-blue-800",
+  OG: "bg-orange-100 text-orange-800",
   OUG: "bg-amber-100 text-amber-800",
   HG: "bg-indigo-100 text-indigo-800",
+  DECRET: "bg-rose-100 text-rose-800",
   ORDIN: "bg-purple-100 text-purple-800",
+  NORMA: "bg-cyan-100 text-cyan-800",
   DECIZIE: "bg-teal-100 text-teal-800",
 };
 
@@ -68,6 +78,16 @@ export default function SearchImportForm() {
   const [importingIds, setImportingIds] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Map<string, number>>(new Map());
   const [importErrors, setImportErrors] = useState<Map<string, string>>(new Map());
+
+  // Direct URL import
+  const [urlImporting, setUrlImporting] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [urlImportedId, setUrlImportedId] = useState<number | null>(null);
+  const [urlPendingChoice, setUrlPendingChoice] = useState(false);
+
+  const detectedUrl = keyword.match(
+    /legislatie\.just\.ro\/Public\/DetaliiDocument(?:Afis)?\/(\d+)/
+  );
 
   // Emitent autocomplete
   const [emitentSuggestions, setEmitentSuggestions] = useState<string[]>([]);
@@ -180,6 +200,31 @@ export default function SearchImportForm() {
     }
   }
 
+  async function handleUrlImport(importHistory: boolean) {
+    if (!detectedUrl) return;
+    const verId = detectedUrl[1];
+    setUrlPendingChoice(false);
+    setUrlImporting(true);
+    setUrlError(null);
+    setUrlImportedId(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/laws/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Import failed");
+      setUrlImportedId(data.law_id);
+      router.refresh();
+    } catch (err) {
+      setUrlError(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setUrlImporting(false);
+    }
+  }
+
   function handleClearFilters() {
     setKeyword("");
     setDocType("");
@@ -201,19 +246,81 @@ export default function SearchImportForm() {
           <input
             type="text"
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder='Search by keyword, name, or topic...'
+            onChange={(e) => {
+              setKeyword(e.target.value);
+              setUrlImportedId(null);
+              setUrlError(null);
+              setUrlPendingChoice(false);
+            }}
+            placeholder='Search by keyword, name, or paste a legislatie.just.ro link...'
             className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-            disabled={searching}
+            disabled={searching || urlImporting}
           />
-          <button
-            type="submit"
-            disabled={searching}
-            className="rounded-md bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-          >
-            {searching ? "Searching..." : "Search"}
-          </button>
+          {detectedUrl ? (
+            <div className="relative" data-import-dropdown>
+              <button
+                type="button"
+                onClick={() => setUrlPendingChoice(true)}
+                disabled={urlImporting}
+                className="rounded-md bg-green-600 px-5 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              >
+                {urlImporting ? "Importing..." : "Import from link"}
+              </button>
+              {urlPendingChoice && !urlImporting && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-lg border border-gray-200 shadow-lg p-3 w-56">
+                  <p className="text-xs text-gray-500 mb-2">What to import?</p>
+                  <button
+                    type="button"
+                    onClick={() => handleUrlImport(false)}
+                    className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-blue-50 text-gray-700"
+                  >
+                    Current version only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleUrlImport(true)}
+                    className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-blue-50 text-gray-700"
+                  >
+                    All historical versions
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUrlPendingChoice(false)}
+                    className="w-full text-left px-3 py-1.5 text-xs rounded-md hover:bg-gray-50 text-gray-400 mt-1"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              type="submit"
+              disabled={searching}
+              className="rounded-md bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+            >
+              {searching ? "Searching..." : "Search"}
+            </button>
+          )}
         </div>
+
+        {/* URL import feedback */}
+        {detectedUrl && urlImportedId && (
+          <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-md">
+            <span className="text-sm text-green-700">Imported successfully!</span>
+            <a
+              href={`/laws/${urlImportedId}`}
+              className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+            >
+              View law
+            </a>
+          </div>
+        )}
+        {detectedUrl && urlError && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+            <p className="text-sm text-red-700">{urlError}</p>
+          </div>
+        )}
 
         {/* Advanced filters toggle */}
         <button
