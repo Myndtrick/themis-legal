@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.law import (
     AmendmentNote,
+    Annex,
     Article,
     Law,
     LawVersion,

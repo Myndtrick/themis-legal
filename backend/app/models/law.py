@@ -91,6 +91,9 @@ class LawVersion(Base):
     articles: Mapped[list["Article"]] = relationship(
         back_populates="law_version", cascade="all, delete-orphan"
     )
+    annexes: Mapped[list["Annex"]] = relationship(
+        back_populates="law_version", cascade="all, delete-orphan"
+    )
 
 
 class StructuralElement(Base):
@@ -198,3 +201,18 @@ class AmendmentNote(Base):
     replacement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     article: Mapped["Article"] = relationship(back_populates="amendment_notes")
+
+
+class Annex(Base):
+    __tablename__ = "annexes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    law_version_id: Mapped[int] = mapped_column(
+        ForeignKey("law_versions.id"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    full_text: Mapped[str] = mapped_column(Text, nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+
+    law_version: Mapped["LawVersion"] = relationship(back_populates="annexes")
