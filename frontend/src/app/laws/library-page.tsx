@@ -125,7 +125,11 @@ export default function LibraryPage() {
       </div>
 
       {/* Combined search */}
-      <CombinedSearch onImportComplete={fetchData} />
+      <CombinedSearch
+        groups={data.groups}
+        suggestedLaws={data.suggested_laws}
+        onImportComplete={fetchData}
+      />
 
       {/* Main layout: sidebar + content */}
       <div className="flex border border-gray-200 rounded-lg bg-white min-h-[500px]">

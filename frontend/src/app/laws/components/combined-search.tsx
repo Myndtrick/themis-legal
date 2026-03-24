@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { LocalSearchResult } from "@/lib/api";
+import { api, LocalSearchResult, CategoryGroupData, SuggestedLaw } from "@/lib/api";
 import Link from "next/link";
+import CategoryModal from "./category-modal";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -56,10 +57,12 @@ const STATE_COLORS: Record<string, string> = {
 };
 
 interface CombinedSearchProps {
+  groups: CategoryGroupData[];
+  suggestedLaws: SuggestedLaw[];
   onImportComplete: () => void;
 }
 
-export default function CombinedSearch({ onImportComplete }: CombinedSearchProps) {
+export default function CombinedSearch({ groups, suggestedLaws, onImportComplete }: CombinedSearchProps) {
   const router = useRouter();
   const [keyword, setKeyword] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -85,6 +88,13 @@ export default function CombinedSearch({ onImportComplete }: CombinedSearchProps
   const [pendingImportId, setPendingImportId] = useState<string | null>(null);
   const [importingIds, setImportingIds] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
+
+  // Category confirmation after import
+  const [importedLawForCategory, setImportedLawForCategory] = useState<{
+    lawId: number;
+    title: string;
+    prefillCategoryId: number | null;
+  } | null>(null);
 
   // URL detection
   const detectedUrl = keyword.match(
@@ -165,8 +175,24 @@ export default function CombinedSearch({ onImportComplete }: CombinedSearchProps
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
       if (!res.ok) throw new Error("Import failed");
+      const data = await res.json();
       setImportedIds((prev) => new Set(prev).add(verId));
-      onImportComplete();
+      // Find the external result to get title/number info
+      const r = externalResults.find((x) => x.ver_id === verId);
+      if (r) {
+        const match = suggestedLaws.find(
+          (s) =>
+            s.law_number === r.number ||
+            s.title.toLowerCase().includes((r.description || "").toLowerCase())
+        );
+        setImportedLawForCategory({
+          lawId: data.law_id,
+          title: r.description || r.title,
+          prefillCategoryId: match?.category_id ?? null,
+        });
+      } else {
+        onImportComplete();
+      }
     } catch { /* silent */ } finally {
       setImportingIds((prev) => {
         const next = new Set(prev);
@@ -190,11 +216,35 @@ export default function CombinedSearch({ onImportComplete }: CombinedSearchProps
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
       if (!res.ok) throw new Error("Import failed");
+      const data = await res.json();
       setImportedIds((prev) => new Set(prev).add(verId));
-      onImportComplete();
+      setImportedLawForCategory({
+        lawId: data.law_id,
+        title: `Imported law (ver ${verId})`,
+        prefillCategoryId: null,
+      });
     } catch { /* silent */ } finally {
       setUrlImporting(false);
     }
+  }
+
+  async function handleImportCategoryConfirm(categoryId: number) {
+    if (!importedLawForCategory) return;
+    await api.laws.assignCategory(importedLawForCategory.lawId, categoryId);
+    setImportedLawForCategory(null);
+    onImportComplete();
+  }
+
+  function handleImportCategorySkip() {
+    setImportedLawForCategory(null);
+    onImportComplete();
+  }
+
+  async function handleImportCategoryCancel() {
+    if (!importedLawForCategory) return;
+    await api.laws.delete(importedLawForCategory.lawId);
+    setImportedLawForCategory(null);
+    onImportComplete();
   }
 
   const hasResults = localResults.length > 0 || externalResults.length > 0;
@@ -407,6 +457,17 @@ export default function CombinedSearch({ onImportComplete }: CombinedSearchProps
         <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
           <p className="text-sm text-red-700">{searchError}</p>
         </div>
+      )}
+
+      {importedLawForCategory && (
+        <CategoryModal
+          lawTitle={importedLawForCategory.title}
+          groups={groups}
+          prefillCategoryId={importedLawForCategory.prefillCategoryId}
+          onConfirm={handleImportCategoryConfirm}
+          onSkip={handleImportCategorySkip}
+          onCancel={handleImportCategoryCancel}
+        />
       )}
     </div>
   );
