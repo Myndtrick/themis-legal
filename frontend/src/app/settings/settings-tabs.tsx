@@ -6,6 +6,7 @@ const TABS = [
   { id: "prompts", label: "Prompt Management" },
   { id: "pipeline", label: "Pipeline Tracking" },
   { id: "versions", label: "Version History" },
+  { id: "categories", label: "Categories" },
 ] as const;
 
 export type TabId = (typeof TABS)[number]["id"];

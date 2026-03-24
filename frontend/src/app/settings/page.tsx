@@ -7,6 +7,7 @@ import { PromptEditor } from "./prompts/prompt-editor";
 import { HealthDashboard } from "./pipeline/health-dashboard";
 import { RunTable } from "./pipeline/run-table";
 import { VersionHistory } from "./versions/version-history";
+import { CategoriesTable } from "./categories/categories-table";
 
 function SettingsContent() {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -45,6 +46,10 @@ function SettingsContent() {
 
           if (activeTab === "versions") {
             return <VersionHistory />;
+          }
+
+          if (activeTab === "categories") {
+            return <CategoriesTable />;
           }
 
           return null;
