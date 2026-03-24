@@ -1,7 +1,7 @@
 # backend/app/services/bm25_service.py
 """
 BM25 full-text search via SQLite FTS5.
-Indexes article text + amendment notes for exact keyword matching.
+Indexes consolidated article text for exact keyword matching.
 """
 from __future__ import annotations
 import logging
@@ -54,18 +54,8 @@ def ensure_fts_index(db: Session):
     """)
     articles = cursor.fetchall()
 
-    # Also fetch amendment notes
-    cursor.execute("SELECT article_id, text FROM amendment_notes")
-    notes_by_article = {}
-    for article_id, text in cursor.fetchall():
-        if text:
-            notes_by_article.setdefault(article_id, []).append(text)
-
     for art_id, full_text, law_version_id in articles:
-        parts = [full_text or ""]
-        for note_text in notes_by_article.get(art_id, []):
-            parts.append(note_text)
-        combined = " ".join(parts)
+        combined = full_text or ""
 
         cursor.execute(
             "INSERT INTO articles_fts(rowid, article_text, law_version_id, article_id) VALUES (?, ?, ?, ?)",

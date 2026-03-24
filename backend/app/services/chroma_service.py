@@ -64,18 +64,11 @@ def index_law_version(db: Session, law_id: int, law_version_id: int) -> int:
         if not article.full_text or not article.full_text.strip():
             continue
 
-        # Build searchable text: article text + amendment notes
-        # Amendment notes often contain critical information (e.g., new minimum
-        # capital requirements) that isn't in the article text itself.
-        text_parts = [article.full_text]
-        if article.amendment_notes:
-            for note in article.amendment_notes:
-                if note.text and note.text.strip():
-                    text_parts.append(f"[Amendment: {note.text.strip()}]")
-
+        # Index only the consolidated article text — amendment metadata
+        # is stored in DB metadata fields, not in the searchable document.
         doc_id = f"art-{article.id}"
         ids.append(doc_id)
-        documents.append("\n".join(text_parts))
+        documents.append(article.full_text)
         metadatas.append({
             "law_id": law.id,
             "law_version_id": version.id,
@@ -87,6 +80,7 @@ def index_law_version(db: Session, law_id: int, law_version_id: int) -> int:
             "date_in_force": str(version.date_in_force) if version.date_in_force else "",
             "is_current": str(version.is_current),
             "is_abrogated": str(getattr(article, 'is_abrogated', False)),
+            "amendment_count": str(len(article.amendment_notes)) if article.amendment_notes else "0",
         })
 
     # Batch upsert (keep batches manageable)
