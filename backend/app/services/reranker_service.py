@@ -13,6 +13,15 @@ logger = logging.getLogger(__name__)
 _model: CrossEncoder | None = None
 MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+# Additive boost to cross-encoder scores based on law role.
+# PRIMARY articles get a relevance bonus so they rank above SECONDARY
+# unless significantly less relevant. Calibrate against actual score
+# distributions from pipeline logs.
+TIER_BOOST = {
+    "PRIMARY": 0.15,
+    "SECONDARY": 0.0,
+}
+
 
 def get_reranker() -> CrossEncoder:
     global _model
@@ -44,6 +53,13 @@ def rerank_articles(
 
     for art, score in zip(articles, scores):
         art["reranker_score"] = float(score)
+
+    # Apply tier-based boost: PRIMARY articles get a relevance bonus
+    for art in articles:
+        role = art.get("role", "SECONDARY")
+        boost = TIER_BOOST.get(role, 0.0)
+        if boost:
+            art["reranker_score"] += boost
 
     articles.sort(key=lambda x: x["reranker_score"], reverse=True)
     return articles[:top_k]
