@@ -125,6 +125,16 @@ export interface LawDetail {
   status: string;
   status_override: boolean;
   versions: LawVersionSummary[];
+  category: {
+    id: number;
+    slug: string;
+    name_ro: string;
+    name_en: string;
+    group_name_ro: string;
+    group_name_en: string;
+    group_color_hex: string;
+  } | null;
+  category_confidence: string | null;
 }
 
 export interface LawVersionSummary {
