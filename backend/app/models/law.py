@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,10 +62,15 @@ class Law(Base):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="unknown")
     status_override: Mapped[bool] = mapped_column(Boolean, default=False)
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id"), nullable=True
+    )
+    category_confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
 
+    category: Mapped["Category | None"] = relationship(back_populates="laws")
     versions: Mapped[list["LawVersion"]] = relationship(
         back_populates="law", cascade="all, delete-orphan"
     )
