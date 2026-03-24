@@ -20,6 +20,10 @@ PROMPT_MANIFEST = {
         "file": "LA-S2-date-extractor.txt",
         "desc": "Step 2 — Date Extractor",
     },
+    "LA-S2.5": {
+        "file": "LA-S2.5-clarification.txt",
+        "desc": "Step 2.5 — Clarification Question Generator",
+    },
     "LA-S3": {
         "file": "LA-S3-law-identifier.txt",
         "desc": "Step 3 — Law Identifier",
@@ -31,6 +35,10 @@ PROMPT_MANIFEST = {
     "LA-S6": {
         "file": "LA-S6-article-selector.txt",
         "desc": "Step 6 — Article Selector",
+    },
+    "LA-S6.5": {
+        "file": "LA-S6.5-relevance-check.txt",
+        "desc": "Step 6.5 — Relevance Checker",
     },
     "LA-S7": {
         "file": "LA-S7-answer-qa.txt",

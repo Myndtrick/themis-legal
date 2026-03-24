@@ -150,6 +150,8 @@ export function useChat() {
           setIsStreaming(false);
         },
         onDone: (data) => {
+          const outputMode = data.output_mode || data.mode;
+
           // Store structured data (answer sections + reasoning) together
           const combinedData = {
             structured: data.structured,
@@ -162,10 +164,14 @@ export function useChat() {
             role: "assistant",
             // Use short_answer from structured if available, else raw content
             content: data.structured?.short_answer || data.content,
-            mode: data.mode,
+            mode: outputMode === "clarification" || outputMode === "needs_import"
+              ? outputMode
+              : data.mode,
             run_id: data.run_id,
             reasoning_data: JSON.stringify(combinedData),
             created_at: new Date().toISOString(),
+            clarification_type: data.clarification_type,
+            missing_laws: data.missing_laws,
           };
           setMessages((prev) => [...prev, assistantMsg]);
           setStreamingText("");
@@ -218,6 +224,8 @@ export function useChat() {
           setStreamingText((prev) => prev + text);
         },
         onDone: (data) => {
+          const outputMode = data.output_mode || data.mode;
+
           // Store structured data (answer sections + reasoning) together
           const combinedData = {
             structured: data.structured,
@@ -230,10 +238,14 @@ export function useChat() {
             role: "assistant",
             // Use short_answer from structured if available, else raw content
             content: data.structured?.short_answer || data.content,
-            mode: data.mode,
+            mode: outputMode === "clarification" || outputMode === "needs_import"
+              ? outputMode
+              : data.mode,
             run_id: data.run_id,
             reasoning_data: JSON.stringify(combinedData),
             created_at: new Date().toISOString(),
+            clarification_type: data.clarification_type,
+            missing_laws: data.missing_laws,
           };
           setMessages((prev) => [...prev, assistantMsg]);
           setStreamingText("");

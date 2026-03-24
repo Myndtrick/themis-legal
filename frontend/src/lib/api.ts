@@ -190,6 +190,8 @@ export interface ChatMessage {
   run_id: string | null;
   reasoning_data: string | null;
   created_at: string;
+  clarification_type?: "missing_context" | "missing_law";
+  missing_laws?: MissingLaw[];
 }
 
 export interface ChatSessionDetail extends ChatSession {
@@ -292,6 +294,7 @@ export interface StepLogData {
   prompt_version: number | null;
   input_summary: string | null;
   output_summary: string | null;
+  output_data: Record<string, unknown> | null;
   confidence: string | null;
   warnings: string | null;
 }

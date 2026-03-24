@@ -32,10 +32,18 @@ export interface SSEHandlers {
     content: string;
     structured: StructuredAnswer | null;
     mode: string;
+    output_mode?: string;
     run_id: string;
     confidence: string;
     flags: string[];
     reasoning: Record<string, unknown>;
+    clarification_type?: "missing_context" | "missing_law";
+    missing_laws?: Array<{
+      law_number: string;
+      law_year: number;
+      title: string;
+      reason: string;
+    }>;
   }) => void;
   onError?: (error: string) => void;
 }

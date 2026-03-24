@@ -25,6 +25,7 @@ class StepLogResponse(BaseModel):
     prompt_version: int | None = None
     input_summary: str | None = None
     output_summary: str | None = None
+    output_data: dict | None = None
     confidence: str | None = None
     warnings: str | None = None  # JSON string
 

@@ -104,6 +104,7 @@ def get_run_detail(run_id: str, db: Session = Depends(get_db)):
                 prompt_version=s.prompt_version,
                 input_summary=s.input_summary,
                 output_summary=s.output_summary,
+                output_data=json.loads(s.output_data) if s.output_data else None,
                 confidence=s.confidence,
                 warnings=s.warnings,
             )

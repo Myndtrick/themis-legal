@@ -5,11 +5,16 @@ import type { StepProgress } from "./use-chat";
 const STEP_LABELS: Record<string, string> = {
   issue_classification: "Classifying question",
   law_mapping: "Mapping applicable laws",
+  early_relevance_gate: "Checking law coverage",
   version_selection: "Selecting law versions",
   hybrid_retrieval: "Searching articles",
   expansion: "Expanding context",
+  exception_retrieval: "Searching for exceptions",
+  article_selection: "Selecting relevant articles",
   reranking: "Ranking relevance",
+  relevance_check: "Checking relevance",
   answer_generation: "Generating answer",
+  citation_validation: "Validating citations",
 };
 
 export function StepIndicator({ steps }: { steps: StepProgress[] }) {
