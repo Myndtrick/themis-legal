@@ -20,11 +20,7 @@ PROMPT_MANIFEST = {
         "file": "LA-S2-date-extractor.txt",
         "desc": "Step 2 — Date Extractor",
     },
-    "LA-S2.5": {
-        "file": "LA-S2.5-clarification.txt",
-        "desc": "Step 2.5 — Clarification Question Generator",
-    },
-    "LA-S3": {
+"LA-S3": {
         "file": "LA-S3-law-identifier.txt",
         "desc": "Step 3 — Law Identifier",
     },
