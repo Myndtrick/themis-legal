@@ -498,6 +498,59 @@ def _store_single_article(
         db.add(amendment)
 
 
+def _fetch_law_metadata(ver_id: str) -> dict:
+    """Fetch document metadata, history list, and date lookup for a law.
+
+    Returns dict with keys: doc, articles_data, books_data, history, date_lookup, ver_id.
+    Shared by import_law() and import_law_smart().
+    """
+    from app.services.fetcher import fetch_document
+
+    result = fetch_document(ver_id)
+    doc = result["document"]
+    articles_data = result["articles"]
+    books_data = result["books"]
+    history = doc.get("history", [])
+
+    # Reject documents with no content and no history versions
+    if not articles_data and not books_data and not history:
+        title = doc.get("title") or f"Document {ver_id}"
+        raise ValueError(
+            f"This document has no content: '{title}'. "
+            f"Try importing a different version (e.g., the republished version)."
+        )
+
+    # Build date lookup from the history (consolidated versions)
+    date_lookup: dict[str, datetime.date | None] = {}
+    for entry in history:
+        date_lookup[entry["ver_id"]] = _parse_date(entry.get("date"))
+
+    # Cross-reference the newest history entry to discover newer consolidations
+    if history:
+        newest_known = history[0]["ver_id"]
+        try:
+            cross_result = fetch_document(newest_known)
+            for entry in cross_result["document"].get("history", []):
+                entry_vid = entry["ver_id"]
+                if entry_vid not in date_lookup and entry_vid != ver_id:
+                    date_lookup[entry_vid] = _parse_date(entry.get("date"))
+                    history.append(entry)
+        except Exception as e:
+            logger.warning(f"Cross-reference failed for {newest_known}: {e}")
+
+    # The forma de baza date is the law's original publication date
+    date_lookup[ver_id] = _date_from_list(doc.get("date"))
+
+    return {
+        "doc": doc,
+        "articles_data": articles_data,
+        "books_data": books_data,
+        "history": history,
+        "date_lookup": date_lookup,
+        "ver_id": ver_id,
+    }
+
+
 def import_law(
     db: Session,
     ver_id: str,
@@ -514,22 +567,6 @@ def import_law(
 
     logger.info(f"Starting import for ver_id={ver_id}")
 
-    # First, fetch the document to get metadata and the full history list
-    from app.services.fetcher import fetch_document
-    result = fetch_document(ver_id)
-    doc = result["document"]
-    articles_data = result["articles"]
-    books_data = result["books"]
-    history = doc.get("history", [])
-
-    # Reject documents with no content and no history versions
-    if not articles_data and not books_data and not history:
-        title = doc.get("title") or f"Document {ver_id}"
-        raise ValueError(
-            f"This document has no content: '{title}'. "
-            f"Try importing a different version (e.g., the republished version)."
-        )
-
     # How legislatie.just.ro versions work:
     #
     # The selected ver_id is the "forma de baza" — the original text of the law.
@@ -545,27 +582,10 @@ def import_law(
     # Together: forma de baza + all consolidations = complete version list.
     # The newest-dated version is the current one in force.
 
-    # Build date lookup from the history (consolidated versions)
-    date_lookup: dict[str, datetime.date | None] = {}
-    for entry in history:
-        date_lookup[entry["ver_id"]] = _parse_date(entry.get("date"))
-
-    # Cross-reference the newest history entry to discover newer consolidations
-    # that the main page's history doesn't list yet.
-    if history:
-        newest_known = history[0]["ver_id"]
-        try:
-            cross_result = fetch_document(newest_known)
-            for entry in cross_result["document"].get("history", []):
-                entry_vid = entry["ver_id"]
-                if entry_vid not in date_lookup and entry_vid != ver_id:
-                    date_lookup[entry_vid] = _parse_date(entry.get("date"))
-                    history.append(entry)
-        except Exception as e:
-            logger.warning(f"Cross-reference failed for {newest_known}: {e}")
-
-    # The forma de baza date is the law's original publication date
-    date_lookup[ver_id] = _date_from_list(doc.get("date"))
+    meta = _fetch_law_metadata(ver_id)
+    doc = meta["doc"]
+    history = meta["history"]
+    date_lookup = meta["date_lookup"]
 
     # Decide which versions to import.
     #
