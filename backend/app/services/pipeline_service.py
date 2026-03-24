@@ -728,50 +728,6 @@ def _generate_clarification_question(state: dict, db: Session) -> dict | None:
     return parsed
 
 
-def _identify_missing_laws_from_text(text: str, db: Session) -> list[dict]:
-    """Try to identify specific laws mentioned in text that aren't in the database.
-
-    Scans text for known law names (from legal_aliases) and checks if they're imported.
-    Returns a list of missing law dicts with law_number, law_year, title, reason.
-    """
-    from app.services.legal_aliases import ALIASES
-
-    text_lower = text.lower()
-    identified = []
-    seen_keys = set()
-
-    # Check all known aliases against the text
-    for alias_name, alias_entries in ALIASES.items():
-        if alias_name in text_lower:
-            for entry in alias_entries:
-                number_str = entry.get("number", "")
-                if not number_str or "-" not in number_str:
-                    continue
-                parts = number_str.split("-")
-                law_number, law_year = parts[0], parts[1]
-                key = f"{law_number}/{law_year}"
-
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                # Check if this law is in the database
-                existing = (
-                    db.query(Law)
-                    .filter(Law.law_number == law_number, Law.law_year == int(law_year))
-                    .first()
-                )
-                if not existing:
-                    identified.append({
-                        "law_number": law_number,
-                        "law_year": int(law_year),
-                        "title": alias_name.replace("_", " ").title(),
-                        "reason": f"Identified from relevance check: '{alias_name}'",
-                    })
-
-    return identified
-
-
 def _build_needs_import_event(state: dict, missing_laws: list[dict]) -> dict:
     """Build a 'done' event that tells the frontend to offer law import."""
     law_names = ", ".join(
