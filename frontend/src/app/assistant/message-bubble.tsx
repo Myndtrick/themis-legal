@@ -84,8 +84,8 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         <AnswerDetail reasoningData={message.reasoning_data} />
 
         {/* Disclaimer */}
-        <div className="mt-2 text-[10px] text-gray-400 leading-tight">
-          Analiza juridica preliminara asistata de AI — necesita revizuire umana.
+        <div className="mt-3 px-2 py-1.5 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600 leading-snug">
+          Analiza juridica preliminara asistata de AI — necesita revizuire umana. Aceasta nu constituie consultanta juridica.
         </div>
       </div>
     </div>
