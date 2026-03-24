@@ -2,7 +2,6 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,11 +10,10 @@ from app.models import assistant, pipeline, prompt  # noqa: F401 — register mo
 from app.routers import assistant as assistant_router
 from app.routers import laws, notifications
 from app.routers import settings_pipeline, settings_prompts
+from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-scheduler = BackgroundScheduler()
 
 
 def run_update_check():
