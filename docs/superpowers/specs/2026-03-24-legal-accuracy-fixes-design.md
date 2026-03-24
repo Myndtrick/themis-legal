@@ -16,9 +16,10 @@
 - Call Claude with the LA-S2 prompt after Step 1 completes.
 - Use the extracted `primary_date` for version selection in Step 3.
 - If no date is extractable, default to today (current behavior) but add a flag: "No specific date detected — using current law versions."
-- Pass the extracted date context to Step 7 so the answer generation prompt can reference it.
+- If `needs_clarification=true`: add the date clarification to the answer's `missing_info` field and flag it, but do NOT pause the pipeline. Proceed with today's date as fallback and explain in `version_logic` that the date was ambiguous.
+- Pass the extracted date context to Step 7 so the answer generation prompt can reference it. Step 7 already receives `primary_date` — ensure the LA-S7 prompt explicitly instructs Claude to state which date/version is being answered about.
 
-**Files:** `pipeline_service.py` (add `_step1b_date_extraction` function, wire into pipeline)
+**Files:** `pipeline_service.py` (add `_step1b_date_extraction` function, wire into pipeline), LA-S7 prompts (add date explanation instruction)
 
 ---
 
@@ -35,14 +36,14 @@
 
 **Resolution logic:**
 1. Parse the referenced law identifier from the text.
-2. Look up the law in the database (by number/year or alias).
-3. Use the version selected in Step 3 for that law (if available), or the current version.
+2. Look up the law in the database (by number/year or alias). Also audit and expand `legal_aliases.py` coverage to handle common abbreviated code references (`C.civ.`, `C.pen.`, `C.proc.civ.`, `C.proc.pen.`, `C.fisc.`, `C.muncii`).
+3. Version selection for cross-referenced law: use the `primary_date` from the pipeline state to select the correct version (same logic as Step 3: `date_in_force <= primary_date`, ordered DESC). This ensures temporal consistency — if the user asks about 2018, cross-referenced articles also come from 2018 versions. If no version matches the date, fall back to `is_current=True`. If the law is already in `selected_versions` (from Step 3), reuse that version.
 4. Fetch the referenced article from that version.
 5. If the referenced law is not in the database, skip silently (don't break the pipeline).
 
 **Constraint:** Only follow one level of cross-references (no recursive expansion) to avoid explosion.
 
-**Files:** `article_expander.py` (new function `_extract_cross_law_references`), `legal_aliases.py` (use for popular-name resolution)
+**Files:** `article_expander.py` (new function `_extract_cross_law_references`), `legal_aliases.py` (expand with code abbreviations, use for popular-name resolution)
 
 ---
 
@@ -59,9 +60,9 @@ Add missing domain mappings:
 - `eu_law`: Primary = none (EU law questions are too varied). Secondary = Codul Civil 287/2009. Flag: "EU law questions may require importing specific transposition laws."
 - `other`: Primary = Codul Civil 287/2009 (gap-filler). Flag: "Domain not specifically mapped — using Civil Code as general framework."
 
-Also add multi-domain support: allow Step 1 (issue classification) to return a secondary domain. Step 2 merges the law sets from both domains, deduplicating. This requires a small prompt change to LA-S1 to output `secondary_domain` field.
+Also add multi-domain support: allow Step 1 (issue classification) to return a secondary domain. Step 2 merges the law sets from both domains, deduplicating by `(law_number, law_year)` — if both domains map to Codul Civil, include it only once. This requires a small prompt change to LA-S1 to output `secondary_domain` field.
 
-**Files:** `law_mapping.py` (add new domain entries, add `merge_domains` helper), `pipeline_service.py` (call mapping for secondary domain if present), LA-S1 prompt (add `secondary_domain` output field)
+**Files:** `law_mapping.py` (add new domain entries, add `merge_domains` helper), `pipeline_service.py` (call mapping for secondary domain if present, deduplicate candidate_laws), LA-S1 prompt (add `secondary_domain` output field)
 
 ---
 
@@ -81,6 +82,16 @@ Alternatively, if performance is a concern: chunk long articles into overlapping
 
 ## High-Priority Fixes
 
+### H0. Fix Step 6 article text truncation (500 chars)
+
+**Problem:** In `_step6_select_articles`, article text is truncated to 500 characters for Claude's article selection: `text_preview = art.get("text", "")[:500]`. Claude selects which articles to keep based on partial text, potentially dropping articles whose relevant content appears after character 500.
+
+**Fix:** Increase the preview to 1500 characters. Claude's article selection prompt (LA-S6) processes many articles at once, so full text would be too expensive. 1500 characters captures the first ~3 paragraphs of most articles, which is a much better heuristic than 500. For articles longer than 1500 chars, append `[...truncated, full text: {len} chars]` so Claude knows content was cut.
+
+**Files:** `pipeline_service.py` (_step6_select_articles, line where `[:500]` appears)
+
+---
+
 ### H1. Flag abrogated articles in retrieval results
 
 **Problem:** Articles marked "Abrogat" in their text are retrieved and cited like valid articles. No semantic flag distinguishes them.
@@ -92,8 +103,9 @@ Alternatively, if performance is a concern: chunk long articles into overlapping
 4. In Step 6 (article selection), include abrogation status in the article summary sent to Claude: `[ABROGATED]` prefix.
 5. In Step 7 (answer generation), Claude's context should mark abrogated articles clearly so it knows not to cite them as current law.
 6. Migration: backfill `is_abrogated` for all existing articles by scanning `full_text` for abrogation patterns.
+7. Also update ChromaDB metadata to include `is_abrogated` so it's available for filtering without a database join.
 
-**Files:** `models/law.py` (add field), `leropa_service.py` (detect on import), `pipeline_service.py` (Steps 4, 6, 7 — pass flag), migration script
+**Files:** `models/law.py` (add field), `leropa_service.py` (detect on import), `pipeline_service.py` (Steps 4, 6, 7 — pass flag), `chroma_service.py` (add to metadata), migration script
 
 ---
 
@@ -101,13 +113,16 @@ Alternatively, if performance is a concern: chunk long articles into overlapping
 
 **Problem:** Amendment metadata is embedded alongside article text, causing retrieval to match on amendment metadata rather than article content.
 
-**Fix:**
+**Prerequisite check:** Verify that `article.full_text` in the database contains the consolidated/current text of the article (post-amendments), not the original pre-amendment text. The leropa importer stores consolidated versions from legislatie.just.ro, so `full_text` should already reflect amendments. If this is NOT the case (i.e., `full_text` is original text and amendments are stored separately in amendment notes), this fix must NOT be applied — it would cause the system to miss amended content. Verify before proceeding.
+
+**Fix (assuming `full_text` is consolidated):**
 1. In `chroma_service.py`, index only `article.full_text` — do NOT append amendment notes.
 2. In `bm25_service.py`, index only article text — do NOT append amendment notes.
 3. Store amendment metadata in ChromaDB's metadata fields instead (e.g., `amendment_laws`, `amendment_dates`) so it can be used for filtering but doesn't pollute semantic search.
-4. Re-index all existing articles after this change.
+4. Keep amendment notes in the text *returned to the pipeline* (Steps 6 and 7) — Claude should still see amendment context when generating answers. Only remove from what gets *indexed* for search.
+5. Re-index all existing articles after this change (one-time migration, not at runtime). If H1 (abrogated articles) has been implemented first, include `is_abrogated` in ChromaDB metadata during this re-index to avoid re-indexing twice.
 
-**Files:** `chroma_service.py` (remove amendment concatenation), `bm25_service.py` (remove amendment concatenation), re-indexing script
+**Files:** `chroma_service.py` (remove amendment concatenation from indexing), `bm25_service.py` (remove amendment concatenation from indexing), re-indexing script
 
 ---
 
@@ -218,12 +233,13 @@ These require significant architectural changes and are out of scope for this fi
 1. **C1** (date extraction) — highest impact, self-contained
 2. **C3** (domain mapping + unknown domain fallback) — prevents zero-retrieval scenarios
 3. **C4** (reranker truncation) — one-line fix
-4. **H2** (stop conflating amendments in embeddings) — requires re-indexing
-5. **H1** (flag abrogated articles) — requires migration + pipeline changes
-6. **C2** (cross-law cross-references) — complex parser work
-7. **H3** (surface version warnings) — prompt + frontend changes
-8. **H4** (strengthen General label) — prompt + frontend changes
-9. **M1-M4** (moderate fixes) — incremental improvements
+4. **H0** (Step 6 article text truncation) — one-line fix
+5. **H1** (flag abrogated articles) — requires migration, do BEFORE H2 so re-indexing includes the new field
+6. **H2** (stop conflating amendments in embeddings) — requires re-indexing, batch with H1 metadata
+7. **C2** (cross-law cross-references) — complex parser work, benefits from C1 being done first
+8. **H3** (surface version warnings) — prompt + frontend changes
+9. **H4** (strengthen General label) — prompt + frontend changes
+10. **M1-M4** (moderate fixes) — incremental improvements
 
 ## Testing Strategy
 
@@ -231,4 +247,6 @@ These require significant architectural changes and are out of scope for this fi
 - C1: Test with "In 2018, was X legal?" — verify the 2018 version is selected.
 - C2: Test with a question about Legea 31/1990 Art. 196 (which references Civil Code) — verify Civil Code articles are fetched.
 - C3: Test with a real estate question — verify retrieval is not empty.
+- H0: Test with a question where the answer depends on article text past character 500.
 - H1: Test with a law containing abrogated articles — verify they're flagged in the answer.
+- H2: Verify `article.full_text` is consolidated text before proceeding. Test that amendment-related searches still work via article content (not amendment metadata).
