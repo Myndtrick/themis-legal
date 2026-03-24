@@ -495,26 +495,11 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
 
 
 def _step1b_date_extraction(state: dict, db: Session) -> dict:
-    """Extract temporal context from the question using Claude."""
-    prompt_text, prompt_ver = load_prompt("LA-S2", db)
+    """Extract temporal context — local regex, no Claude call."""
+    from app.services.date_extractor import extract_date_local
 
-    user_msg = (
-        f"Today's date: {state['today']}\n\n"
-        f"QUESTION: {state['question']}"
-    )
-
-    result = call_claude(
-        system=prompt_text,
-        messages=[{"role": "user", "content": user_msg}],
-        max_tokens=512,
-    )
-
-    log_api_call(
-        db, state["run_id"], "date_extraction",
-        result["tokens_in"], result["tokens_out"], result["duration"], result["model"],
-    )
-
-    parsed = _extract_json(result["content"])
+    t0 = time.time()
+    parsed = extract_date_local(state["question"], state["today"])
 
     if parsed and parsed.get("primary_date"):
         state["primary_date"] = parsed["primary_date"]
@@ -527,13 +512,11 @@ def _step1b_date_extraction(state: dict, db: Session) -> dict:
                 f"— using {state['primary_date']} as best estimate"
             )
     else:
-        # Fallback: keep today's date (already set in Step 1)
         state["flags"].append("No specific date detected — using current law versions")
 
+    duration = time.time() - t0
     log_step(
-        db, state["run_id"], "date_extraction", 15, "done",
-        result["duration"],
-        prompt_id="LA-S2", prompt_version=prompt_ver,
+        db, state["run_id"], "date_extraction", 15, "done", duration,
         input_summary=state["question"][:200],
         output_summary=f"primary_date={state.get('primary_date')}",
         output_data=parsed,
