@@ -1076,7 +1076,11 @@ def _step5_expand(state: dict, db: Session) -> dict:
 
     t0 = time.time()
     raw_ids = [a["article_id"] for a in state.get("retrieved_articles_raw", [])]
-    expanded_ids, expansion_details = expand_articles(db, raw_ids)
+    expanded_ids, expansion_details = expand_articles(
+        db, raw_ids,
+        selected_versions=state.get("selected_versions", {}),
+        primary_date=state.get("primary_date"),
+    )
 
     existing_ids = {a["article_id"] for a in state["retrieved_articles_raw"]}
     new_ids = [aid for aid in expanded_ids if aid not in existing_ids]

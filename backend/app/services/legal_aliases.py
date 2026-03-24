@@ -145,6 +145,31 @@ ALIASES: dict[str, list[dict]] = {
 }
 
 
+# Maps abbreviated code references found in cross-references to (law_number, law_year)
+CODE_ABBREVIATIONS: dict[str, tuple[str, int]] = {
+    "c.civ.": ("287", 2009),
+    "cod civ.": ("287", 2009),
+    "codul civil": ("287", 2009),
+    "c.pen.": ("286", 2009),
+    "cod pen.": ("286", 2009),
+    "codul penal": ("286", 2009),
+    "c.proc.civ.": ("134", 2010),
+    "cod procedura civila": ("134", 2010),
+    "codul de procedura civila": ("134", 2010),
+    "c.proc.pen.": ("135", 2010),
+    "cod procedura penala": ("135", 2010),
+    "codul de procedura penala": ("135", 2010),
+    "c.fisc.": ("227", 2015),
+    "codul fiscal": ("227", 2015),
+    "c.muncii": ("53", 2003),
+    "codul muncii": ("53", 2003),
+    "c.proc.fisc.": ("207", 2015),
+    "codul de procedura fiscala": ("207", 2015),
+    "legea societatilor": ("31", 1990),
+    "legea societatilor comerciale": ("31", 1990),
+}
+
+
 def expand_query(query: str) -> list[dict] | None:
     """Check if query matches a known alias and return search parameters.
 
