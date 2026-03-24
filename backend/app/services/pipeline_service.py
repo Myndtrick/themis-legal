@@ -554,82 +554,69 @@ def _step1b_date_extraction(state: dict, db: Session) -> dict:
 
 
 def _step2_law_mapping(state: dict, db: Session) -> dict:
-    """Rule-based law mapping — no Claude call."""
-    from app.services.law_mapping import map_laws_to_question
+    """Check identified laws against DB — no Claude call, no static map."""
+    from app.services.law_mapping import check_laws_in_db
 
     t0 = time.time()
-    mapping = map_laws_to_question(state.get("legal_domain", "other"), db)
+
+    # Get laws identified by Step 1 classifier
+    applicable_laws = state.get("applicable_laws", [])
+
+    if not applicable_laws:
+        # Claude didn't identify any laws — can't proceed
+        state["law_mapping"] = {"tier1_primary": [], "tier2_secondary": []}
+        state["candidate_laws"] = []
+        state["coverage_status"] = {}
+        duration = time.time() - t0
+        log_step(
+            db, state["run_id"], "law_mapping", 2, "done", duration,
+            output_summary="No applicable laws identified by classifier",
+            output_data={"candidate_laws": [], "coverage": {}},
+        )
+        return state
+
+    # Check each law against DB + version availability
+    enriched = check_laws_in_db(applicable_laws, db, state.get("primary_date"))
+
+    # Build law_mapping for downstream compatibility (tier1/tier2)
+    mapping = {"tier1_primary": [], "tier2_secondary": []}
+    for law in enriched:
+        tier_key = "tier1_primary" if law["role"] == "PRIMARY" else "tier2_secondary"
+        mapping[tier_key].append(law)
     state["law_mapping"] = mapping
 
-    # If classifier returned a secondary domain, merge its laws too
-    secondary_domain = state.get("secondary_domain")
-    if secondary_domain and secondary_domain != state.get("legal_domain"):
-        secondary_mapping = map_laws_to_question(secondary_domain, db)
-        existing_keys = set()
-        for tier_laws in mapping.values():
-            for law in tier_laws:
-                existing_keys.add((law["law_number"], law["law_year"]))
-
-        for tier_key in ["tier1_primary", "tier2_secondary", "tier3_connected"]:
-            for law in secondary_mapping.get(tier_key, []):
-                if (law["law_number"], law["law_year"]) not in existing_keys:
-                    target_tier = "tier2_secondary" if tier_key == "tier1_primary" else tier_key
-                    mapping.setdefault(target_tier, []).append(law)
-                    existing_keys.add((law["law_number"], law["law_year"]))
-
-    # Build candidate_laws for backward compatibility + reasoning panel
+    # Build candidate_laws for reasoning panel
     candidate_laws = []
-    missing_primary = []
-    for tier_key, tier_laws in mapping.items():
-        role = tier_key.replace("tier1_", "").replace("tier2_", "").replace("tier3_", "").upper()
-        for law in tier_laws:
-            entry = {
-                "law_number": law["law_number"],
-                "law_year": law["law_year"],
-                "role": role,
-                "source": "DB" if law["in_library"] else "General",
-                "db_law_id": law.get("db_law_id"),
-                "title": law.get("title", ""),
-                "reason": law.get("reason", ""),
-                "tier": tier_key,
-            }
-            candidate_laws.append(entry)
-            if tier_key == "tier1_primary" and not law["in_library"]:
-                missing_primary.append(entry)
-
+    for law in enriched:
+        candidate_laws.append({
+            "law_number": law["law_number"],
+            "law_year": law["law_year"],
+            "role": law["role"],
+            "source": "DB" if law["in_library"] else "General",
+            "db_law_id": law.get("db_law_id"),
+            "title": law.get("title", ""),
+            "reason": law.get("reason", ""),
+            "tier": "tier1_primary" if law["role"] == "PRIMARY" else "tier2_secondary",
+            "availability": law.get("availability", "missing"),
+            "available_version_date": law.get("available_version_date"),
+        })
     state["candidate_laws"] = candidate_laws
-
-    # If primary laws are missing, add flags (but don't pause -- just warn)
-    if missing_primary:
-        for law in missing_primary:
-            state["flags"].append(
-                f"PRIMARY law {law['law_number']}/{law['law_year']} ({law['reason']}) "
-                f"not in Legal Library -- answer may be incomplete"
-            )
 
     # Build coverage status
     coverage = {}
     for law in candidate_laws:
         key = f"{law['law_number']}/{law['law_year']}"
-        if law["db_law_id"]:
-            coverage[key] = "full"
-        else:
-            coverage[key] = "missing"
+        coverage[key] = law["availability"]
     state["coverage_status"] = coverage
 
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "law_mapping", 2, "done", duration,
-        output_summary=f"Mapped {len(candidate_laws)} laws ({sum(1 for c in candidate_laws if c['db_law_id'])} in DB)",
+        output_summary=f"Mapped {len(candidate_laws)} laws ({sum(1 for c in candidate_laws if c.get('db_law_id'))} in DB)",
         output_data={
             "mapping": mapping,
             "coverage": coverage,
             "candidate_laws": candidate_laws,
-            "missing_laws": [
-                {"law_number": l["law_number"], "law_year": l["law_year"],
-                 "title": l.get("title", ""), "reason": l.get("reason", ""), "tier": l["tier"]}
-                for l in candidate_laws if not l.get("db_law_id")
-            ],
         },
     )
     return state
