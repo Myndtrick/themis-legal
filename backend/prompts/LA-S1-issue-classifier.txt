@@ -40,6 +40,7 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
   "output_mode": "qa" or "memo" or "comparison" or "compliance" or "checklist",
   "legal_topic": "<specific topic, e.g., 'număr asociați', 'capital social minim', 'TVA', 'reziliere contract'>",
   "entity_types": ["<entity types mentioned: SRL, SA, PFA, individual, etc.>"] or [],
+  "secondary_domain": "string or null — if the question spans two legal domains, specify the secondary one here (same values as legal_domain). null if the question fits a single domain.",
   "core_issue": "<one sentence reformulating the legal issue>",
   "sub_issues": ["<sub-issue 1>", "<sub-issue 2>"] or [],
   "classification_confidence": "HIGH" or "MEDIUM" or "LOW",

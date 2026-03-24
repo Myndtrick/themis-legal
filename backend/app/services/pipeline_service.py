@@ -469,6 +469,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["sub_issues"] = parsed.get("sub_issues", [])
     state["legal_topic"] = parsed.get("legal_topic", "")
     state["entity_types"] = parsed.get("entity_types", [])
+    state["secondary_domain"] = parsed.get("secondary_domain")
 
     # Default to today — will be overridden by Step 1b date extraction
     state["primary_date"] = state["today"]
@@ -553,6 +554,22 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
     t0 = time.time()
     mapping = map_laws_to_question(state.get("legal_domain", "other"), db)
     state["law_mapping"] = mapping
+
+    # If classifier returned a secondary domain, merge its laws too
+    secondary_domain = state.get("secondary_domain")
+    if secondary_domain and secondary_domain != state.get("legal_domain"):
+        secondary_mapping = map_laws_to_question(secondary_domain, db)
+        existing_keys = set()
+        for tier_laws in mapping.values():
+            for law in tier_laws:
+                existing_keys.add((law["law_number"], law["law_year"]))
+
+        for tier_key in ["tier1_primary", "tier2_secondary", "tier3_connected"]:
+            for law in secondary_mapping.get(tier_key, []):
+                if (law["law_number"], law["law_year"]) not in existing_keys:
+                    target_tier = "tier2_secondary" if tier_key == "tier1_primary" else tier_key
+                    mapping.setdefault(target_tier, []).append(law)
+                    existing_keys.add((law["law_number"], law["law_year"]))
 
     # Build candidate_laws for backward compatibility + reasoning panel
     candidate_laws = []

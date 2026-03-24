@@ -75,6 +75,47 @@ DOMAIN_LAW_MAP: dict[str, dict[str, list[dict]]] = {
         ],
         "connected": [],
     },
+    "real_estate": {
+        "primary": [
+            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — property rights (Book III)"},
+        ],
+        "secondary": [
+            {"law_number": "7", "law_year": 1996, "reason": "Legea cadastrului și publicității imobiliare"},
+        ],
+        "connected": [],
+    },
+    "data_protection": {
+        "primary": [
+            {"law_number": "190", "law_year": 2018, "reason": "Legea privind protecția datelor personale (GDPR)"},
+        ],
+        "secondary": [
+            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — privacy rights"},
+        ],
+        "connected": [],
+    },
+    "procedural": {
+        "primary": [
+            {"law_number": "134", "law_year": 2010, "reason": "Codul de Procedură Civilă"},
+        ],
+        "secondary": [
+            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — applies subsidiarily"},
+        ],
+        "connected": [],
+    },
+    "eu_law": {
+        "primary": [],
+        "secondary": [
+            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — general framework"},
+        ],
+        "connected": [],
+    },
+    "other": {
+        "primary": [
+            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — general gap-filler"},
+        ],
+        "secondary": [],
+        "connected": [],
+    },
 }
 
 
