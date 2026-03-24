@@ -975,6 +975,32 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                         else:
                             duplicates_removed += 1
 
+    # Enrich semantic-only articles with amendment notes from DB
+    # (BM25 results already include amendments; ChromaDB stores only full_text)
+    from app.models.law import Article as ArticleModel
+    semantic_only_ids = [
+        a["article_id"] for a in all_articles
+        if a.get("source") != "bm25" and "[Amendment:" not in a.get("text", "")
+    ]
+    if semantic_only_ids:
+        arts_with_notes = (
+            db.query(ArticleModel)
+            .filter(ArticleModel.id.in_(semantic_only_ids))
+            .all()
+        )
+        notes_by_id = {}
+        for art in arts_with_notes:
+            notes = [
+                f"[Amendment: {n.text.strip()}]"
+                for n in art.amendment_notes
+                if n.text and n.text.strip()
+            ]
+            if notes:
+                notes_by_id[art.id] = notes
+        for art_dict in all_articles:
+            if art_dict["article_id"] in notes_by_id:
+                art_dict["text"] = art_dict["text"] + "\n" + "\n".join(notes_by_id[art_dict["article_id"]])
+
     state["retrieved_articles_raw"] = all_articles
 
     # Build top 10 articles by score for logging
