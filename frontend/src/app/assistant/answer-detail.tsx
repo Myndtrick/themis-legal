@@ -112,8 +112,19 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               <div className="space-y-1">
                 {s.sources.map((src, i) => (
                   <div key={i} className="flex items-start gap-2 text-xs text-gray-600">
-                    <span className={`shrink-0 px-1.5 py-0.5 rounded font-medium ${LABEL_COLORS[src.label] || "bg-gray-100 text-gray-500"}`}>
-                      {src.label}
+                    <span
+                      className={`shrink-0 px-1.5 py-0.5 rounded font-medium ${LABEL_COLORS[src.label] || "bg-gray-100 text-gray-500"}`}
+                      title={
+                        src.label === "General"
+                          ? "This information comes from AI training data, not from verified law text. It may be outdated or incorrect."
+                          : src.label === "Unverified"
+                          ? "This claim could not be verified against current law text. Do not rely on it without manual verification."
+                          : src.label === "DB"
+                          ? "Verified against law text in the Legal Library."
+                          : undefined
+                      }
+                    >
+                      {src.label === "General" ? "\u26A0 General" : src.label === "Unverified" ? "\u26D4 Unverified" : src.label}
                     </span>
                     <span className="flex-1">{src.statement}</span>
                     {src.law && (

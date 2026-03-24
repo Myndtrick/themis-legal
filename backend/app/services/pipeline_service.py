@@ -945,6 +945,13 @@ _ENTITY_KEYWORDS: dict[str, list[str]] = {
     "SRL": ["raspundere limitata", "asociati", "parte sociala", "parti sociale"],
     "SA": ["actiuni", "actionar", "societate pe actiuni", "capital social", "adunarea generala"],
     "PFA": ["persoana fizica autorizata", "activitate independenta"],
+    "SCS": ["comandita simpla", "comanditar", "comanditat"],
+    "SNC": ["nume colectiv", "raspundere nelimitata", "solidara"],
+    "SCA": ["comandita pe actiuni", "comanditari", "actionari comandita"],
+    "ONG": ["asociatie", "organizatie neguvernamentala", "scop nepatrimonial", "act constitutiv asociatie"],
+    "ASOCIATIE": ["asociatie", "asociatii", "scop nepatrimonial", "membri asociatie"],
+    "FUNDATIE": ["fundatie", "fundatii", "patrimoniu afectat", "scop nepatrimonial fundatie"],
+    "COOPERATIVA": ["cooperativa", "cooperative", "membri cooperatori", "parti sociale cooperativa"],
 }
 
 
