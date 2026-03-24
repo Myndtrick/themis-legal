@@ -1002,7 +1002,8 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
                 for kw in keywords:
                     entity_results = search_bm25(db, kw, primary_version_ids, limit=10)
                     for art in entity_results:
-                        aid = art["article_id"]
+                        doc_type = art.get("doc_type", "article")
+                        aid = f"{doc_type}:{art['article_id']}"
                         if aid not in seen_ids:
                             seen_ids.add(aid)
                             art["tier"] = "entity_targeted"
@@ -1018,7 +1019,9 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     from app.models.law import Article as ArticleModel
     semantic_only_ids = [
         a["article_id"] for a in all_articles
-        if a.get("source") != "bm25" and "[Amendment:" not in a.get("text", "")
+        if a.get("source") != "bm25"
+        and "[Amendment:" not in a.get("text", "")
+        and a.get("doc_type", "article") == "article"
     ]
     if semantic_only_ids:
         arts_with_notes = (
