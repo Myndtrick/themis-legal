@@ -90,15 +90,19 @@ def rebuild_fts_index(db: Session):
 
 
 _BM25_EXPANSIONS: dict[str, list[str]] = {
-    "srl": ["raspundere", "limitata"],
-    "sa": ["actiuni", "actionari"],
-    "pfa": ["persoana", "fizica", "autorizata"],
-    "asociat": ["asociati", "asociatii", "asociatilor"],
-    "actionar": ["actionari", "actionarii", "actionarilor"],
-    "minim": ["minimum", "minima", "cel putin"],
-    "maxim": ["maximum", "maxima", "mai mare"],
-    "limita": ["limitare", "limitat", "plafon"],
+    "srl": ["raspundere", "limitata", "societate", "asociat", "parte sociala"],
+    "sa": ["actiuni", "actionari", "societate", "anonima", "capital social"],
+    "pfa": ["persoana", "fizica", "autorizata", "activitate independenta"],
+    "asociat": ["asociati", "asociatii", "asociatilor", "numar asociati"],
+    "actionar": ["actionari", "actionarii", "actionarilor", "numar actionari"],
+    "minim": ["minimum", "minima", "cel putin", "mai mic"],
+    "maxim": ["maximum", "maxima", "mai mare", "nu poate fi mai mare", "cel mult"],
+    "limita": ["limitare", "limitat", "plafon", "nu poate depasi"],
     "numar": ["numarul", "nr"],
+    "capital": ["capitalul", "capital social"],
+    "dividende": ["dividend", "profit", "distribuire"],
+    "administrator": ["administratori", "administratorii", "administratorilor", "consiliu"],
+    "contract": ["contractul", "contracte", "contractului", "act constitutiv"],
 }
 
 
