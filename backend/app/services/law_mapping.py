@@ -1,154 +1,86 @@
 # backend/app/services/law_mapping.py
 """
-Deterministic mapping from legal domain to applicable laws.
-Three tiers: PRIMARY (directly answers), SECONDARY (subsidiarily),
-CONNECTED (only if cross-referenced by primary articles).
+Check identified laws against the database for availability and version status.
 """
 from __future__ import annotations
+from datetime import date as date_type
 from sqlalchemy.orm import Session
-from app.models.law import Law
-
-DOMAIN_LAW_MAP: dict[str, dict[str, list[dict]]] = {
-    "corporate": {
-        "primary": [
-            {"law_number": "31", "law_year": 1990, "reason": "Legea societăților comerciale"},
-        ],
-        "secondary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — applies subsidiarily"},
-        ],
-        "connected": [],
-    },
-    "fiscal": {
-        "primary": [
-            {"law_number": "227", "law_year": 2015, "reason": "Codul Fiscal"},
-        ],
-        "secondary": [
-            {"law_number": "207", "law_year": 2015, "reason": "Codul de Procedură Fiscală"},
-        ],
-        "connected": [],
-    },
-    "employment": {
-        "primary": [
-            {"law_number": "53", "law_year": 2003, "reason": "Codul Muncii"},
-        ],
-        "secondary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — applies subsidiarily"},
-        ],
-        "connected": [],
-    },
-    "contract_law": {
-        "primary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — contract law"},
-        ],
-        "secondary": [],
-        "connected": [],
-    },
-    "civil": {
-        "primary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil"},
-        ],
-        "secondary": [],
-        "connected": [],
-    },
-    "aml": {
-        "primary": [
-            {"law_number": "129", "law_year": 2019, "reason": "Legea AML/KYC"},
-        ],
-        "secondary": [],
-        "connected": [],
-    },
-    "criminal": {
-        "primary": [
-            {"law_number": "286", "law_year": 2009, "reason": "Codul Penal"},
-        ],
-        "secondary": [
-            {"law_number": "135", "law_year": 2010, "reason": "Codul de Procedură Penală"},
-        ],
-        "connected": [],
-    },
-    "criminal_procedure": {
-        "primary": [
-            {"law_number": "135", "law_year": 2010, "reason": "Codul de Procedură Penală"},
-        ],
-        "secondary": [
-            {"law_number": "286", "law_year": 2009, "reason": "Codul Penal"},
-        ],
-        "connected": [],
-    },
-    "real_estate": {
-        "primary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — property rights (Book III)"},
-        ],
-        "secondary": [
-            {"law_number": "7", "law_year": 1996, "reason": "Legea cadastrului și publicității imobiliare"},
-        ],
-        "connected": [],
-    },
-    "data_protection": {
-        "primary": [
-            {"law_number": "190", "law_year": 2018, "reason": "Legea privind protecția datelor personale (GDPR)"},
-        ],
-        "secondary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — privacy rights"},
-        ],
-        "connected": [],
-    },
-    "procedural": {
-        "primary": [
-            {"law_number": "134", "law_year": 2010, "reason": "Codul de Procedură Civilă"},
-        ],
-        "secondary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — applies subsidiarily"},
-        ],
-        "connected": [],
-    },
-    "eu_law": {
-        "primary": [],
-        "secondary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — general framework"},
-        ],
-        "connected": [],
-    },
-    "other": {
-        "primary": [
-            {"law_number": "287", "law_year": 2009, "reason": "Codul Civil — general gap-filler"},
-        ],
-        "secondary": [],
-        "connected": [],
-    },
-}
+from app.models.law import Law, LawVersion
 
 
-def map_laws_to_question(
-    legal_domain: str,
+def check_laws_in_db(
+    laws: list[dict],
     db: Session,
-) -> dict[str, list[dict]]:
-    """Map a classified question to applicable laws in 3 tiers.
-    Returns only laws that actually exist in the database.
-    """
-    mapping = DOMAIN_LAW_MAP.get(legal_domain, {})
-    result = {"tier1_primary": [], "tier2_secondary": [], "tier3_connected": []}
+    primary_date: str | None = None,
+) -> list[dict]:
+    """Enrich each law dict with DB availability and version status.
 
-    for tier_key, result_key in [
-        ("primary", "tier1_primary"),
-        ("secondary", "tier2_secondary"),
-        ("connected", "tier3_connected"),
-    ]:
-        for law_def in mapping.get(tier_key, []):
-            db_law = (
-                db.query(Law)
+    Returns the same list with added fields:
+    - db_law_id: int or None
+    - in_library: bool
+    - availability: "available" | "wrong_version" | "missing"
+    - available_version_date: str or None (the version date actually found)
+    """
+    for law in laws:
+        law_number = str(law["law_number"])
+        law_year = str(law["law_year"])
+
+        db_law = (
+            db.query(Law)
+            .filter(
+                Law.law_number == law_number,
+                Law.law_year == int(law_year),
+            )
+            .first()
+        )
+
+        if not db_law:
+            law["db_law_id"] = None
+            law["in_library"] = False
+            law["availability"] = "missing"
+            law["available_version_date"] = None
+            continue
+
+        law["db_law_id"] = db_law.id
+        law["in_library"] = True
+        law["title"] = law.get("title") or db_law.title
+
+        # Check if the correct version exists
+        if primary_date:
+            pd = date_type.fromisoformat(primary_date)
+            version = (
+                db.query(LawVersion)
                 .filter(
-                    Law.law_number == law_def["law_number"],
-                    Law.law_year == law_def["law_year"],
+                    LawVersion.law_id == db_law.id,
+                    LawVersion.date_in_force <= pd,
                 )
+                .order_by(LawVersion.date_in_force.desc())
                 .first()
             )
-            entry = {
-                **law_def,
-                "db_law_id": db_law.id if db_law else None,
-                "in_library": db_law is not None,
-                "title": db_law.title if db_law else law_def.get("reason", ""),
-            }
-            result[result_key].append(entry)
+            if version:
+                law["availability"] = "available"
+                law["available_version_date"] = str(version.date_in_force)
+            else:
+                # No version for this date — check if any version exists
+                any_version = (
+                    db.query(LawVersion)
+                    .filter(LawVersion.law_id == db_law.id)
+                    .first()
+                )
+                if any_version:
+                    law["availability"] = "wrong_version"
+                    law["available_version_date"] = str(any_version.date_in_force)
+                else:
+                    law["availability"] = "missing"
+                    law["available_version_date"] = None
+        else:
+            # No date specified — just check if law has any version
+            any_version = (
+                db.query(LawVersion)
+                .filter(LawVersion.law_id == db_law.id)
+                .first()
+            )
+            law["availability"] = "available" if any_version else "missing"
+            law["available_version_date"] = str(any_version.date_in_force) if any_version else None
 
-    return result
+    return laws
