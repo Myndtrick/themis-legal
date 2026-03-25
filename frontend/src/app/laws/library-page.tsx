@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { api, LibraryData, LibraryLaw, CategoryGroupData } from "@/lib/api";
+import { api, LibraryData, LibraryLaw, SuggestedLaw } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
@@ -19,8 +19,19 @@ export default function LibraryPage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
 
-  // Category modal
+  // Category modal (for existing laws)
   const [assigningLawId, setAssigningLawId] = useState<number | null>(null);
+
+  // Pending imports: suggestion id → { suggestion, error? }
+  const [pendingImports, setPendingImports] = useState<
+    Map<number, { suggestion: SuggestedLaw; error?: string }>
+  >(new Map());
+
+  // Category pick for suggestions without a predetermined category
+  const [suggestionCategoryPick, setSuggestionCategoryPick] = useState<{
+    suggestion: SuggestedLaw;
+    importHistory: boolean;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -84,6 +95,23 @@ export default function LibraryPage() {
     return map;
   }, [data, filteredLaws]);
 
+  // Filter out pending imports from suggestions
+  const activeSuggestions = useMemo(() => {
+    if (!data) return [];
+    return data.suggested_laws.filter((s) => !pendingImports.has(s.id));
+  }, [data, pendingImports]);
+
+  // Group pending imports by group_slug
+  const pendingByGroup = useMemo(() => {
+    const map = new Map<string, { suggestion: SuggestedLaw; error?: string }[]>();
+    for (const [, entry] of pendingImports) {
+      const key = entry.suggestion.group_slug;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(entry);
+    }
+    return map;
+  }, [pendingImports]);
+
   const unclassifiedLaws = useMemo(() => {
     return filteredLaws.filter((l) => !l.category_id);
   }, [filteredLaws]);
@@ -102,21 +130,75 @@ export default function LibraryPage() {
     fetchData();
   }
 
-  async function handleImportSuggestion(mappingId: number, importHistory: boolean) {
+  // Optimistic import: immediately move suggestion to pending, run import in background
+  function handleImportSuggestion(mappingId: number, importHistory: boolean) {
+    const suggestion = data?.suggested_laws.find((s) => s.id === mappingId);
+    if (!suggestion) return;
+
+    // If no predetermined category, ask user to pick one first
+    if (!suggestion.category_id) {
+      setSuggestionCategoryPick({ suggestion, importHistory });
+      return;
+    }
+
+    startImport(suggestion, importHistory);
+  }
+
+  function startImport(suggestion: SuggestedLaw, importHistory: boolean) {
+    // Add to pending immediately (optimistic)
+    setPendingImports((prev) => {
+      const next = new Map(prev);
+      next.set(suggestion.id, { suggestion });
+      return next;
+    });
+
+    // Fire import in background (not awaited)
     const controller = new AbortController();
     const timeoutMs = importHistory ? 600_000 : 120_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      await api.laws.importSuggestion(mappingId, importHistory, controller.signal);
-      clearTimeout(timer);
-      fetchData();
-    } catch (err) {
-      clearTimeout(timer);
-      if (err instanceof DOMException && err.name === "AbortError") {
-        throw new Error("Import timed out — try importing current version only.");
-      }
-      throw err;
-    }
+
+    api.laws
+      .importSuggestion(suggestion.id, importHistory, controller.signal)
+      .then(() => {
+        clearTimeout(timer);
+        setPendingImports((prev) => {
+          const next = new Map(prev);
+          next.delete(suggestion.id);
+          return next;
+        });
+        fetchData();
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        const message =
+          err instanceof DOMException && err.name === "AbortError"
+            ? "Import timed out — try current version only."
+            : err instanceof Error
+              ? err.message
+              : "Import failed";
+        setPendingImports((prev) => {
+          const next = new Map(prev);
+          next.set(suggestion.id, { suggestion, error: message });
+          return next;
+        });
+      });
+  }
+
+  function handleSuggestionCategoryConfirm(categoryId: number) {
+    if (!suggestionCategoryPick) return;
+    const { suggestion, importHistory } = suggestionCategoryPick;
+    // Override category on the suggestion for display purposes
+    const withCategory = { ...suggestion, category_id: categoryId };
+    setSuggestionCategoryPick(null);
+    startImport(withCategory, importHistory);
+  }
+
+  function dismissPendingError(mappingId: number) {
+    setPendingImports((prev) => {
+      const next = new Map(prev);
+      next.delete(mappingId);
+      return next;
+    });
   }
 
   if (loading) {
@@ -169,12 +251,16 @@ export default function LibraryPage() {
             lastImported={filteredStats.last_imported}
           />
 
-          {/* Grouped law sections */}
+          {/* Grouped law sections (groups with imported laws or pending imports) */}
           {data.groups
-            .filter((g) => groupedLaws.has(g.slug) && groupedLaws.get(g.slug)!.some((l) => l.category_id))
+            .filter((g) =>
+              (groupedLaws.has(g.slug) && groupedLaws.get(g.slug)!.some((l) => l.category_id)) ||
+              pendingByGroup.has(g.slug)
+            )
             .map((g) => {
-              const laws = groupedLaws.get(g.slug)!.filter((l) => l.category_id);
-              const suggestions = data.suggested_laws.filter((s) => s.group_slug === g.slug);
+              const laws = (groupedLaws.get(g.slug) || []).filter((l) => l.category_id);
+              const suggestions = activeSuggestions.filter((s) => s.group_slug === g.slug);
+              const pending = pendingByGroup.get(g.slug) || [];
               return (
                 <CategoryGroupSection
                   key={g.slug}
@@ -183,16 +269,46 @@ export default function LibraryPage() {
                   colorHex={g.color_hex}
                   laws={laws}
                   suggestedLaws={suggestions}
-                  defaultExpanded={!!selectedGroup}
+                  pendingImports={pending}
+                  defaultExpanded={!!selectedGroup || pending.length > 0}
                   onAssign={setAssigningLawId}
                   onDelete={fetchData}
                   onImportSuggestion={handleImportSuggestion}
+                  onDismissPendingError={dismissPendingError}
+                />
+              );
+            })}
+
+          {/* Suggested-only groups (no imported laws, no pending imports) */}
+          {data.groups
+            .filter((g) =>
+              g.categories.every((c) => c.law_count === 0) &&
+              !pendingByGroup.has(g.slug) &&
+              selectedGroup === g.slug &&
+              activeSuggestions.some((s) => s.group_slug === g.slug)
+            )
+            .map((g) => {
+              const suggestions = activeSuggestions.filter((s) => s.group_slug === g.slug);
+              return (
+                <CategoryGroupSection
+                  key={g.slug}
+                  groupSlug={g.slug}
+                  groupName={g.name_en}
+                  colorHex={g.color_hex}
+                  laws={[]}
+                  suggestedLaws={suggestions}
+                  pendingImports={[]}
+                  defaultExpanded={true}
+                  onImportSuggestion={handleImportSuggestion}
+                  onDismissPendingError={dismissPendingError}
                 />
               );
             })}
 
           {/* Empty state */}
-          {classifiedLaws.length === 0 && unclassifiedLaws.length === 0 && (
+          {classifiedLaws.length === 0 && unclassifiedLaws.length === 0 && pendingImports.size === 0 &&
+            // Don't show empty state if we're viewing a suggested group with suggestions
+            !(selectedGroup && activeSuggestions.some((s) => s.group_slug === selectedGroup)) && (
             <div className="text-center py-12">
               <h3 className="text-lg font-medium text-gray-900 mb-2">No laws found</h3>
               <p className="text-gray-600">
@@ -212,7 +328,7 @@ export default function LibraryPage() {
         </div>
       </div>
 
-      {/* Category modal */}
+      {/* Category modal for existing laws */}
       {assigningLawId && assigningLaw && (
         <CategoryModal
           lawTitle={assigningLaw.title}
@@ -220,6 +336,17 @@ export default function LibraryPage() {
           onConfirm={handleAssign}
           onSkip={() => setAssigningLawId(null)}
           onCancel={() => setAssigningLawId(null)}
+        />
+      )}
+
+      {/* Category modal for suggestion imports without predetermined category */}
+      {suggestionCategoryPick && (
+        <CategoryModal
+          lawTitle={suggestionCategoryPick.suggestion.title}
+          groups={data.groups}
+          onConfirm={handleSuggestionCategoryConfirm}
+          onSkip={() => setSuggestionCategoryPick(null)}
+          onCancel={() => setSuggestionCategoryPick(null)}
         />
       )}
     </div>

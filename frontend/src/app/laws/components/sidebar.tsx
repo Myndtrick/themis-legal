@@ -179,11 +179,22 @@ export default function Sidebar({
           </button>
           {showSuggested && (
             <div className="pl-4">
-              {suggestedGroups.map((g) => (
-                <div key={g.slug} className="px-2 py-1 text-xs text-gray-400 italic">
-                  {g.name_en}
-                </div>
-              ))}
+              {suggestedGroups.map((g) => {
+                const isSelected = selectedGroup === g.slug;
+                return (
+                  <button
+                    key={g.slug}
+                    onClick={() => { onSelectGroup(g.slug); onSelectCategory(null); }}
+                    className={`w-full text-left px-2 py-1 text-xs italic rounded ${
+                      isSelected
+                        ? "font-semibold text-gray-700 bg-gray-100"
+                        : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {g.name_en}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
