@@ -1060,13 +1060,18 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     }
 
     for tier_key, n_results in tier_limits.items():
-        # Collect version IDs for this tier's laws
+        # Collect version IDs for this tier's laws (all versions needed across issues)
         version_ids = []
         for law in state.get("law_mapping", {}).get(tier_key, []):
             key = f"{law['law_number']}/{law['law_year']}"
-            v = state.get("selected_versions", {}).get(key)
-            if v:
-                version_ids.append(v["law_version_id"])
+            vids = state.get("unique_versions", {}).get(key, [])
+            if vids:
+                version_ids.extend(vids)
+            else:
+                # Fallback to selected_versions for backward compat
+                v = state.get("selected_versions", {}).get(key)
+                if v:
+                    version_ids.append(v["law_version_id"])
 
         if not version_ids:
             continue
@@ -1101,9 +1106,13 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
         primary_version_ids = []
         for law in state.get("law_mapping", {}).get("tier1_primary", []):
             key = f"{law['law_number']}/{law['law_year']}"
-            v = state.get("selected_versions", {}).get(key)
-            if v:
-                primary_version_ids.append(v["law_version_id"])
+            vids = state.get("unique_versions", {}).get(key, [])
+            if vids:
+                primary_version_ids.extend(vids)
+            else:
+                v = state.get("selected_versions", {}).get(key)
+                if v:
+                    primary_version_ids.append(v["law_version_id"])
 
         if primary_version_ids:
             for entity in entity_types:
