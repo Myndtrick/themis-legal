@@ -102,6 +102,23 @@ export default function LibraryPage() {
     fetchData();
   }
 
+  async function handleImportSuggestion(mappingId: number, importHistory: boolean) {
+    const controller = new AbortController();
+    const timeoutMs = importHistory ? 600_000 : 120_000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      await api.laws.importSuggestion(mappingId, importHistory, controller.signal);
+      clearTimeout(timer);
+      fetchData();
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error("Import timed out — try importing current version only.");
+      }
+      throw err;
+    }
+  }
+
   if (loading) {
     return <div className="text-center py-12 text-gray-500">Loading library...</div>;
   }
@@ -169,6 +186,7 @@ export default function LibraryPage() {
                   defaultExpanded={!!selectedGroup}
                   onAssign={setAssigningLawId}
                   onDelete={fetchData}
+                  onImportSuggestion={handleImportSuggestion}
                 />
               );
             })}
