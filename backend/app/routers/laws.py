@@ -20,6 +20,25 @@ class ImportRequest(BaseModel):
     import_history: bool = True
 
 
+class ImportSuggestionRequest(BaseModel):
+    mapping_id: int
+    import_history: bool = False
+
+
+# LawMapping.document_type stores English keys; advanced_search expects
+# Romanian abbreviated keys or numeric codes from legislatie.just.ro.
+_DOC_TYPE_TO_SEARCH_CODE = {
+    "law": "1",
+    "emergency_ordinance": "18",
+    "government_ordinance": "13",
+    "government_resolution": "2",
+    "decree": "3",
+    "constitution": "22",
+    "regulation": "12",
+    "directive": "113",
+}
+
+
 @router.get("/search")
 def search_external(q: str):
     """Search legislatie.just.ro for laws matching a query."""
@@ -204,6 +223,92 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
         logger.exception(f"Failed to import ver_id={ver_id}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@router.post("/import-suggestion")
+def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db)):
+    """Import a law from a suggestion (LawMapping) by searching legislatie.just.ro."""
+    from app.services.search_service import advanced_search
+    from app.services.leropa_service import import_law as do_import
+
+    # 1. Look up mapping
+    mapping = db.query(LawMapping).filter(LawMapping.id == req.mapping_id).first()
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+
+    # 2. Validate law_number exists
+    if not mapping.law_number:
+        raise HTTPException(
+            status_code=400,
+            detail="This suggestion cannot be auto-imported (no law number)",
+        )
+
+    # 3. Check if already imported by law_number (+ document_type/year if available)
+    existing_query = db.query(Law).filter(Law.law_number == mapping.law_number)
+    if mapping.document_type:
+        existing_query = existing_query.filter(Law.document_type == mapping.document_type)
+    if mapping.law_year:
+        existing_query = existing_query.filter(Law.law_year == mapping.law_year)
+    existing = existing_query.first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This law is already imported as '{existing.title}'",
+        )
+
+    # 4. Search legislatie.just.ro
+    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
+    year_str = str(mapping.law_year) if mapping.law_year else ""
+
+    try:
+        results = advanced_search(
+            doc_type=doc_type_code,
+            number=mapping.law_number,
+            year=year_str,
+        )
+    except Exception as e:
+        logger.error(f"Search failed for suggestion {req.mapping_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No results found on legislatie.just.ro for {mapping.title}",
+        )
+
+    # 5. Pick best match — first result (search is already filtered by type+number+year)
+    best = results[0]
+    ver_id = best.ver_id
+
+    # 6. Check if this ver_id is already imported
+    existing_ver = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
+    if existing_ver:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This law is already imported as '{existing_ver.law.title}'",
+        )
+
+    # 7. Import
+    try:
+        result = do_import(db, ver_id, import_history=req.import_history)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Failed to import suggestion {req.mapping_id} (ver_id={ver_id})")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+    # 8. Auto-assign category
+    law = db.query(Law).filter(Law.id == result["law_id"]).first()
+    if law:
+        law.category_id = mapping.category_id
+        db.commit()
+
+    return {
+        "law_id": result["law_id"],
+        "title": result.get("title", mapping.title),
+    }
 
 
 @router.get("/")
