@@ -13,6 +13,7 @@ interface SourceEntry {
 
 interface CombinedData {
   structured?: {
+    answer?: string;
     short_answer?: string;
     legal_basis?: string | null;
     version_logic?: string | null;
@@ -86,11 +87,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
 
       {isOpen && (
         <div className="mt-2 pt-3 border-t border-gray-100 space-y-1">
-          {/* Structured answer sections */}
-          <Section title="Legal Basis" content={s?.legal_basis} />
+          {/* Version logic (kept for technical reference) */}
           {s?.version_logic && (
             <div className="mb-3">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Version Logic</h4>
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Versiuni utilizate</h4>
               <div className={`text-sm leading-relaxed prose prose-sm max-w-none ${
                 s.version_logic.toLowerCase().includes("fallback") ||
                 s.version_logic.toLowerCase().includes("no version found") ||
@@ -102,9 +102,7 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               </div>
             </div>
           )}
-          <Section title="Nuances" content={s?.nuances} />
-          <Section title="Changes Over Time" content={s?.changes_over_time} />
-          <Section title="Missing Information" content={s?.missing_info} />
+          <Section title="Informații lipsă" content={s?.missing_info} />
 
           {/* Sources table */}
           {s?.sources && s.sources.length > 0 && (
