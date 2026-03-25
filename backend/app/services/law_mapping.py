@@ -11,9 +11,15 @@ from app.models.law import Law, LawVersion
 def check_laws_in_db(
     laws: list[dict],
     db: Session,
-    primary_date: str | None = None,
+    law_date_map: dict[str, str] | None = None,
 ) -> list[dict]:
     """Enrich each law dict with DB availability and version status.
+
+    Args:
+        laws: List of law dicts from the classifier (with law_number, law_year).
+        db: Database session.
+        law_date_map: Optional dict mapping "law_number/law_year" to ISO date string.
+                      Each law is checked against its own relevant date.
 
     Returns the same list with added fields:
     - db_law_id: int or None
@@ -24,6 +30,7 @@ def check_laws_in_db(
     for law in laws:
         law_number = str(law["law_number"])
         law_year = str(law["law_year"])
+        law_key = f"{law_number}/{law_year}"
 
         db_law = (
             db.query(Law)
@@ -45,9 +52,11 @@ def check_laws_in_db(
         law["in_library"] = True
         law["title"] = law.get("title") or db_law.title
 
-        # Check if the correct version exists
-        if primary_date:
-            pd = date_type.fromisoformat(primary_date)
+        # Look up the relevant date for this specific law
+        relevant_date = law_date_map.get(law_key) if law_date_map else None
+
+        if relevant_date:
+            pd = date_type.fromisoformat(relevant_date)
             version = (
                 db.query(LawVersion)
                 .filter(

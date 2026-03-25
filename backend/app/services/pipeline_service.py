@@ -703,7 +703,7 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
         return state
 
     # Check each law against DB + version availability
-    enriched = check_laws_in_db(applicable_laws, db, state.get("primary_date"))
+    enriched = check_laws_in_db(applicable_laws, db, state.get("law_date_map"))
 
     # Build law_mapping for downstream compatibility (tier1/tier2)
     mapping = {"tier1_primary": [], "tier2_secondary": []}
