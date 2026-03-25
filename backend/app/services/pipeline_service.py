@@ -856,82 +856,163 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
 
 
 def _step3_version_selection(state: dict, db: Session) -> dict:
+    """Select law versions per legal issue, plus backward-compatible per-law dict."""
     t0 = time.time()
-    selected_versions = {}
+    today = state.get("today", datetime.date.today().isoformat())
+    issue_versions = {}      # keyed by "ISSUE-N:law_number/law_year"
+    selected_versions = {}   # backward-compat: keyed by "law_number/law_year" (latest version per law)
+    unique_versions = {}     # keyed by "law_number/law_year" -> set of law_version_ids
     version_notes = []
 
-    primary_date = state.get("primary_date", datetime.date.today().isoformat())
-
+    # Build a lookup: law_key -> db_law_id from candidate_laws
+    law_id_lookup = {}
     for law_info in state.get("candidate_laws", []):
-        db_law_id = law_info.get("db_law_id")
-        if not db_law_id:
-            continue
+        if law_info.get("db_law_id"):
+            key = f"{law_info['law_number']}/{law_info.get('law_year', '')}"
+            law_id_lookup[key] = law_info["db_law_id"]
 
-        key = f"{law_info['law_number']}/{law_info.get('law_year', '')}"
+    # Cache: law_id -> list of versions (avoid repeated queries)
+    versions_cache = {}
 
-        # Select the version in force at the primary date
-        # date_in_force <= relevant_date, ordered by date_in_force DESC
-        versions = (
-            db.query(LawVersion)
-            .filter(LawVersion.law_id == db_law_id)
-            .order_by(LawVersion.date_in_force.desc().nullslast())
-            .all()
-        )
-
-        if not versions:
-            continue
-
-        # Find version in force at primary_date
-        selected = None
-        for v in versions:
-            if v.date_in_force and str(v.date_in_force) <= primary_date:
-                selected = v
-                break
-
-        if not selected:
-            # No version dated before the primary date -- use the current version
-            current_versions = [v for v in versions if v.is_current]
-            selected = current_versions[0] if current_versions else versions[0]
-            version_notes.append(
-                f"{key}: No version found for {primary_date}, using current version"
+    def _get_versions(db_law_id):
+        if db_law_id not in versions_cache:
+            versions_cache[db_law_id] = (
+                db.query(LawVersion)
+                .filter(LawVersion.law_id == db_law_id)
+                .order_by(LawVersion.date_in_force.desc().nullslast())
+                .all()
             )
+        return versions_cache[db_law_id]
 
-        selected_versions[key] = {
-            "law_version_id": selected.id,
-            "law_id": db_law_id,
-            "date_in_force": str(selected.date_in_force) if selected.date_in_force else None,
-            "is_current": selected.is_current,
-            "ver_id": selected.ver_id,
-        }
+    def _find_version_for_date(versions, target_date):
+        """Find the newest version with date_in_force <= target_date."""
+        for v in versions:
+            if v.date_in_force and str(v.date_in_force) <= target_date:
+                return v
+        return None
 
-        # Check if law was amended between dates (for multi-date scenarios)
-        if selected.date_in_force and not selected.is_current:
+    def _fallback_version(versions):
+        """Return current version, or first available."""
+        current = [v for v in versions if v.is_current]
+        return current[0] if current else versions[0] if versions else None
+
+    legal_issues = state.get("legal_issues", [])
+
+    if not legal_issues:
+        # Fallback: no issue decomposition — behave like before with primary_date
+        primary_date = state.get("primary_date", today)
+        for law_key, db_law_id in law_id_lookup.items():
+            versions = _get_versions(db_law_id)
+            if not versions:
+                continue
+            selected = _find_version_for_date(versions, primary_date)
+            if not selected:
+                selected = _fallback_version(versions)
+                version_notes.append(
+                    f"{law_key}: No version found for {primary_date}, using current version"
+                )
+            if selected:
+                selected_versions[law_key] = {
+                    "law_version_id": selected.id,
+                    "law_id": db_law_id,
+                    "date_in_force": str(selected.date_in_force) if selected.date_in_force else None,
+                    "is_current": selected.is_current,
+                    "ver_id": selected.ver_id,
+                }
+                unique_versions.setdefault(law_key, set()).add(selected.id)
+    else:
+        # Per-issue version selection
+        for issue in legal_issues:
+            issue_id = issue.get("issue_id", "ISSUE-?")
+            relevant_date = issue.get("relevant_date", today)
+
+            # Handle "unknown" dates explicitly
+            if relevant_date == "unknown":
+                relevant_date = today
+
+            # Future date rule
+            if relevant_date > today:
+                version_notes.append(
+                    f"{issue_id}: Event date {relevant_date} is in the future — using current law"
+                )
+                relevant_date = today
+
+            for law_key in issue.get("applicable_laws", []):
+                db_law_id = law_id_lookup.get(law_key)
+                if not db_law_id:
+                    continue
+
+                versions = _get_versions(db_law_id)
+                if not versions:
+                    continue
+
+                selected = _find_version_for_date(versions, relevant_date)
+                if not selected:
+                    selected = _fallback_version(versions)
+                    version_notes.append(
+                        f"{issue_id}:{law_key}: No version for {relevant_date}, using current"
+                    )
+
+                if not selected:
+                    continue
+
+                combo_key = f"{issue_id}:{law_key}"
+                issue_versions[combo_key] = {
+                    "law_version_id": selected.id,
+                    "law_id": db_law_id,
+                    "issue_id": issue_id,
+                    "law_key": law_key,
+                    "relevant_date": relevant_date,
+                    "date_in_force": str(selected.date_in_force) if selected.date_in_force else None,
+                    "is_current": selected.is_current,
+                    "temporal_rule": issue.get("temporal_rule", ""),
+                    "date_reasoning": issue.get("date_reasoning", ""),
+                    "ver_id": selected.ver_id,
+                }
+
+                # Track unique versions per law for retrieval
+                unique_versions.setdefault(law_key, set()).add(selected.id)
+
+                # Backward-compat: keep latest version per law in selected_versions
+                existing = selected_versions.get(law_key)
+                if not existing or (selected.date_in_force and (
+                    not existing.get("date_in_force") or
+                    str(selected.date_in_force) > existing["date_in_force"]
+                )):
+                    selected_versions[law_key] = {
+                        "law_version_id": selected.id,
+                        "law_id": db_law_id,
+                        "date_in_force": str(selected.date_in_force) if selected.date_in_force else None,
+                        "is_current": selected.is_current,
+                        "ver_id": selected.ver_id,
+                    }
+
+    # Check for historical versions
+    for key, v in selected_versions.items():
+        if v.get("date_in_force") and not v.get("is_current"):
             version_notes.append(
-                f"{key}: Using version from {selected.date_in_force} (not the current version)"
+                f"{key}: Using version from {v['date_in_force']} (not the current version)"
             )
 
     duration = time.time() - t0
+    state["issue_versions"] = issue_versions
     state["selected_versions"] = selected_versions
+    # Store as lists (not sets) so state is JSON-serializable for pause/resume
+    state["unique_versions"] = {k: list(v) for k, v in unique_versions.items()}
     state["version_notes"] = version_notes
 
     if version_notes:
         state["flags"].extend(version_notes)
 
-    # Build amendment flags: mark laws where the selected version is not current
-    amendment_flags = []
-    for key, v in selected_versions.items():
-        if not v.get("is_current"):
-            amendment_flags.append(f"{key}: using historical version from {v.get('date_in_force', 'unknown')}")
-
     log_step(
         db, state["run_id"], "version_selection", 3, "done",
         duration,
-        output_summary=f"Selected {len(selected_versions)} law versions",
+        output_summary=f"Selected {len(selected_versions)} law versions for {len(issue_versions)} issue-law pairs",
         output_data={
             "selected_versions": selected_versions,
+            "issue_versions": {k: {kk: vv for kk, vv in v.items() if kk != "ver_id"} for k, v in issue_versions.items()},
             "notes": version_notes,
-            "amendment_flags": amendment_flags,
-            "primary_date": primary_date,
+            "unique_version_count": sum(len(s) for s in unique_versions.values()),
         },
     )
 
