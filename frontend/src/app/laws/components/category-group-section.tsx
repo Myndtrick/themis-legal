@@ -118,9 +118,9 @@ export default function CategoryGroupSection({
           {suggestedLaws.map((s) => {
             const isImporting = importingIds.has(s.id);
             return (
-              <div key={s.id} className="border border-dashed border-gray-200 rounded-lg p-3 mb-1.5 opacity-60">
+              <div key={s.id} className="relative border border-dashed border-gray-200 rounded-lg p-3 mb-1.5" style={{ zIndex: pickingId === s.id ? 50 : 0 }}>
                 <div className="flex justify-between items-center">
-                  <div className="text-sm text-gray-600">{s.title}</div>
+                  <div className="text-sm text-gray-400">{s.title}</div>
                   <div ref={pickingId === s.id ? pickerRef : undefined} className="relative flex-shrink-0 ml-3">
                     {isImporting ? (
                       <span className="text-xs text-gray-400 px-2.5 py-1">
