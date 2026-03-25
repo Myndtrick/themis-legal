@@ -568,7 +568,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     result = call_claude(
         system=prompt_text,
         messages=[{"role": "user", "content": context_msg}],
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
     log_api_call(
@@ -589,6 +589,8 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
             "classification_confidence": "LOW",
             "reasoning": "Failed to parse classification response",
             "applicable_laws": [],
+            "events": [],
+            "legal_issues": [],
         }
 
     state["question_type"] = parsed.get("question_type", "A")
@@ -599,6 +601,8 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["legal_topic"] = parsed.get("legal_topic", "")
     state["entity_types"] = parsed.get("entity_types", [])
     state["applicable_laws"] = parsed.get("applicable_laws", [])
+    state["events"] = parsed.get("events", [])
+    state["legal_issues"] = parsed.get("legal_issues", [])
 
     # Validate applicable_laws entries
     valid_laws = []
@@ -613,8 +617,20 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
         valid_laws.append(law_entry)
     state["applicable_laws"] = valid_laws
 
-    # Default to today — will be overridden by Step 1b date extraction
-    state["primary_date"] = state["today"]
+    # Build law_date_map: latest relevant date per law across all issues
+    law_date_map = {}
+    for issue in state.get("legal_issues", []):
+        for law_key in issue.get("applicable_laws", []):
+            existing = law_date_map.get(law_key)
+            issue_date = issue.get("relevant_date", "")
+            if issue_date and issue_date != "unknown":
+                if not existing or issue_date > existing:
+                    law_date_map[law_key] = issue_date
+
+    state["law_date_map"] = law_date_map
+    state["primary_date"] = (
+        max(law_date_map.values()) if law_date_map else state["today"]
+    )
 
     update_run_mode(db, state["run_id"], state["output_mode"])
 
