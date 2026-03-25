@@ -163,7 +163,7 @@ export function useChat() {
             id: Date.now() + 1,
             role: "assistant",
             // Use short_answer from structured if available, else raw content
-            content: data.structured?.short_answer || data.content,
+            content: data.structured?.answer || data.structured?.short_answer || data.content,
             mode: outputMode === "clarification" || outputMode === "needs_import"
               ? outputMode
               : data.mode,
@@ -237,7 +237,7 @@ export function useChat() {
             id: Date.now() + 1,
             role: "assistant",
             // Use short_answer from structured if available, else raw content
-            content: data.structured?.short_answer || data.content,
+            content: data.structured?.answer || data.structured?.short_answer || data.content,
             mode: outputMode === "clarification" || outputMode === "needs_import"
               ? outputMode
               : data.mode,
@@ -320,7 +320,7 @@ export function useChat() {
           const assistantMsg: ChatMessage = {
             id: Date.now() + 1,
             role: "assistant",
-            content: data.structured?.short_answer || data.content,
+            content: data.structured?.answer || data.structured?.short_answer || data.content,
             mode: outputMode === "clarification" || outputMode === "needs_import"
               ? outputMode
               : data.mode,

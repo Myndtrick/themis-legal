@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
 import type { ChatMessage, StructuredAnswer } from "@/lib/api";
 import { AnswerDetail } from "./answer-detail";
 import { ConfidenceBadge } from "./confidence-badge";
@@ -28,6 +29,7 @@ function getDisplayContent(message: ChatMessage): string {
         jsonStr = lines.join("\n");
       }
       const parsed = JSON.parse(jsonStr);
+      if (parsed.answer) return parsed.answer;
       if (parsed.short_answer) return parsed.short_answer;
     } catch {
       // Not valid JSON — use as-is
@@ -78,9 +80,9 @@ export function MessageBubble({
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[85%] bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
-        {/* Clean conversational answer */}
-        <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-line">
-          {displayContent}
+        {/* Legal analysis answer with markdown */}
+        <div className="text-sm text-gray-800 leading-relaxed prose prose-sm max-w-none prose-headings:text-gray-900 prose-h2:text-base prose-h2:mt-4 prose-h2:mb-2 prose-h3:text-sm prose-h3:mt-3 prose-h3:mb-1 prose-strong:text-gray-900 prose-hr:my-3 prose-hr:border-gray-200 prose-ul:my-1 prose-li:my-0.5 prose-blockquote:text-gray-600 prose-blockquote:border-indigo-300 prose-p:my-1.5">
+          <ReactMarkdown>{displayContent}</ReactMarkdown>
         </div>
 
         {/* Badges */}

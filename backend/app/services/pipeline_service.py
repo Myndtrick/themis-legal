@@ -1476,7 +1476,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     for chunk in stream_claude(
         system=prompt_text,
         messages=messages,
-        max_tokens=4096,
+        max_tokens=8192,
         temperature=0.2,
     ):
         if chunk["type"] == "token":
@@ -1493,7 +1493,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         logger.warning(f"Failed to parse Step 7 JSON, using raw text. First 200 chars: {full_text[:200]}")
 
     if structured:
-        state["answer"] = structured.get("short_answer", full_text)
+        state["answer"] = structured.get("answer", structured.get("short_answer", full_text))
         state["answer_structured"] = structured
     else:
         state["answer"] = full_text

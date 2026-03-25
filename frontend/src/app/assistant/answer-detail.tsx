@@ -69,10 +69,11 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
 
   const s = data.structured;
   const r = data.reasoning;
-  const hasStructured = s?.legal_basis || s?.version_logic || s?.nuances || s?.sources?.length;
+  const hasStructured = s?.version_logic || s?.sources?.length;
   const hasReasoning = r?.step2_law_mapping?.candidate_laws?.length;
+  const hasFlags = data.flags && data.flags.length > 0;
 
-  if (!hasStructured && !hasReasoning) return null;
+  if (!hasStructured && !hasReasoning && !hasFlags) return null;
 
   return (
     <div className="mt-2">
@@ -80,7 +81,7 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
         onClick={() => setIsOpen(!isOpen)}
         className="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
       >
-        {isOpen ? "▲ Hide details" : "▼ Show details"}
+        {isOpen ? "▲ Ascunde detalii tehnice" : "▼ Detalii tehnice"}
       </button>
 
       {isOpen && (
