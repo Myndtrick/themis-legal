@@ -1550,14 +1550,48 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
                 articles_context += f" [relevance: {art['reranker_score']:.2f}]"
             articles_context += f"\n{art.get('text', '')}\n\n"
 
-    # Build version selection context
-    version_context = ""
-    if state.get("selected_versions"):
-        version_context = "SELECTED LAW VERSIONS:\n"
-        for key, v in state["selected_versions"].items():
-            version_context += f"  {key}: version {v.get('date_in_force', 'unknown')} "
-            version_context += "(current)" if v.get("is_current") else "(historical)"
-            version_context += "\n"
+    # Build temporal analysis context
+    temporal_context = ""
+    if state.get("events") or state.get("issue_versions"):
+        temporal_context = "TEMPORAL ANALYSIS:\n"
+
+        # Events
+        events = state.get("events", [])
+        if events:
+            temporal_context += "  Events:\n"
+            for i, evt in enumerate(events, 1):
+                line = f"    {i}. {evt.get('date', '?')} — {evt.get('event', '?')}"
+                if evt.get("date_reasoning"):
+                    line += f" ({evt['date_reasoning']})"
+                temporal_context += line + "\n"
+            temporal_context += "\n"
+
+        # Legal issues with versions
+        issue_versions = state.get("issue_versions", {})
+        legal_issues = state.get("legal_issues", [])
+        if legal_issues:
+            temporal_context += "  Legal Issues & Applicable Versions:\n"
+            for issue in legal_issues:
+                iid = issue.get("issue_id", "?")
+                temporal_context += (
+                    f"    {iid}: {issue.get('description', '?')}\n"
+                    f"      Relevant date: {issue.get('relevant_date', '?')} "
+                    f"({issue.get('temporal_rule', '?')})\n"
+                )
+                for law_key in issue.get("applicable_laws", []):
+                    combo = f"{iid}:{law_key}"
+                    iv = issue_versions.get(combo, {})
+                    date_in_force = iv.get("date_in_force", "?")
+                    temporal_context += f"      -> {law_key} version {date_in_force}\n"
+            temporal_context += "\n"
+    else:
+        # Fallback: simple version context (for Type A questions or missing decomposition)
+        if state.get("selected_versions"):
+            temporal_context = "SELECTED LAW VERSIONS:\n"
+            for key, v in state["selected_versions"].items():
+                temporal_context += f"  {key}: version {v.get('date_in_force', 'unknown')} "
+                temporal_context += "(current)" if v.get("is_current") else "(historical)"
+                temporal_context += "\n"
 
     # Build flags context
     flags_context = ""
@@ -1575,9 +1609,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         f"  Legal domain: {state.get('legal_domain', 'other')}\n"
         f"  Output mode: {mode}\n"
         f"  Core issue: {state.get('core_issue', '')}\n\n"
-        f"DATE CONTEXT:\n"
-        f"  Primary date: {state.get('primary_date', 'today')}\n\n"
-        f"{version_context}\n"
+        f"{temporal_context}\n"
         f"{articles_context}\n"
         f"{flags_context}\n"
         f"USER QUESTION:\n{state['question']}"

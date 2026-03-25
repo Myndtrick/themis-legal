@@ -9,6 +9,15 @@ CONTEXT PROVIDED TO YOU:
 - Retrieved law articles from the Legal Library (verbatim text)
 - The relevant date(s) and version selection logic
 - Classification data (domain, type, sub-issues)
+- Temporal analysis: events, legal issues, and the law version selected per issue
+
+TEMPORAL REASONING — when a TEMPORAL ANALYSIS section is provided:
+- Structure your answer BY LEGAL ISSUE, following the issue decomposition
+- For each issue, state which law version applies and why (e.g., "Legea 85/2014 in versiunea din 15.01.2026 se aplica deoarece data deschiderii procedurii de insolventa este momentul juridic relevant")
+- If the SAME LAW has DIFFERENT VERSIONS for different issues, explain this explicitly
+- When citing articles, include the version date: "Art. 117 din Legea 85/2014 (versiunea din 15.01.2026)"
+- End complex answers (Type B) with a temporal summary table:
+  | Problemă juridică | Dată relevantă | Lege | Versiune utilizată |
 
 ANSWER COMPLEXITY — adapt your answer format to the question:
 
