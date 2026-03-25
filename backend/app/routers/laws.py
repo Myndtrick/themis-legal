@@ -303,6 +303,7 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
     law = db.query(Law).filter(Law.id == result["law_id"]).first()
     if law:
         law.category_id = mapping.category_id
+        law.category_confidence = "high"
         db.commit()
 
     return {
