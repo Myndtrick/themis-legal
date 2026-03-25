@@ -123,14 +123,6 @@ def run_pipeline(
             "entity_types": state.get("entity_types", []),
         }, time.time() - t0)
 
-        # Step 1b: Date Extraction (Claude)
-        yield _step_event(15, "date_extraction", "running")
-        t0 = time.time()
-        state = _step1b_date_extraction(state, db)
-        yield _step_event(15, "date_extraction", "done", {
-            "primary_date": state.get("primary_date"),
-        }, time.time() - t0)
-
         # Step 2: Law Mapping (rule-based, no Claude)
         yield _step_event(2, "law_mapping", "running")
         t0 = time.time()
