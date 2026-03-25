@@ -315,9 +315,12 @@ def resume_pipeline(
                         yield {"type": "step", "step": 25, "name": "importing", "status": "running",
                                "data": {"importing": law_key}}
 
+                        relevant_date = state.get("law_date_map", {}).get(
+                            law_key, state.get("primary_date")
+                        )
                         result = import_law_smart(
                             db, ver_id,
-                            primary_date=state.get("primary_date"),
+                            primary_date=relevant_date,
                         )
                         # import_law_smart commits internally
                         state["flags"].append(f"Imported {law_key} from legislatie.just.ro")
