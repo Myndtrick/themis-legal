@@ -754,6 +754,17 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _get_temporal_reason_for_law(law_key: str, legal_issues: list[dict]) -> str | None:
+    """Find the issue that drives the date need for a specific law."""
+    for issue in legal_issues:
+        if law_key in issue.get("applicable_laws", []):
+            date = issue.get("relevant_date", "")
+            desc = issue.get("description", "")
+            if date and date != "unknown":
+                return f"{desc} ({date})"
+    return None
+
+
 def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
     """Check law availability. Returns None to continue, or a pause/done event dict."""
     candidate_laws = state.get("candidate_laws", [])
@@ -785,7 +796,9 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
 
         # Build law preview for frontend
         laws_preview = []
+        law_date_map = state.get("law_date_map", {})
         for law in candidate_laws:
+            law_key = f"{law['law_number']}/{law['law_year']}"
             preview = {
                 "law_number": law["law_number"],
                 "law_year": law["law_year"],
@@ -794,6 +807,10 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
                 "availability": law.get("availability", "missing"),
                 "version_info": law.get("available_version_date"),
                 "reason": law.get("reason", ""),
+                "needed_for_date": law_date_map.get(law_key),
+                "date_reason": _get_temporal_reason_for_law(
+                    law_key, state.get("legal_issues", [])
+                ),
             }
             laws_preview.append(preview)
 

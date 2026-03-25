@@ -321,6 +321,8 @@ export interface LawPreview {
   availability: "available" | "wrong_version" | "missing";
   version_info: string | null;
   reason?: string;
+  needed_for_date?: string | null;
+  date_reason?: string | null;
 }
 
 // --- Settings: Prompts types ---

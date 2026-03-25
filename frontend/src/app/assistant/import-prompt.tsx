@@ -81,6 +81,11 @@ export function ImportPrompt({
                   Available: {law.version_info} (wrong version)
                 </div>
               )}
+              {law.needed_for_date && (
+                <div className="text-[10px] opacity-70 mt-0.5">
+                  Needed for: {law.date_reason || law.needed_for_date}
+                </div>
+              )}
             </div>
             {law.availability !== "available" && (
               <Link
