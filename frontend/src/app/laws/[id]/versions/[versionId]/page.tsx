@@ -4,6 +4,7 @@ import { ArticleCard } from "./components/article-card";
 import { ArticleList } from "./components/article-list";
 import { StructuralSection } from "./components/structural-section";
 import { LawToolbar } from "./components/law-toolbar";
+import { AnnexCard } from "./components/annex-card";
 
 export default async function VersionDetailPage(
   props: PageProps<"/laws/[id]/versions/[versionId]">
@@ -100,17 +101,7 @@ export default async function VersionDetailPage(
             Anexe
           </h3>
           {version.annexes.map((annex) => (
-            <div
-              key={annex.id}
-              className="bg-white rounded-lg border border-gray-200 p-5"
-            >
-              <h4 className="font-semibold text-gray-900 mb-3">
-                {annex.title}
-              </h4>
-              <div className="text-sm text-gray-700 whitespace-pre-wrap">
-                {annex.full_text}
-              </div>
-            </div>
+            <AnnexCard key={annex.id} annex={annex} />
           ))}
         </div>
       )}
