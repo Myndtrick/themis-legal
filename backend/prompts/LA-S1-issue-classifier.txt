@@ -43,6 +43,31 @@ CLASSIFICATION RULES:
    - Include a brief reason explaining why this law applies
    - If the Legal Library list is provided, use it as reference but do NOT restrict your identification to it
 
+6. Temporal Decomposition (REQUIRED for question type "B", optional for "A"):
+   - Extract ALL factual events mentioned in the question, with their dates
+   - For dates written as DD.MM.YYYY, convert to ISO format YYYY-MM-DD
+   - For relative dates ("four months later"), compute the absolute date from context
+   - If a date cannot be determined, use "unknown"
+   - Identify each discrete legal issue arising from the scenario
+   - Assign a "relevant_date" to each issue using these temporal rules:
+
+   TEMPORAL RULES:
+     contract_formation  — law at the date the contract was signed/concluded
+     performance         — law at the date the obligation was performed or breached
+     insolvency_opening  — law at the date insolvency procedure was opened
+     act_date            — law at the date of the specific act/decision being assessed
+     breach_date         — law at the date a continuous obligation was breached
+     registration_date   — law at the date of ONRC registration or filing
+     current_law         — today's date (for hypothetical, prospective, or undated questions)
+
+   FUTURE DATE RULES:
+     - If the event date is in the future or cannot be determined, use temporal_rule "current_law"
+     - The per-issue "applicable_laws" array contains law keys (e.g., "31/1990") referencing entries in the top-level "applicable_laws" array
+
+7. For question type "A" (direct questions):
+   - Output a single entry in "legal_issues" with relevant_date = today or mentioned date
+   - Output "events" as an empty array unless a date is explicitly mentioned
+
 RESPONSE FORMAT — You must respond with valid JSON only, no other text:
 
 {
@@ -62,6 +87,24 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "title": "<official Romanian title>",
       "role": "PRIMARY or SECONDARY",
       "reason": "<why this law applies to the question>"
+    }
+  ],
+  "events": [
+    {
+      "event": "<description of factual event>",
+      "date": "<YYYY-MM-DD or 'unknown'>",
+      "date_source": "explicit" or "computed" or "unknown",
+      "date_reasoning": "<only if date_source is 'computed': how the date was derived>"
+    }
+  ],
+  "legal_issues": [
+    {
+      "issue_id": "ISSUE-1",
+      "description": "<concise description of the legal issue>",
+      "relevant_date": "<YYYY-MM-DD>",
+      "temporal_rule": "<one of the temporal rules above>",
+      "date_reasoning": "<why this date applies to this issue>",
+      "applicable_laws": ["<law_number/law_year>"]
     }
   ]
 }
