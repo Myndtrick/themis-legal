@@ -37,11 +37,12 @@ async def lifespan(app: FastAPI):
 
     # Seed default prompts for the Legal Assistant pipeline
     from app.database import SessionLocal
-    from app.services.prompt_service import seed_defaults
+    from app.services.prompt_service import seed_defaults, sync_prompts_from_files
 
     db = SessionLocal()
     try:
         seed_defaults(db)
+        sync_prompts_from_files(db)
         from app.services.category_service import seed_categories, backfill_law_mapping_fields
         seed_categories(db)
         backfill_law_mapping_fields(db)

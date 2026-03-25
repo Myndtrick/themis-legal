@@ -101,6 +101,58 @@ def seed_defaults(db: Session):
         logger.info(f"Seeded {seeded} default prompts")
 
 
+def sync_prompts_from_files(db: Session):
+    """Update DB prompts from files when the file content differs from the active DB version.
+
+    Creates a new version (deactivating the old one) for any prompt whose file
+    has changed since the last sync.
+    """
+    updated = 0
+    for prompt_id, info in PROMPT_MANIFEST.items():
+        filepath = PROMPTS_DIR / info["file"]
+        if not filepath.exists():
+            continue
+
+        file_text = filepath.read_text(encoding="utf-8")
+
+        # Get current active version
+        active = (
+            db.query(PromptVersion)
+            .filter(
+                PromptVersion.prompt_id == prompt_id,
+                PromptVersion.status == "ACTIVE",
+            )
+            .order_by(PromptVersion.version_number.desc())
+            .first()
+        )
+
+        if not active:
+            continue
+
+        # Compare — skip if identical
+        if active.prompt_text.strip() == file_text.strip():
+            continue
+
+        # Deactivate old version
+        active.status = "INACTIVE"
+
+        # Create new version
+        new_version = PromptVersion(
+            prompt_id=prompt_id,
+            version_number=active.version_number + 1,
+            prompt_text=file_text,
+            status="ACTIVE",
+            created_by="system",
+            modification_note="Synced from file",
+        )
+        db.add(new_version)
+        updated += 1
+
+    db.commit()
+    if updated:
+        logger.info(f"Synced {updated} prompts from files")
+
+
 def load_prompt(prompt_id: str, db: Session) -> tuple[str, int]:
     """Load the active prompt text. Returns (text, version_number)."""
     version = (
