@@ -469,6 +469,12 @@ export const api = {
           body: JSON.stringify({ category_id: categoryId }),
         }
       ),
+    importSuggestion: (mappingId: number, importHistory: boolean, signal?: AbortSignal) =>
+      apiFetch<{ law_id: number; title: string }>("/api/laws/import-suggestion", {
+        method: "POST",
+        body: JSON.stringify({ mapping_id: mappingId, import_history: importHistory }),
+        signal,
+      }),
   },
   notifications: {
     list: (unreadOnly = false) =>
