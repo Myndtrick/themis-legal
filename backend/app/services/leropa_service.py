@@ -154,6 +154,26 @@ def _extract_law_number_and_year(title: str) -> tuple[str, int]:
     return "unknown", year
 
 
+def _auto_categorize(db: Session, law) -> None:
+    """Assign category from seed mapping if law has no category."""
+    if law.category_id is not None:
+        return
+    if not law.law_number:
+        return
+    from app.models.category import LawMapping as CategoryMapping
+    mapping = (
+        db.query(CategoryMapping)
+        .filter(
+            CategoryMapping.law_number == law.law_number,
+            CategoryMapping.law_year == law.law_year,
+        )
+        .first()
+    )
+    if mapping and mapping.category_id:
+        law.category_id = mapping.category_id
+        law.category_confidence = "auto"
+
+
 def fetch_and_store_version(
     db: Session,
     ver_id: str,
@@ -687,6 +707,7 @@ def import_law_smart(
 
     # Apply metadata
     _apply_law_metadata(db, law, doc)
+    _auto_categorize(db, law)
 
     # Create notification + audit log
     notification = Notification(
@@ -954,6 +975,7 @@ def import_law(
                     continue
 
     _apply_law_metadata(db, law, doc)
+    _auto_categorize(db, law)
 
     # Create notification
     notification = Notification(
