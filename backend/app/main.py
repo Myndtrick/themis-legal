@@ -42,8 +42,9 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_defaults(db)
-        from app.services.category_service import seed_categories
+        from app.services.category_service import seed_categories, backfill_law_mapping_fields
         seed_categories(db)
+        backfill_law_mapping_fields(db)
         from app.services.bm25_service import ensure_fts_index
         ensure_fts_index(db)
     finally:

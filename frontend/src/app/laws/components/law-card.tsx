@@ -76,7 +76,7 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
     <div className="border border-gray-200 rounded-lg bg-white p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
       <Link href={`/laws/${law.id}`} className="flex-1 min-w-0">
         <div className="font-semibold text-sm text-gray-900 line-clamp-2">
-          {prefix} nr. {law.law_number}/{law.law_year}
+          {law.title}
           {law.description && (
             <span className="font-normal text-gray-900"> — {law.description}</span>
           )}

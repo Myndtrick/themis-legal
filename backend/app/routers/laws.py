@@ -159,34 +159,40 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
     try:
         result = do_import(db, ver_id, import_history=req.import_history)
 
-        # Look up suggested category from law_mappings
+        # Look up suggested category from law_mappings.
+        # Match priority:
+        #   1. Exact (document_type + law_number + law_year)
+        #   2. Partial (law_number + law_year, ignore document_type)
+        #   3. Partial (document_type + law_number, ignore year)
+        #   4. law_number only (single candidate)
         law_number = result.get("law_number")
         law_year = result.get("law_year")
-        title = (result.get("title") or "").lower()
+        doc_type = result.get("document_type")
         mapping = None
         if law_number and law_number != "unknown":
-            candidates = db.query(LawMapping).filter(LawMapping.law_number == law_number).all()
+            candidates = db.query(LawMapping).filter(
+                LawMapping.law_number == law_number
+            ).all()
             if len(candidates) == 1:
                 mapping = candidates[0]
-            elif candidates and law_year:
-                # Multiple laws share this number — disambiguate by year
-                year_str = str(law_year)
-                for c in candidates:
-                    if f"/{year_str}" in c.title or f" {year_str}" in c.title:
-                        mapping = c
-                        break
-                if not mapping:
-                    mapping = candidates[0]  # fallback to first
-        if not mapping and title:
-            # Extract core name (strip dates, parenthetical, "din ..." suffix)
-            core = re.sub(r"\s+din\s+.*", "", title).strip()
-            if len(core) >= 4:
-                mappings = db.query(LawMapping).all()
-                for m in mappings:
-                    mt = m.title.lower()
-                    if core in mt or mt in core:
-                        mapping = m
-                        break
+            elif candidates:
+                # Try exact match: document_type + law_number + law_year
+                if doc_type and law_year:
+                    for c in candidates:
+                        if c.document_type == doc_type and c.law_year == law_year:
+                            mapping = c
+                            break
+                # Fallback: law_number + law_year (ignore document_type)
+                if not mapping and law_year:
+                    for c in candidates:
+                        if c.law_year == law_year:
+                            mapping = c
+                            break
+                # Fallback: document_type + law_number (ignore year)
+                if not mapping and doc_type:
+                    matches = [c for c in candidates if c.document_type == doc_type]
+                    if len(matches) == 1:
+                        mapping = matches[0]
         if mapping:
             result["suggested_category_id"] = mapping.category_id
 

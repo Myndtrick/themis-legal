@@ -733,6 +733,7 @@ def import_law_smart(
         "title": law.title,
         "law_number": law.law_number,
         "law_year": law.law_year,
+        "document_type": law.document_type,
         "versions_imported": len(vids_to_import),
         "remaining_ver_ids": remaining,
         "date_lookup": {k: v.isoformat() if v else None for k, v in date_lookup.items()},
@@ -991,6 +992,7 @@ def import_law(
         "title": law.title,
         "law_number": law.law_number,
         "law_year": law.law_year,
+        "document_type": law.document_type,
         "versions_imported": len(versions_imported),
         "version_ids": versions_imported,
     }
