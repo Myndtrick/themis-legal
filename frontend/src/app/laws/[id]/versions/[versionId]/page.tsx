@@ -94,7 +94,28 @@ export default async function VersionDetailPage(
         </div>
       )}
 
-      {version.structure.length === 0 && version.articles.length === 0 && (
+      {version.annexes && version.annexes.length > 0 && (
+        <div className="space-y-3 mt-8">
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Anexe
+          </h3>
+          {version.annexes.map((annex) => (
+            <div
+              key={annex.id}
+              className="bg-white rounded-lg border border-gray-200 p-5"
+            >
+              <h4 className="font-semibold text-gray-900 mb-3">
+                {annex.title}
+              </h4>
+              <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                {annex.full_text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {version.structure.length === 0 && version.articles.length === 0 && (!version.annexes || version.annexes.length === 0) && (
         <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
           <p className="text-gray-500">
             No content found for this version

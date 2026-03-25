@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.models.law import Article, Law, LawVersion, StructuralElement
+from app.models.law import Annex, Article, Law, LawVersion, StructuralElement
 from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
@@ -445,6 +445,14 @@ def get_law_version(law_id: int, version_id: int, db: Session = Depends(get_db))
     # Articles not attached to any structural element
     orphan_articles = [a for a in articles if a.structural_element_id is None]
 
+    # Annexes
+    annexes = (
+        db.query(Annex)
+        .filter(Annex.law_version_id == version_id)
+        .order_by(Annex.order_index)
+        .all()
+    )
+
     return {
         "id": version.id,
         "ver_id": version.ver_id,
@@ -459,6 +467,16 @@ def get_law_version(law_id: int, version_id: int, db: Session = Depends(get_db))
         },
         "structure": build_element_tree(),
         "articles": [serialize_article(a, law) for a in orphan_articles],
+        "annexes": [
+            {
+                "id": anx.id,
+                "source_id": anx.source_id,
+                "title": anx.title,
+                "full_text": anx.full_text,
+                "order_index": anx.order_index,
+            }
+            for anx in annexes
+        ],
     }
 
 

@@ -185,6 +185,14 @@ export interface StructuralElementData {
   articles: ArticleData[];
 }
 
+export interface AnnexData {
+  id: number;
+  source_id: string;
+  title: string;
+  full_text: string;
+  order_index: number;
+}
+
 export interface LawVersionDetail {
   id: number;
   ver_id: string;
@@ -199,6 +207,7 @@ export interface LawVersionDetail {
   };
   structure: StructuralElementData[];
   articles: ArticleData[];
+  annexes: AnnexData[];
 }
 
 export interface NotificationData {
