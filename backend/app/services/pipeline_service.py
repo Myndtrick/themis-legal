@@ -1204,6 +1204,50 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     return state
 
 
+def _step4_5_pre_expansion_filter(state: dict) -> dict:
+    """Drop bottom-tier articles before expansion to reduce noise."""
+    articles = state.get("retrieved_articles_raw", [])
+    if len(articles) <= 10:
+        return state
+
+    # Compute BM25 median per tier
+    tier_bm25_scores = {}
+    for art in articles:
+        if "bm25_rank" in art:
+            tier = art.get("tier", "unknown")
+            tier_bm25_scores.setdefault(tier, []).append(art["bm25_rank"])
+
+    tier_bm25_medians = {}
+    for tier, scores in tier_bm25_scores.items():
+        sorted_scores = sorted(scores)
+        mid = len(sorted_scores) // 2
+        tier_bm25_medians[tier] = sorted_scores[mid]
+
+    kept = []
+    for art in articles:
+        if art.get("source", "").startswith("entity:"):
+            kept.append(art)
+            continue
+
+        bm25_ok = False
+        if "bm25_rank" in art:
+            tier = art.get("tier", "unknown")
+            median = tier_bm25_medians.get(tier)
+            if median is not None and art["bm25_rank"] <= median:
+                bm25_ok = True
+
+        semantic_ok = False
+        if "distance" in art:
+            if art["distance"] < 0.7:
+                semantic_ok = True
+
+        if bm25_ok or semantic_ok:
+            kept.append(art)
+
+    state["retrieved_articles_raw"] = kept
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Step 5: Article Expansion (neighbors + cross-refs)
 # ---------------------------------------------------------------------------
