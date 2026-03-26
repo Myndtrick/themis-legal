@@ -112,6 +112,8 @@ Step 1 output: complexity = ?
 
 **Routing logic in `pipeline_service.py`:** A single conditional after Step 1 parsing. If `complexity == "SIMPLE"`, call `_run_fast_path(state, db)`. Otherwise, continue the existing pipeline with new steps inserted.
 
+**Resume pipeline path:** The `resume_pipeline` function (which re-enters the pipeline after an import pause at Step 2.5) must also respect the complexity routing. The `complexity` field must be persisted in `PipelineRun.paused_state` alongside the rest of the state dict. On resume, if `complexity == "SIMPLE"`, resume into the fast path; otherwise resume into the full path with all new steps (4.5, 6.7, 6.8, conditional retrieval). In practice, SIMPLE queries are unlikely to pause (they typically reference one well-known law), but the resume path must handle it correctly regardless.
+
 ---
 
 ### Section 3: Fast Path for Simple Statutory Queries
@@ -148,7 +150,12 @@ For SIMPLE queries, the pipeline skips fact extraction, expansion, exception ret
 
 **Safety:** If Step 1 misclassifies a complex question as SIMPLE, the answer will be less thorough but not incorrect — it will miss nuances. The late relevance gate (Step 6.5) still runs and can flag low-confidence results. Step 7 low-confidence answers include a note suggesting the user provide more context.
 
-**Files:** `pipeline_service.py` (add `_run_fast_path` function), new prompt `LA-S7-simple.txt`.
+**Implementation approach:** The fast path reuses existing step functions (`_step4_hybrid_retrieval`, `_step6_select_articles`) with different parameters, NOT a duplicated code path. Specifically:
+- `_step4_hybrid_retrieval` gains an optional `tier_limits_override` parameter to accept `{"tier1_primary": 5, "tier2_secondary": 5}`
+- `_step6_select_articles` already accepts `top_k` — pass `top_k=3`
+- `_run_fast_path` is a thin orchestrator that calls existing functions with fast-path parameters and skips Steps 4.5, 5, 5.5, 6.7, 6.8
+
+**Files:** `pipeline_service.py` (add `_run_fast_path` function, add `tier_limits_override` parameter to Step 4), new prompt `LA-S7-simple.txt`.
 
 ---
 
@@ -161,9 +168,11 @@ For SIMPLE queries, the pipeline skips fact extraction, expansion, exception ret
 **What it does:** Drops bottom-tier articles before expansion to reduce noise amplification.
 
 **Filter criteria — keep articles that match ANY of:**
-- BM25 rank in top 50% of results for their tier
-- Semantic distance < 0.7
+- Has a BM25 score and ranks in top 50% of BM25 results for their tier
+- Has a semantic distance score and distance < 0.7
 - Source is `"entity_targeted"`
+
+Note: articles from BM25-only have no semantic distance; articles from semantic-only have no BM25 rank. The OR logic ensures each article is evaluated by whichever score(s) it has. An article is only dropped if ALL its available scores fall below threshold.
 
 **Typical result:** ~30–40 articles retained (from 60–90 raw).
 
@@ -182,6 +191,7 @@ For SIMPLE queries, the pipeline skips fact extraction, expansion, exception ret
 **New:** Scale top_k based on issue count:
 
 ```python
+num_issues = len(state.get("legal_issues", []))
 top_k = min(20, 5 + (num_issues * 5))
 ```
 
@@ -191,7 +201,7 @@ top_k = min(20, 5 + (num_issues * 5))
 | 2 | 15 |
 | 3+ | 20 |
 
-This reduces articles flowing into Steps 6.7, 6.8, and 7 for simpler queries.
+This reduces articles flowing into Steps 6.7, 6.8, and 7 for simpler queries. Note: `num_issues` is derived from `state["legal_issues"]` which is populated by Step 1. For SIMPLE queries this code path is not reached (fast path skips to top-3 directly).
 
 **Files:** `pipeline_service.py` (pass dynamic top_k to `rerank_articles`), `reranker_service.py` (already accepts `top_k` parameter — no change needed).
 
@@ -205,11 +215,14 @@ This reduces articles flowing into Steps 6.7, 6.8, and 7 for simpler queries.
 
 **What it does:** Assigns each reranked article to the issue(s) it serves, using the `issue_versions` mapping from Step 3.
 
+**Prerequisite — article enrichment with `law_version_id`:** Articles from BM25 and semantic search may not carry `law_version_id` consistently. Before partitioning, Step 6.7 must ensure each article has a `law_version_id` by looking it up from the `Article` table using the article's `article_id` if not already present. This is a single batch DB query (one query for all articles missing the field), not per-article.
+
 **Matching logic:**
 
 ```python
 for article in reranked_articles:
     for issue in state["legal_issues"]:
+        law_key = f"{issue.get('law_number', '')}/{issue.get('law_year', '')}"
         issue_key = f"{issue['issue_id']}:{law_key}"
         if issue_key in state["issue_versions"]:
             expected_version_id = issue_versions[issue_key]["law_version_id"]
@@ -305,7 +318,7 @@ Return JSON only, following the RL-RAP output schema.
 
 | Parameter | Value | Rationale |
 |---|---|---|
-| Model | claude-sonnet-4-20250514 | Same as Steps 1 and 7 |
+| Model | Same model as configured for the pipeline (currently claude-sonnet-4-20250514) | Consistent with Steps 1 and 7; configured via `config.py`, not hardcoded in step |
 | Max tokens | 4,096 | Enough for 3 issues with full decomposition |
 | Temperature | 0.1 | Lower than other steps — reasoning should be deterministic |
 | Streaming | No | Output consumed as complete JSON, not displayed |
@@ -504,8 +517,10 @@ USER QUESTION:
 | Mix of CERTAIN and PROBABLE | HIGH |
 | Any CONDITIONAL, no UNCERTAIN | MEDIUM |
 | Any UNCERTAIN | LOW |
+| Step 6.8 returned no issues (parse failure, partial output) | LOW |
+| Step 6.8 was skipped (fallback mode) | Determined by Step 7 as today (no constraint) |
 
-Step 7 can lower confidence below the derived value but cannot raise it above.
+Step 7 can lower confidence below the derived value but cannot raise it above. If Step 6.8 omitted an issue (flagged by pipeline), that issue is treated as UNCERTAIN for confidence derivation purposes.
 
 #### Token Budget (New vs Current)
 
@@ -524,7 +539,9 @@ Net input reduction: ~20-30%.
 
 Validates against operative articles from RL-RAP analysis only (not all reranked articles). If Step 7 cites an article that was in the top-20 but NOT identified as operative by Step 6.8, it is flagged as "Unverified."
 
-**Files:** `LA-S7-answer-qa.txt` and other S7 variants (simplify, add RL-RAP consumption instructions), `pipeline_service.py` (modify Step 7 context construction and Step 7.5 validation).
+**Data flow:** After Step 6.8, the pipeline populates `state["operative_articles"]` — a list of article references extracted from the RL-RAP output's `operative_articles` arrays across all issues. Step 7.5 validates against this set instead of `state["retrieved_articles"]`.
+
+**Files:** `LA-S7-answer-qa.txt` and other S7 variants (simplify, add RL-RAP consumption instructions), `pipeline_service.py` (modify Step 7 context construction, populate `state["operative_articles"]`, modify Step 7.5 validation).
 
 ---
 
@@ -581,6 +598,19 @@ STEP 6.5  Late Relevance Gate                    [LOCAL]
 STEP 7    Direct Answer (simplified prompt)      [CLAUDE]
 STEP 7.5  Citation Validation                    [LOCAL]
 ```
+
+### SSE Step Events for Frontend
+
+New steps need assigned step numbers and display names for the frontend `StepIndicator`:
+
+| Step | Number | SSE Name | Display Text |
+|---|---|---|---|
+| Step 4.5 | 45 | `pre_expansion_filter` | "Filtering retrieval results..." |
+| Step 6.7 | 67 | `article_partitioning` | "Organizing articles by issue..." |
+| Step 6.8 | 68 | `legal_reasoning` | "Analyzing legal provisions..." |
+| Conditional retrieval | 69 | `conditional_retrieval` | "Fetching additional provisions..." |
+
+These follow the existing numbering convention (e.g., Step 2.5 = 25, Step 5.5 = 55). The frontend `step-indicator.tsx` needs to be updated with the new step names and display text.
 
 ### Cost Summary
 
