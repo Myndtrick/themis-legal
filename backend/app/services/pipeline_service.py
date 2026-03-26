@@ -1047,7 +1047,7 @@ _ENTITY_KEYWORDS: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 
-def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
+def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict | None = None) -> dict:
     """BM25 + semantic search, per tier."""
     from app.services.bm25_service import search_bm25
 
@@ -1058,7 +1058,7 @@ def _step4_hybrid_retrieval(state: dict, db: Session) -> dict:
     semantic_count = 0
     duplicates_removed = 0
 
-    tier_limits = {
+    tier_limits = tier_limits_override or {
         "tier1_primary": 30,
         "tier2_secondary": 15,
     }
@@ -1386,9 +1386,12 @@ def _step5_5_exception_retrieval(state: dict, db: Session) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _step6_select_articles(state: dict, db: Session) -> dict:
-    """Select top articles using local cross-encoder reranker."""
+def _step6_select_articles(state: dict, db: Session, top_k_override: int | None = None) -> dict:
+    """Rerank articles using cross-encoder, select top-k."""
     from app.services.reranker_service import rerank_articles
+
+    num_issues = len(state.get("legal_issues", []))
+    top_k = top_k_override or min(20, 5 + (num_issues * 5))
 
     t0 = time.time()
     raw = state.get("retrieved_articles_raw", [])
@@ -1398,7 +1401,7 @@ def _step6_select_articles(state: dict, db: Session) -> dict:
                  output_summary="No articles to select from")
         return state
 
-    ranked = rerank_articles(state["question"], raw, top_k=20)
+    ranked = rerank_articles(state["question"], raw, top_k=top_k)
     state["retrieved_articles"] = ranked
 
     kept_ids = {a["article_id"] for a in ranked}
