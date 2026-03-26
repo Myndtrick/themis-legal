@@ -147,6 +147,106 @@ def _build_step6_8_context(state: dict) -> str:
     return "\n".join(parts)
 
 
+def _build_step7_context(state: dict) -> str:
+    """Build Step 7 user message. Uses RL-RAP output if available, falls back to raw articles."""
+    parts = []
+
+    parts.append("CLASSIFICATION:")
+    parts.append(f"  Question type: {state.get('question_type', 'A')}")
+    parts.append(f"  Legal domain: {state.get('legal_domain', 'unknown')}")
+    parts.append(f"  Output mode: {state.get('output_mode', 'qa')}")
+    parts.append(f"  Core issue: {state.get('core_issue', '')}")
+
+    rl_rap = state.get("rl_rap_output")
+
+    if rl_rap:
+        # Structured facts
+        facts = state.get("facts", {})
+        if facts.get("stated") or facts.get("assumed") or facts.get("missing"):
+            parts.append("\nSTRUCTURED FACTS:")
+            for f in facts.get("stated", []):
+                date_str = f" ({f['date']})" if f.get("date") else ""
+                parts.append(f"  {f['fact_id']}: {f['description']}{date_str}")
+            if facts.get("assumed"):
+                parts.append("  Assumed:")
+                for f in facts["assumed"]:
+                    parts.append(f"    {f['fact_id']}: {f['description']} (basis: {f.get('basis', '')})")
+            if facts.get("missing"):
+                parts.append("  Missing:")
+                for f in facts["missing"]:
+                    parts.append(f"    {f['fact_id']}: {f['description']}")
+
+        # RL-RAP analysis
+        parts.append("\nLEGAL ANALYSIS (from reasoning step):")
+        for issue in rl_rap.get("issues", []):
+            parts.append(f"\n  {issue['issue_id']}: {issue.get('issue_label', '')}")
+            parts.append(f"    Certainty: {issue.get('certainty_level', 'UNKNOWN')}")
+
+            for oa in issue.get("operative_articles", []):
+                parts.append(f"    Operative article: {oa['article_ref']} — {oa.get('disposition', {}).get('modality', '')}")
+
+            parts.append("    Conditions:")
+            for c in issue.get("decomposed_conditions", []):
+                fact_refs = ", ".join(c.get("supporting_fact_ids", []))
+                parts.append(f"      {c['condition_id']}: {c['condition_text']} — {c['condition_status']}" +
+                           (f" ({fact_refs})" if fact_refs else ""))
+
+            if issue.get("exceptions_checked"):
+                parts.append("    Exceptions checked:")
+                for ex in issue["exceptions_checked"]:
+                    parts.append(f"      {ex['exception_ref']} — {ex['condition_status_summary']} — {ex.get('impact', '')}")
+
+            if issue.get("conflicts"):
+                c = issue["conflicts"]
+                parts.append(f"    Conflict: {c.get('resolution_rule', 'UNRESOLVED')} — {c.get('rationale', '')}")
+
+            ta = issue.get("temporal_applicability", {})
+            if ta.get("temporal_risks"):
+                parts.append(f"    Temporal risks: {', '.join(ta['temporal_risks'])}")
+
+            parts.append(f"    Conclusion: {issue.get('conclusion', '')}")
+
+            if issue.get("missing_facts"):
+                parts.append(f"    Missing facts: {'; '.join(issue['missing_facts'])}")
+
+        # Supporting article texts (operative only)
+        operative_refs = set()
+        for issue in rl_rap.get("issues", []):
+            for oa in issue.get("operative_articles", []):
+                operative_refs.add(oa.get("article_ref", ""))
+
+        all_articles = state.get("retrieved_articles", [])
+        parts.append("\nSUPPORTING ARTICLE TEXTS:")
+        for art in all_articles:
+            art_ref = f"art.{art.get('article_number', '')}"
+            matched = any(art_ref in ref for ref in operative_refs)
+            if matched:
+                law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
+                parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
+                parts.append(f"  {art.get('text', '')}")
+    else:
+        # Fallback: no RL-RAP output, use raw articles
+        parts.append("\nRETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:")
+        for i, art in enumerate(state.get("retrieved_articles", []), 1):
+            role_tag = f"[{art.get('role', 'SECONDARY')}]"
+            abrogated_tag = " [ABROGATED]" if art.get("is_abrogated") else ""
+            law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
+            parts.append(f"[Article {i}] {role_tag}{abrogated_tag} {law_ref}, Art. {art.get('article_number', '')}")
+            if art.get("date_in_force"):
+                parts.append(f"  version {art['date_in_force']}")
+            parts.append(f"  {art.get('text', '')}")
+
+    flags = state.get("flags", [])
+    if flags:
+        parts.append("\nFLAGS AND WARNINGS:")
+        for f in flags:
+            parts.append(f"  - {f}")
+
+    parts.append(f"\nUSER QUESTION:\n{state.get('question', '')}")
+
+    return "\n".join(parts)
+
+
 def _parse_step6_8_output(raw: str) -> dict | None:
     """Parse Step 6.8 JSON output. Returns None if malformed."""
     try:
