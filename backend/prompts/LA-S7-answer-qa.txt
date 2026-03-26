@@ -121,6 +121,14 @@ CRITICAL RULES FOR THE "answer" FIELD:
 - Law citations and article text are always in Romanian (original language).
 - Set fields to null if not applicable (don't include empty strings).
 
+STALE VERSION HANDLING:
+- If the context includes a "VERSIUNI POTENȚIAL DEPĂȘITE" section, the answer is based on a law version that may NOT be the latest officially published version.
+- You MUST include a prominent disclaimer in the answer, for example:
+  "**Notă:** Acest răspuns se bazează pe versiunea din [db_date] a Legii [number]/[year]. O versiune mai recentă (din [official_date]) este disponibilă pe legislatie.just.ro dar nu a fost importată în bibliotecă. Recomandăm verificarea cu versiunea actualizată."
+- Place this disclaimer BEFORE the conclusion, not hidden at the end.
+- When stale versions are in play, confidence CANNOT be HIGH — use MEDIUM at best.
+- In the confidence_reason field, mention the version staleness explicitly.
+
 DOMAIN RELEVANCE CHECK:
 - If the retrieved articles are from a COMPLETELY DIFFERENT legal domain than the question asks about (e.g., question about criminal law but ONLY civil law articles were provided), DO NOT answer using those articles. Set answer to explain that the relevant articles are not available, set confidence to "LOW", and describe what's needed in missing_info.
 - If the question spans MULTIPLE legal domains and you have articles for SOME but not all:

@@ -27,6 +27,7 @@ interface CombinedData {
   reasoning?: {
     step1_classification?: { legal_domain?: string; legal_topic?: string; entity_types?: string[]; output_mode?: string; core_issue?: string };
     step2_law_mapping?: { candidate_laws?: Array<{ law_number: string; law_year: number; source: string; role: string; title?: string; tier?: string }>; coverage_status?: Record<string, string> };
+    step2a_version_currency?: { results?: Record<string, { currency_status?: string; official_latest_date?: string; db_latest_date?: string }>; stale_versions?: string[] };
     step3_versions?: { selected_versions?: Record<string, { date_in_force?: string; is_current?: boolean }> };
     step4_retrieval?: { articles_found?: number };
     step5_expansion?: { articles_after_expansion?: number };
@@ -183,6 +184,26 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
                     <div key={key} className="text-xs text-gray-600 ml-2">
                       {key}: version {(v.date_in_force as string) || "unknown"}{" "}
                       {v.is_current ? "(current)" : "(historical)"}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Version Currency (Step 2a) */}
+              {r.step2a_version_currency?.results && Object.keys(r.step2a_version_currency.results).length > 0 && (
+                <div className="mb-2">
+                  <div className="text-xs font-medium text-gray-600 mb-1">Version Currency</div>
+                  {Object.entries(r.step2a_version_currency.results as Record<string, Record<string, unknown>>).map(([key, v]) => (
+                    <div key={key} className="text-xs text-gray-600 ml-2 flex items-center gap-1">
+                      <span>
+                        {v.currency_status === "current" ? "\u2705" : v.currency_status === "stale" ? "\uD83D\uDD04" : v.currency_status === "source_unavailable" ? "\u2753" : "\u2014"}
+                      </span>
+                      <span>{key}</span>
+                      {v.currency_status === "stale" && (
+                        <span className="text-amber-600">(DB: {(v.db_latest_date as string) || "?"} &rarr; official: {(v.official_latest_date as string) || "?"})</span>
+                      )}
+                      {v.currency_status === "current" && <span className="text-green-600">(verified)</span>}
+                      {v.currency_status === "source_unavailable" && <span className="text-gray-400">(unverified)</span>}
                     </div>
                   ))}
                 </div>

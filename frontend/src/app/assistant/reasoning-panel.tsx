@@ -8,6 +8,7 @@ const STEP_NAMES: Record<string, string> = {
   date_extraction: "Date Extraction",
   law_identification: "Law Identification",
   coverage_check: "Coverage Check",
+  version_currency_check: "Version Currency Check",
   import_permission: "Import Permission",
   version_selection: "Version Selection",
   answer_generation: "Answer Generation",
@@ -126,6 +127,44 @@ export function ReasoningPanel({
                         {key}: version{" "}
                         {(v.date_in_force as string) || "unknown"}{" "}
                         {v.is_current ? "(current)" : "(historical)"}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              {reasoning.step2a_version_currency?.results &&
+                Object.keys(reasoning.step2a_version_currency.results).length > 0 && (
+                  <div>
+                    <div className="font-medium text-gray-700 mb-1">
+                      Version Currency
+                    </div>
+                    {Object.entries(
+                      reasoning.step2a_version_currency.results as Record<
+                        string,
+                        Record<string, unknown>
+                      >
+                    ).map(([key, v]) => (
+                      <div key={key} className="flex items-center gap-1 text-gray-600">
+                        <span>
+                          {v.currency_status === "current"
+                            ? "\u2705"
+                            : v.currency_status === "stale"
+                            ? "\uD83D\uDD04"
+                            : v.currency_status === "source_unavailable"
+                            ? "\u2753"
+                            : "\u2014"}
+                        </span>
+                        <span>{key}</span>
+                        {v.currency_status === "stale" && (
+                          <span className="text-amber-600 text-[10px]">
+                            (DB: {(v.db_latest_date as string) || "?"} &rarr; official: {(v.official_latest_date as string) || "?"})
+                          </span>
+                        )}
+                        {v.currency_status === "current" && (
+                          <span className="text-green-600 text-[10px]">(verified)</span>
+                        )}
+                        {v.currency_status === "source_unavailable" && (
+                          <span className="text-gray-400 text-[10px]">(unverified)</span>
+                        )}
                       </div>
                     ))}
                   </div>

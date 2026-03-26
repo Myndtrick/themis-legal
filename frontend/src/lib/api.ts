@@ -332,6 +332,10 @@ export interface LawPreview {
   reason?: string;
   needed_for_date?: string | null;
   date_reason?: string | null;
+  currency_status?: "current" | "stale" | "source_unavailable" | "not_checked";
+  official_latest_date?: string | null;
+  official_latest_ver_id?: string | null;
+  db_latest_date?: string | null;
 }
 
 // --- Settings: Prompts types ---

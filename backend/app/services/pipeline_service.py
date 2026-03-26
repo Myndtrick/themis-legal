@@ -37,6 +37,7 @@ from app.services.pipeline_logger import (
     update_run_mode,
 )
 from app.services.prompt_service import load_prompt
+from app.services.version_currency import check_version_currency
 
 import re
 
@@ -235,6 +236,26 @@ def _build_step7_context(state: dict) -> str:
             if art.get("date_in_force"):
                 parts.append(f"  version {art['date_in_force']}")
             parts.append(f"  {art.get('text', '')}")
+
+    # Stale version warnings for the answer generator
+    stale_versions = state.get("stale_versions", [])
+    if stale_versions:
+        parts.append("\nVERSIUNI POTENȚIAL DEPĂȘITE:")
+        for law_key in stale_versions:
+            candidate = next(
+                (c for c in state.get("candidate_laws", [])
+                 if f"{c['law_number']}/{c['law_year']}" == law_key),
+                None,
+            )
+            if candidate:
+                parts.append(
+                    f"  - Legea {law_key}: biblioteca conține versiunea din "
+                    f"{candidate.get('db_latest_date', '?')}, dar pe legislatie.just.ro "
+                    f"există o versiune din {candidate.get('official_latest_date', '?')}. "
+                    f"Răspunsul se bazează pe versiunea din bibliotecă și poate fi incomplet sau incorect."
+                )
+            else:
+                parts.append(f"  - Legea {law_key}: versiune potențial depășită")
 
     flags = state.get("flags", [])
     if flags:
@@ -639,7 +660,39 @@ def run_pipeline(
             "coverage_status": state.get("coverage_status"),
         }, time.time() - t0)
 
-        # Step 2.5: Early Relevance Gate — check if primary laws exist
+        # Step 2a: Version Currency Check — verify DB versions against legislatie.just.ro
+        yield _step_event(20, "version_currency_check", "running")
+        t0 = time.time()
+        state["candidate_laws"] = check_version_currency(
+            state.get("candidate_laws", []),
+            db,
+            state["today"],
+            date_type=state.get("date_type"),
+            primary_date=state.get("primary_date"),
+        )
+        currency_duration = time.time() - t0
+        n_stale = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "stale")
+        n_current = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "current")
+        n_unavailable = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "source_unavailable")
+        log_step(
+            db, state["run_id"], "version_currency_check", 20, "done",
+            currency_duration,
+            output_summary=f"Checked: {n_current} current, {n_stale} stale, {n_unavailable} source unavailable",
+            output_data={
+                "results": {
+                    f"{c['law_number']}/{c['law_year']}": c.get("currency_status", "not_checked")
+                    for c in state.get("candidate_laws", [])
+                },
+                "stale_count": n_stale,
+            },
+        )
+        yield _step_event(20, "version_currency_check", "done", {
+            "stale_count": n_stale,
+            "current_count": n_current,
+            "unavailable_count": n_unavailable,
+        }, currency_duration)
+
+        # Step 2.5: Early Relevance Gate — check if primary laws exist or are stale
         yield _step_event(25, "early_relevance_gate", "running")
         t0 = time.time()
         gate_result = _step2_5_early_relevance_gate(state, db)
@@ -765,14 +818,25 @@ def resume_pipeline(
     try:
         # Handle imports if user approved
         for law_key, decision in import_decisions.items():
-            if decision in ("import", "import_version"):
+            if decision in ("import", "import_version", "update"):
                 try:
                     law_number, law_year = law_key.split("/")
                     from app.services.leropa_service import import_law_smart, import_remaining_versions
                     from app.services.fetcher import search_legislatie
                     from app.scheduler import scheduler
 
-                    ver_id = search_legislatie(law_number, law_year)
+                    # For stale updates, use the official ver_id if available
+                    candidate = next(
+                        (c for c in state.get("candidate_laws", [])
+                         if f"{c['law_number']}/{c['law_year']}" == law_key),
+                        None,
+                    )
+                    ver_id = None
+                    if decision == "update" and candidate and candidate.get("official_latest_ver_id"):
+                        ver_id = candidate["official_latest_ver_id"]
+                    if not ver_id:
+                        ver_id = search_legislatie(law_number, law_year)
+
                     if ver_id:
                         yield {"type": "step", "step": 25, "name": "importing", "status": "running",
                                "data": {"importing": law_key}}
@@ -785,7 +849,8 @@ def resume_pipeline(
                             primary_date=relevant_date,
                         )
                         # import_law_smart commits internally
-                        state["flags"].append(f"Imported {law_key} from legislatie.just.ro")
+                        action_label = "Updated" if decision == "update" else "Imported"
+                        state["flags"].append(f"{action_label} {law_key} from legislatie.just.ro")
 
                         # Rebuild FTS5 so hybrid retrieval finds the just-imported articles
                         try:
@@ -819,6 +884,21 @@ def resume_pipeline(
                 except Exception as e:
                     logger.warning(f"Failed to import {law_key}: {e}")
                     state["flags"].append(f"Import failed for {law_key}: {str(e)[:100]}")
+            elif decision == "skip":
+                # Track stale laws the user chose to skip updating
+                candidate = next(
+                    (c for c in state.get("candidate_laws", [])
+                     if f"{c['law_number']}/{c['law_year']}" == law_key),
+                    None,
+                )
+                if candidate and candidate.get("currency_status") == "stale":
+                    state.setdefault("stale_versions", []).append(law_key)
+                    db_date = candidate.get("db_latest_date", "?")
+                    official_date = candidate.get("official_latest_date", "?")
+                    state["flags"].append(
+                        f"Legea {law_key}: using version from {db_date} — "
+                        f"a newer version ({official_date}) exists but was not imported"
+                    )
 
         # Re-run law mapping to pick up newly imported laws
         state = _step2_law_mapping(state, db)
@@ -1212,10 +1292,11 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
             "reasoning": _build_reasoning_panel(state),
         }
 
-    # Check if any PRIMARY law needs import or has wrong version
+    # Check if any PRIMARY law needs import, has wrong version, or is stale
     primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
     needs_pause = any(
         law.get("availability") in ("missing", "wrong_version")
+        or law.get("currency_status") == "stale"
         for law in primary_laws
     )
 
@@ -1240,12 +1321,17 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
                 "date_reason": _get_temporal_reason_for_law(
                     law_key, state.get("legal_issues", [])
                 ),
+                "currency_status": law.get("currency_status", "not_checked"),
+                "official_latest_date": law.get("official_latest_date"),
+                "official_latest_ver_id": law.get("official_latest_ver_id"),
+                "db_latest_date": law.get("db_latest_date"),
             }
             laws_preview.append(preview)
 
         # Build user-friendly message
         missing = [l for l in primary_laws if l.get("availability") == "missing"]
         wrong_ver = [l for l in primary_laws if l.get("availability") == "wrong_version"]
+        stale = [l for l in primary_laws if l.get("currency_status") == "stale"]
         parts = []
         if missing:
             names = ", ".join(f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})" for l in missing)
@@ -1253,7 +1339,14 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
         if wrong_ver:
             names = ", ".join(f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})" for l in wrong_ver)
             parts.append(f"au versiune incorectă: {names}")
-        message = "Am identificat legile aplicabile. " + "; ".join(parts) + ". Doriți să le importăm?"
+        if stale:
+            names = ", ".join(
+                f"{l.get('title', '')} ({l['law_number']}/{l['law_year']}) — "
+                f"biblioteca: {l.get('db_latest_date', '?')}, legislatie.just.ro: {l.get('official_latest_date', '?')}"
+                for l in stale
+            )
+            parts.append(f"au versiune mai nouă disponibilă: {names}")
+        message = "Am identificat legile aplicabile. " + "; ".join(parts) + ". Doriți să le actualizăm?"
 
         return {
             "type": "pause",
@@ -2124,6 +2217,15 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             state["confidence"] = "MEDIUM"
         state["is_partial"] = True
 
+    # Cap confidence for stale versions (user continued without updating)
+    if state.get("stale_versions"):
+        if state["confidence"] == "HIGH":
+            state["confidence"] = "MEDIUM"
+        state["flags"].append(
+            "Version currency: answer based on potentially outdated law version(s): "
+            + ", ".join(state["stale_versions"])
+        )
+
     # Build output_data with answer details
     answer_output_data = {
         "articles_provided": len(retrieved),
@@ -2335,6 +2437,17 @@ def _build_reasoning_panel(state: dict) -> dict:
         "step2_law_mapping": {
             "candidate_laws": state.get("candidate_laws", []),
             "coverage_status": state.get("coverage_status", {}),
+        },
+        "step2a_version_currency": {
+            "results": {
+                f"{c['law_number']}/{c['law_year']}": {
+                    "currency_status": c.get("currency_status", "not_checked"),
+                    "official_latest_date": c.get("official_latest_date"),
+                    "db_latest_date": c.get("db_latest_date"),
+                }
+                for c in state.get("candidate_laws", [])
+            },
+            "stale_versions": state.get("stale_versions", []),
         },
         "step3_versions": {
             "selected_versions": state.get("selected_versions", {}),
