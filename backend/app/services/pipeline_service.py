@@ -82,6 +82,159 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Step 6.8 helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_step6_8_context(state: dict) -> str:
+    """Build the user message for Step 6.8 from structured state."""
+    parts = []
+
+    # Facts
+    facts = state.get("facts", {})
+    if facts.get("stated") or facts.get("assumed") or facts.get("missing"):
+        parts.append("STATED FACTS:")
+        for f in facts.get("stated", []):
+            date_str = f" ({f['date']})" if f.get("date") else ""
+            parts.append(f"  {f['fact_id']}: {f['description']}{date_str}")
+
+        if facts.get("assumed"):
+            parts.append("\nASSUMED FACTS:")
+            for f in facts["assumed"]:
+                parts.append(f"  {f['fact_id']}: {f['description']} (basis: {f.get('basis', 'implied')})")
+
+        if facts.get("missing"):
+            parts.append("\nMISSING FACTS (identified by classifier):")
+            for f in facts["missing"]:
+                parts.append(f"  {f['fact_id']}: {f['description']} (relevance: {f.get('relevance', '')})")
+
+    # Per-issue article sets
+    issue_articles = state.get("issue_articles", {})
+    issue_versions = state.get("issue_versions", {})
+    legal_issues = state.get("legal_issues", [])
+
+    for issue in legal_issues:
+        iid = issue["issue_id"]
+        parts.append(f"\n{iid}: {issue.get('description', '')}")
+        parts.append(f"  Relevant date: {issue.get('relevant_date', 'unknown')} ({issue.get('temporal_rule', '')})")
+
+        for law_key in issue.get("applicable_laws", []):
+            iv_key = f"{iid}:{law_key}"
+            iv = issue_versions.get(iv_key, {})
+            if iv:
+                parts.append(f"  Version used: {law_key}, date_in_force {iv.get('date_in_force', 'unknown')}")
+
+        parts.append("  Articles:")
+        for art in issue_articles.get(iid, []):
+            law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
+            parts.append(f"    [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
+            parts.append(f"    {art.get('text', '')}")
+
+    shared = state.get("shared_context", [])
+    if shared:
+        parts.append("\nSHARED CONTEXT (SECONDARY):")
+        for art in shared:
+            law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
+            parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}")
+            parts.append(f"  {art.get('text', '')}")
+
+    flags = state.get("flags", [])
+    if flags:
+        parts.append("\nFLAGS AND WARNINGS:")
+        for f in flags:
+            parts.append(f"  - {f}")
+
+    return "\n".join(parts)
+
+
+def _parse_step6_8_output(raw: str) -> dict | None:
+    """Parse Step 6.8 JSON output. Returns None if malformed."""
+    try:
+        parsed = _extract_json(raw)
+        if parsed and "issues" in parsed:
+            return parsed
+        return None
+    except Exception:
+        return None
+
+
+def _derive_confidence(issues: list[dict]) -> str:
+    """Derive overall confidence from per-issue certainty levels."""
+    if not issues:
+        return "LOW"
+    levels = [i.get("certainty_level", "UNCERTAIN") for i in issues]
+    if any(l == "UNCERTAIN" for l in levels):
+        return "LOW"
+    if any(l == "CONDITIONAL" for l in levels):
+        return "MEDIUM"
+    return "HIGH"
+
+
+def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
+    """Step 6.8: RL-RAP legal reasoning. Returns state with rl_rap_output."""
+    t0 = time.time()
+
+    user_message = _build_step6_8_context(state)
+    prompt_text, prompt_ver = load_prompt("LA-S6.8", db)
+
+    response = call_claude(
+        system=prompt_text,
+        messages=[{"role": "user", "content": user_message}],
+        max_tokens=4096,
+        temperature=0.1,
+    )
+
+    raw_text = response.get("content", "")
+    parsed = _parse_step6_8_output(raw_text)
+
+    duration = time.time() - t0
+
+    if parsed:
+        state["rl_rap_output"] = parsed
+        state["derived_confidence"] = _derive_confidence(parsed.get("issues", []))
+
+        operative = []
+        for issue in parsed.get("issues", []):
+            for oa in issue.get("operative_articles", []):
+                operative.append(oa)
+        state["operative_articles"] = operative
+
+        expected_ids = {i["issue_id"] for i in state.get("legal_issues", [])}
+        returned_ids = {i["issue_id"] for i in parsed.get("issues", [])}
+        missing_ids = expected_ids - returned_ids
+        for mid in missing_ids:
+            state["flags"].append(f"{mid}: not analyzed by reasoning step")
+
+        log_step(
+            db, state["run_id"], "legal_reasoning", 68, "done", duration,
+            prompt_id="LA-S6.8",
+            prompt_version=prompt_ver,
+            output_summary=f"Analyzed {len(parsed['issues'])} issues",
+            output_data={"certainty_levels": {i["issue_id"]: i["certainty_level"] for i in parsed["issues"]}},
+            confidence=state["derived_confidence"],
+        )
+    else:
+        state["rl_rap_output"] = None
+        state["derived_confidence"] = None
+        state["operative_articles"] = None
+        state["flags"].append("Step 6.8 failed to produce valid analysis — falling back to direct answer generation")
+        logger.warning(f"Step 6.8 failed to parse output for run {state['run_id']}")
+        log_step(
+            db, state["run_id"], "legal_reasoning", 68, "done", duration,
+            output_summary="Failed to parse — fallback mode",
+            warnings=["Malformed RL-RAP output"],
+        )
+
+    log_api_call(
+        db, state["run_id"], "legal_reasoning",
+        response.get("tokens_in", 0), response.get("tokens_out", 0),
+        duration, model=response.get("model", "unknown"),
+    )
+
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Pipeline entry points
 # ---------------------------------------------------------------------------
 
