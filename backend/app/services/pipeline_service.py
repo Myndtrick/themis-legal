@@ -234,6 +234,74 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
     return state
 
 
+def _check_missing_articles(rl_rap_output: dict) -> list[str]:
+    """Extract missing article references from RL-RAP output. Cap at 5."""
+    missing = []
+    for issue in rl_rap_output.get("issues", []):
+        for ref in issue.get("missing_articles_needed", []):
+            if ref not in missing:
+                missing.append(ref)
+            if len(missing) >= 5:
+                return missing
+    return missing
+
+
+def _fetch_missing_articles(missing_refs: list[str], state: dict, db: Session) -> list[dict]:
+    """Attempt to fetch missing articles from DB. Returns list of new article dicts."""
+    from app.models.law import Article
+    import re
+
+    fetched = []
+    for ref in missing_refs:
+        art_match = re.search(r"art\.?\s*(\d+(?:\^\d+)?)", ref)
+        law_match = re.search(r"(\d+)/(\d{4})", ref)
+
+        if not art_match:
+            continue
+
+        art_num = art_match.group(1)
+
+        if law_match:
+            law_number = law_match.group(1)
+            law_year = law_match.group(2)
+            law_key = f"{law_number}/{law_year}"
+        else:
+            continue
+
+        selected = state.get("selected_versions", {})
+        version_info = selected.get(law_key)
+        if not version_info:
+            continue
+
+        law_version_id = version_info.get("law_version_id")
+        if not law_version_id:
+            continue
+
+        article = (
+            db.query(Article)
+            .filter(Article.law_version_id == law_version_id, Article.article_number == art_num)
+            .first()
+        )
+        if article:
+            fetched.append({
+                "article_id": article.id,
+                "article_number": article.article_number,
+                "law_number": law_number,
+                "law_year": law_year,
+                "law_version_id": law_version_id,
+                "law_title": version_info.get("law_title", ""),
+                "date_in_force": version_info.get("date_in_force", ""),
+                "text": article.full_text or "",
+                "source": "reasoning_request",
+                "tier": "reasoning_request",
+                "role": "PRIMARY",
+                "is_abrogated": article.is_abrogated or False,
+                "doc_type": "article",
+            })
+
+    return fetched
+
+
 # ---------------------------------------------------------------------------
 # Pipeline entry points
 # ---------------------------------------------------------------------------
