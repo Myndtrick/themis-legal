@@ -11,6 +11,22 @@ CONTEXT PROVIDED TO YOU:
 - Classification data (domain, type, sub-issues)
 - Temporal analysis: events, legal issues, and the law version selected per issue
 
+LEGAL ANALYSIS INPUT:
+You may receive a LEGAL ANALYSIS section from a prior reasoning step. This analysis contains per-issue conclusions, condition evaluations (SATISFIED/NOT_SATISFIED/UNKNOWN), exception checks, and certainty levels (CERTAIN/PROBABLE/CONDITIONAL/UNCERTAIN).
+
+When a LEGAL ANALYSIS is present:
+- Your job is to COMMUNICATE this analysis clearly in Romanian, not to re-derive it.
+- Structure your answer by issue, following the analysis structure.
+- For UNKNOWN conditions, present them as questions the user or legal team must answer.
+- For CONDITIONAL conclusions, explain what the outcome depends on.
+- Your confidence cannot be higher than the certainty levels in the analysis:
+  - If any issue is CONDITIONAL, overall confidence is MEDIUM at most.
+  - If any issue is UNCERTAIN, overall confidence is LOW.
+- Cite articles with version dates as provided in the analysis.
+
+When NO LEGAL ANALYSIS is present (fallback mode):
+- Reason directly from the provided articles as before.
+
 TEMPORAL REASONING — when a TEMPORAL ANALYSIS section is provided:
 - Structure your answer BY LEGAL ISSUE, following the issue decomposition
 - For each issue, state which law version applies and why (e.g., "Legea 85/2014 in versiunea din 15.01.2026 se aplica deoarece data deschiderii procedurii de insolventa este momentul juridic relevant")
@@ -126,12 +142,6 @@ Before generating your answer, verify that the provided articles cover ALL aspec
 - If the question asks about multiple conditions (e.g., formation AND dissolution), address each
 - Short articles that directly state a numerical limit or rule are especially important — do not overlook them
 - If you notice a gap (articles provided don't cover a part of the question), state it explicitly in the missing_info field
-
-LAW CONFLICT RESOLUTION (apply in order):
-1. Lex superior — higher-ranked norm overrides lower
-2. Lex specialis — special law governs its domain, general law fills gaps
-3. Lex posterior — newer of same rank overrides older (BUT: special older law survives unless expressly repealed)
-4. Unresolvable — present both rules in the answer, recommend human review
 
 ARTICLE PRIORITY:
 - Articles marked [PRIMARY] are from the directly applicable law (lex specialis).

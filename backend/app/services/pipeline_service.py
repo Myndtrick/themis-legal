@@ -2322,7 +2322,7 @@ def _build_reasoning_panel(state: dict) -> dict:
     expansion_articles = [a for a in raw if a.get("source") == "expansion"]
     exception_articles = [a for a in raw if a.get("source") == "exception"]
 
-    return {
+    panel = {
         "step1_classification": {
             "question_type": state.get("question_type"),
             "legal_domain": state.get("legal_domain"),
@@ -2368,3 +2368,46 @@ def _build_reasoning_panel(state: dict) -> dict:
             "flags": state.get("flags", []),
         },
     }
+
+    # Step 6.7: Partitioning
+    if state.get("issue_articles"):
+        panel["step6_7_partitioning"] = {
+            "issues_with_articles": {
+                iid: len(arts) for iid, arts in state.get("issue_articles", {}).items()
+            },
+            "shared_context_count": len(state.get("shared_context", [])),
+        }
+
+    # Step 6.8: Legal Reasoning (RL-RAP)
+    if state.get("rl_rap_output"):
+        rl_rap = state["rl_rap_output"]
+        panel["step6_8_reasoning"] = {
+            "issues_analyzed": len(rl_rap.get("issues", [])),
+            "certainty_levels": {
+                i["issue_id"]: i.get("certainty_level", "UNKNOWN")
+                for i in rl_rap.get("issues", [])
+            },
+            "operative_articles": [
+                oa.get("article_ref", "")
+                for issue in rl_rap.get("issues", [])
+                for oa in issue.get("operative_articles", [])
+            ],
+            "missing_facts": [
+                fact
+                for issue in rl_rap.get("issues", [])
+                for fact in issue.get("missing_facts", [])
+            ],
+            "derived_confidence": state.get("derived_confidence"),
+        }
+
+    # Conditional retrieval
+    if state.get("rl_rap_output"):
+        missing_requested = []
+        for issue in state["rl_rap_output"].get("issues", []):
+            missing_requested.extend(issue.get("missing_articles_needed", []))
+        if missing_requested:
+            panel["conditional_retrieval"] = {
+                "articles_requested": missing_requested,
+            }
+
+    return panel
