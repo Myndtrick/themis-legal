@@ -1550,6 +1550,50 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
     return events, None
 
 
+def _step6_7_partition_articles(state: dict) -> dict:
+    """Partition reranked articles by issue using issue_versions mapping."""
+    articles = state.get("retrieved_articles", [])
+    issue_versions = state.get("issue_versions", {})
+    legal_issues = state.get("legal_issues", [])
+
+    issue_articles: dict[str, list[dict]] = {
+        issue["issue_id"]: [] for issue in legal_issues
+    }
+    shared_context: list[dict] = []
+
+    # Build reverse map: law_version_id -> set of issue_ids
+    version_to_issues: dict[int, set[str]] = {}
+    for key, iv in issue_versions.items():
+        vid = iv["law_version_id"]
+        iid = iv["issue_id"]
+        version_to_issues.setdefault(vid, set()).add(iid)
+
+    for art in articles:
+        art_version_id = art.get("law_version_id")
+        if art_version_id is None:
+            shared_context.append(art)
+            continue
+
+        matched_issues = version_to_issues.get(art_version_id, set())
+        if matched_issues:
+            for iid in matched_issues:
+                if iid in issue_articles:
+                    issue_articles[iid].append(art)
+        else:
+            shared_context.append(art)
+
+    # Flag issues with zero articles
+    flags = state.get("flags", [])
+    for issue_id, arts in issue_articles.items():
+        if len(arts) == 0:
+            flags.append(f"ISSUE {issue_id}: no articles matched after partitioning")
+
+    state["issue_articles"] = issue_articles
+    state["shared_context"] = shared_context
+    state["flags"] = flags
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Step 7: Answer Generation (RAG + Claude streaming)
 # ---------------------------------------------------------------------------
