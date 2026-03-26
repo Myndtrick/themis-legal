@@ -21,3 +21,8 @@ dependencies = [
 
 [tool.uv.sources]
 leropa = { git = "https://github.com/pyl1b/legislatie-just-ro-parser.git" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

@@ -15,6 +15,10 @@ const STEP_LABELS: Record<string, string> = {
   relevance_check: "Checking relevance",
   answer_generation: "Generating answer",
   citation_validation: "Validating citations",
+  pre_expansion_filter: "Filtering results...",
+  article_partitioning: "Organizing by issue...",
+  legal_reasoning: "Analyzing legal provisions...",
+  conditional_retrieval: "Fetching additional provisions...",
 };
 
 export function StepIndicator({ steps }: { steps: StepProgress[] }) {

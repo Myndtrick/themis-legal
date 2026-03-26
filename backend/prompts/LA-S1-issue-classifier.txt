@@ -68,6 +68,11 @@ CLASSIFICATION RULES:
    - Output a single entry in "legal_issues" with relevant_date = today or mentioned date
    - Output "events" as an empty array unless a date is explicitly mentioned
 
+8. Complexity Assessment:
+   - "SIMPLE": Single factual question about a current rule, definition, threshold, or procedure. No scenario, no multiple parties, no temporal dimension.
+   - "STANDARD": Specific situation with 1-2 issues, potentially requiring temporal or exception analysis.
+   - "COMPLEX": Multi-issue scenario with multiple parties, dates, conflicting laws, or comprehensive analysis needed.
+
 RESPONSE FORMAT — You must respond with valid JSON only, no other text:
 
 {
@@ -106,7 +111,23 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "date_reasoning": "<why this date applies to this issue>",
       "applicable_laws": ["<law_number/law_year>"]
     }
-  ]
+  ],
+  "complexity": "SIMPLE" | "STANDARD" | "COMPLEX",
+  // SIMPLE: Single factual question about a current rule, definition, threshold, or procedure. No scenario, no multiple parties, no temporal dimension.
+  // STANDARD: Specific situation with 1-2 issues, potentially requiring temporal or exception analysis.
+  // COMPLEX: Multi-issue scenario with multiple parties, dates, conflicting laws, or comprehensive analysis needed.
+
+  "facts": {                    // OMIT entirely for SIMPLE queries
+    "stated": [
+      {"fact_id": "F1", "description": "...", "date": "YYYY-MM-DD or null", "legal_category": "..."}
+    ],
+    "assumed": [
+      {"fact_id": "F3", "description": "...", "basis": "why this is assumed"}
+    ],
+    "missing": [
+      {"fact_id": "F5", "description": "...", "relevance": "why this matters legally"}
+    ]
+  }
 }
 
 IMPORTANT:
