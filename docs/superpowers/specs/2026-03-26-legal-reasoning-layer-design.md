@@ -1,7 +1,7 @@
 # Legal Reasoning Layer — Design Spec
 
 **Date:** 2026-03-26
-**Status:** Pending Approval
+**Status:** Approved
 **Scope:** Add structured legal reasoning (RL-RAP) to the Legal Assistant pipeline, with fast path for simple queries and cost optimizations.
 
 ---
