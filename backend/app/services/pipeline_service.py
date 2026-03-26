@@ -599,6 +599,15 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["events"] = parsed.get("events", [])
     state["legal_issues"] = parsed.get("legal_issues", [])
 
+    # Parse complexity (default to STANDARD if missing)
+    state["complexity"] = parsed.get("complexity", "STANDARD")
+
+    # Parse structured facts (STANDARD/COMPLEX only)
+    if state["complexity"] != "SIMPLE":
+        state["facts"] = parsed.get("facts", {"stated": [], "assumed": [], "missing": []})
+    else:
+        state["facts"] = {"stated": [], "assumed": [], "missing": []}
+
     # Validate applicable_laws entries
     valid_laws = []
     for law_entry in state["applicable_laws"]:
