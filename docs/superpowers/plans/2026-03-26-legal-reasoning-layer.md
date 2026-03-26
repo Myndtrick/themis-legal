@@ -456,18 +456,24 @@ def test_filter_drops_weak_articles():
         "source": "bm25",
         "tier": "tier1_primary",
     }
-    # Also need a strong article to compute the 50th percentile
-    strong_article = {
-        "article_id": 100,
-        "article_number": "1",
-        "bm25_rank": -5.0,  # Strong BM25
-        "source": "bm25",
-        "tier": "tier1_primary",
-    }
-    state = {"retrieved_articles_raw": [strong_article, weak_article]}
+    # Need >10 articles total to pass the guard clause (filter skips small sets)
+    # Create 11 strong articles + 1 weak
+    strong_articles = [
+        {
+            "article_id": i,
+            "article_number": str(i),
+            "bm25_rank": -5.0 - (i * 0.1),  # All strong BM25
+            "source": "bm25",
+            "tier": "tier1_primary",
+        }
+        for i in range(11)
+    ]
+    state = {"retrieved_articles_raw": strong_articles + [weak_article]}
     result = _step4_5_pre_expansion_filter(state)
     kept_ids = [a["article_id"] for a in result["retrieved_articles_raw"]]
-    assert 100 in kept_ids
+    # All strong articles kept
+    assert all(i in kept_ids for i in range(11))
+    # Weak article dropped
     assert 999 not in kept_ids
 
 
