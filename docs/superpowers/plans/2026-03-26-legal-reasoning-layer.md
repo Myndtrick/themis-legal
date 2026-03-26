@@ -1112,21 +1112,21 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
 
     # Build context
     user_message = _build_step6_8_context(state)
-    system_prompt = load_prompt(db, "LA-S6.8")
 
-    # Call Claude
+    # load_prompt returns (text, version_number)
+    prompt_text, prompt_ver = load_prompt("LA-S6.8", db)
+
+    # call_claude signature: call_claude(system: str, messages: list[dict], max_tokens, temperature)
+    # Returns dict: {"content": str, "tokens_in": int, "tokens_out": int, "duration": float, "model": str}
     response = call_claude(
-        system_prompt=system_prompt,
-        user_message=user_message,
+        system=prompt_text,
+        messages=[{"role": "user", "content": user_message}],
         max_tokens=4096,
         temperature=0.1,
-        db=db,
-        run_id=state["run_id"],
-        step_name="legal_reasoning",
     )
 
-    # Parse output
-    raw_text = response.content[0].text if response.content else ""
+    # Parse output — response is a dict, not an Anthropic response object
+    raw_text = response.get("content", "")
     parsed = _parse_step6_8_output(raw_text)
 
     duration = time.time() - t0
@@ -1152,6 +1152,7 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
         log_step(
             db, state["run_id"], "legal_reasoning", 68, "done", duration,
             prompt_id="LA-S6.8",
+            prompt_version=prompt_ver,
             output_summary=f"Analyzed {len(parsed['issues'])} issues",
             output_data={"certainty_levels": {i["issue_id"]: i["certainty_level"] for i in parsed["issues"]}},
             confidence=state["derived_confidence"],
@@ -1170,12 +1171,11 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
         )
 
     # Log API call
-    if response and hasattr(response, "usage"):
-        log_api_call(
-            db, state["run_id"], "legal_reasoning",
-            response.usage.input_tokens, response.usage.output_tokens,
-            duration, model=getattr(response, "model", "unknown"),
-        )
+    log_api_call(
+        db, state["run_id"], "legal_reasoning",
+        response.get("tokens_in", 0), response.get("tokens_out", 0),
+        duration, model=response.get("model", "unknown"),
+    )
 
     return state
 ```
@@ -1573,11 +1573,135 @@ git commit -m "feat: revise Step 7 to consume RL-RAP analysis and add SIMPLE pro
 
 This is the integration task. All individual steps exist; now they need to be wired into the main pipeline flow.
 
-- [ ] **Step 1: Add fast path function**
+- [ ] **Step 1: Extract shared full-path function**
+
+To avoid duplicating the full path logic in both `run_pipeline` and `resume_pipeline`, extract it into a shared generator:
 
 ```python
-def _run_fast_path(state: dict, db: Session) -> Generator[dict, None, None]:
-    """Fast path for SIMPLE queries. Skips Steps 4.5, 5, 5.5, 6.7, 6.8."""
+def _run_full_path(state: dict, db: Session, run_id: str) -> Generator[dict, None, dict]:
+    """Full path for STANDARD/COMPLEX queries. Steps 4 through 7.5 with RL-RAP.
+    Yields SSE events. Returns the final state dict via StopIteration.value."""
+
+    # Step 4: Hybrid Retrieval
+    yield _step_event(4, "hybrid_retrieval", "running")
+    t0 = time.time()
+    state = _step4_hybrid_retrieval(state, db)
+    yield _step_event(4, "hybrid_retrieval", "done", {
+        "articles_found": len(state.get("retrieved_articles_raw", [])),
+    }, time.time() - t0)
+
+    # Step 4.5: Pre-Expansion Relevance Filter
+    yield _step_event(45, "pre_expansion_filter", "running")
+    t0 = time.time()
+    before_filter = len(state.get("retrieved_articles_raw", []))
+    state = _step4_5_pre_expansion_filter(state)
+    yield _step_event(45, "pre_expansion_filter", "done", {
+        "before": before_filter,
+        "after": len(state.get("retrieved_articles_raw", [])),
+    }, time.time() - t0)
+
+    # Step 5: Article Expansion
+    yield _step_event(5, "expansion", "running")
+    t0 = time.time()
+    before_expansion = len(state.get("retrieved_articles_raw", []))
+    state = _step5_expand(state, db)
+    yield _step_event(5, "expansion", "done", {
+        "articles_before": before_expansion,
+        "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+    }, time.time() - t0)
+
+    # Step 5.5: Exception Retrieval
+    yield _step_event(55, "exception_retrieval", "running")
+    t0 = time.time()
+    before_exceptions = len(state.get("retrieved_articles_raw", []))
+    state = _step5_5_exception_retrieval(state, db)
+    yield _step_event(55, "exception_retrieval", "done", {
+        "exceptions_added": len(state.get("retrieved_articles_raw", [])) - before_exceptions,
+    }, time.time() - t0)
+
+    # Step 6: Reranking (dynamic top_k)
+    yield _step_event(6, "article_selection", "running")
+    t0 = time.time()
+    state = _step6_select_articles(state, db)
+    yield _step_event(6, "article_selection", "done", {
+        "top_articles": len(state.get("retrieved_articles", [])),
+    }, time.time() - t0)
+
+    # Step 6.5: Late Relevance Gate
+    gate_events, gate_result = _step6_5_relevance_gate(state, db)
+    for evt in gate_events:
+        yield evt
+    if gate_result:
+        complete_run(db, run_id, "clarification", None, state.get("flags"))
+        db.commit()
+        yield gate_result
+        return state  # Early return — gate triggered
+
+    # Step 6.7: Article-to-Issue Partitioning
+    yield _step_event(67, "article_partitioning", "running")
+    t0 = time.time()
+    state = _step6_7_partition_articles(state)
+    yield _step_event(67, "article_partitioning", "done", {
+        "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
+        "shared_context": len(state.get("shared_context", [])),
+    }, time.time() - t0)
+
+    # Step 6.8: Legal Reasoning (RL-RAP)
+    yield _step_event(68, "legal_reasoning", "running")
+    state = _step6_8_legal_reasoning(state, db)
+    yield _step_event(68, "legal_reasoning", "done", {
+        "has_analysis": state.get("rl_rap_output") is not None,
+        "derived_confidence": state.get("derived_confidence"),
+    })
+
+    # Conditional Retrieval Pass
+    if state.get("rl_rap_output"):
+        missing = _check_missing_articles(state["rl_rap_output"])
+        if missing:
+            yield _step_event(69, "conditional_retrieval", "running")
+            t0 = time.time()
+            fetched = _fetch_missing_articles(missing, state, db)
+            if fetched:
+                for art in fetched:
+                    added = False
+                    for iid, arts in state.get("issue_articles", {}).items():
+                        iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
+                        if iv_key in state.get("issue_versions", {}):
+                            arts.append(art)
+                            added = True
+                    if not added:
+                        state.setdefault("shared_context", []).append(art)
+                state = _step6_8_legal_reasoning(state, db)
+            else:
+                state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
+            yield _step_event(69, "conditional_retrieval", "done", {
+                "requested": len(missing),
+                "fetched": len(fetched) if fetched else 0,
+            }, time.time() - t0)
+
+    # Step 7: Answer Generation
+    yield _step_event(8, "answer_generation", "running")
+    t0 = time.time()
+    for event in _step7_answer_generation(state, db):
+        yield event
+    yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+
+    # Step 7.5: Citation Validation
+    yield _step_event(85, "citation_validation", "running")
+    t0 = time.time()
+    state = _step7_5_citation_validation(state, db)
+    yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+
+    # Confidence capping: derived_confidence from Step 6.8 is the ceiling
+    _cap_confidence(state)
+
+    return state
+
+
+def _run_fast_path(state: dict, db: Session, run_id: str) -> Generator[dict, None, dict]:
+    """Fast path for SIMPLE queries. Skips Steps 4.5, 5, 5.5, 6.7, 6.8.
+    Yields SSE events. Returns the final state dict via StopIteration.value."""
+
     # Step 4: Reduced retrieval
     yield _step_event(4, "hybrid_retrieval", "running")
     t0 = time.time()
@@ -1602,13 +1726,14 @@ def _run_fast_path(state: dict, db: Session) -> Generator[dict, None, None]:
     for evt in gate_events:
         yield evt
     if gate_result:
+        complete_run(db, run_id, "clarification", None, state.get("flags"))
+        db.commit()
         yield gate_result
-        return
+        return state  # Early return — gate triggered
 
     # Step 7: Direct answer with simplified prompt
     yield _step_event(8, "answer_generation", "running")
     t0 = time.time()
-    # Set flag so Step 7 uses LA-S7-simple prompt
     state["use_simple_prompt"] = True
     for event in _step7_answer_generation(state, db):
         yield event
@@ -1620,165 +1745,99 @@ def _run_fast_path(state: dict, db: Session) -> Generator[dict, None, None]:
     state = _step7_5_citation_validation(state, db)
     yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
-    yield state  # Return final state for caller to handle
+    return state
+
+
+def _cap_confidence(state: dict) -> None:
+    """Cap Step 7's confidence to not exceed Step 6.8's derived confidence."""
+    derived = state.get("derived_confidence")
+    if not derived:
+        return
+    CONF_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+    derived_rank = CONF_ORDER.get(derived, 0)
+    actual_rank = CONF_ORDER.get(state.get("confidence", "HIGH"), 2)
+    if actual_rank > derived_rank:
+        state["confidence"] = derived
 ```
 
 - [ ] **Step 2: Modify run_pipeline to route by complexity**
 
-In `run_pipeline` (around line 196, after Step 2.5), add the routing:
+In `run_pipeline`, replace the current Steps 4–7.5 block (lines ~197–254) with:
 
 ```python
-        # Route by complexity
+        # Route by complexity — both paths use generator.send() pattern
+        # to return final state via StopIteration.value
         if state.get("complexity") == "SIMPLE":
-            # Fast path
-            final_state = None
-            for event in _run_fast_path(state, db):
-                if isinstance(event, dict) and event.get("type"):
-                    yield event
-                else:
-                    final_state = event  # The state dict returned at end
-            if final_state:
-                state = final_state
-            # Skip to finalization (after Step 7.5 in the normal flow)
+            path_gen = _run_fast_path(state, db, run_id)
         else:
-            # Full path: Steps 4 through 7.5 with new steps
+            path_gen = _run_full_path(state, db, run_id)
 
-            # Step 4: Hybrid Retrieval
-            yield _step_event(4, "hybrid_retrieval", "running")
-            t0 = time.time()
-            state = _step4_hybrid_retrieval(state, db)
-            yield _step_event(4, "hybrid_retrieval", "done", {
-                "articles_found": len(state.get("retrieved_articles_raw", [])),
-            }, time.time() - t0)
-
-            # Step 4.5: Pre-Expansion Relevance Filter
-            yield _step_event(45, "pre_expansion_filter", "running")
-            t0 = time.time()
-            before_filter = len(state.get("retrieved_articles_raw", []))
-            state = _step4_5_pre_expansion_filter(state)
-            yield _step_event(45, "pre_expansion_filter", "done", {
-                "before": before_filter,
-                "after": len(state.get("retrieved_articles_raw", [])),
-            }, time.time() - t0)
-
-            # Step 5: Article Expansion
-            yield _step_event(5, "expansion", "running")
-            t0 = time.time()
-            before_expansion = len(state.get("retrieved_articles_raw", []))
-            state = _step5_expand(state, db)
-            yield _step_event(5, "expansion", "done", {
-                "articles_before": before_expansion,
-                "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
-            }, time.time() - t0)
-
-            # Step 5.5: Exception Retrieval
-            yield _step_event(55, "exception_retrieval", "running")
-            t0 = time.time()
-            before_exceptions = len(state.get("retrieved_articles_raw", []))
-            state = _step5_5_exception_retrieval(state, db)
-            yield _step_event(55, "exception_retrieval", "done", {
-                "exceptions_added": len(state.get("retrieved_articles_raw", [])) - before_exceptions,
-            }, time.time() - t0)
-
-            # Step 6: Reranking (dynamic top_k)
-            yield _step_event(6, "article_selection", "running")
-            t0 = time.time()
-            state = _step6_select_articles(state, db)
-            yield _step_event(6, "article_selection", "done", {
-                "top_articles": len(state.get("retrieved_articles", [])),
-            }, time.time() - t0)
-
-            # Step 6.5: Late Relevance Gate
-            gate_events, gate_result = _step6_5_relevance_gate(state, db)
-            for evt in gate_events:
-                yield evt
-            if gate_result:
-                complete_run(db, run_id, "clarification", None, state.get("flags"))
-                db.commit()
-                yield gate_result
-                return
-
-            # Step 6.7: Article-to-Issue Partitioning
-            yield _step_event(67, "article_partitioning", "running")
-            t0 = time.time()
-            state = _step6_7_partition_articles(state)
-            yield _step_event(67, "article_partitioning", "done", {
-                "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
-                "shared_context": len(state.get("shared_context", [])),
-            }, time.time() - t0)
-
-            # Step 6.8: Legal Reasoning (RL-RAP)
-            yield _step_event(68, "legal_reasoning", "running")
-            state = _step6_8_legal_reasoning(state, db)
-            yield _step_event(68, "legal_reasoning", "done", {
-                "has_analysis": state.get("rl_rap_output") is not None,
-                "derived_confidence": state.get("derived_confidence"),
-            })
-
-            # Conditional Retrieval Pass
-            if state.get("rl_rap_output"):
-                missing = _check_missing_articles(state["rl_rap_output"])
-                if missing:
-                    yield _step_event(69, "conditional_retrieval", "running")
-                    t0 = time.time()
-                    fetched = _fetch_missing_articles(missing, state, db)
-                    if fetched:
-                        # Augment issue_articles and re-run 6.8
-                        for art in fetched:
-                            # Add to relevant issue based on version
-                            added = False
-                            for iid, arts in state.get("issue_articles", {}).items():
-                                iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
-                                if iv_key in state.get("issue_versions", {}):
-                                    arts.append(art)
-                                    added = True
-                            if not added:
-                                state.setdefault("shared_context", []).append(art)
-
-                        # Re-run Step 6.8
-                        state = _step6_8_legal_reasoning(state, db)
-                    else:
-                        unfetched = [r for r in missing]
-                        state["flags"].append(f"Missing provisions not in library: {', '.join(unfetched)}")
-
-                    yield _step_event(69, "conditional_retrieval", "done", {
-                        "requested": len(missing),
-                        "fetched": len(fetched) if fetched else 0,
-                    }, time.time() - t0)
-
-            # Step 7: Answer Generation
-            yield _step_event(8, "answer_generation", "running")
-            t0 = time.time()
-            for event in _step7_answer_generation(state, db):
+        # Drive the path generator, yielding SSE events
+        try:
+            event = next(path_gen)
+            while True:
                 yield event
-            yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+                event = next(path_gen)
+        except StopIteration as e:
+            if e.value:
+                state = e.value
 
-            # Step 7.5: Citation Validation
-            yield _step_event(85, "citation_validation", "running")
-            t0 = time.time()
-            state = _step7_5_citation_validation(state, db)
-            yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+        # Check if gate triggered (state has no answer → was early return)
+        if not state.get("answer"):
+            # Gate triggered or error — run already completed inside path
+            return
+```
+
+This pattern works because `_run_full_path` and `_run_fast_path` use `return state` at the end, which sets `StopIteration.value`. Both generators handle their own `complete_run` for gate-triggered cases, so the caller only needs to handle the normal finalization.
+
+The finalization block (already at lines ~256–269) then runs for both paths:
+
+```python
+        # Finalize — runs for both fast and full paths
+        complete_run(db, run_id, "ok", state.get("confidence"), state.get("flags"))
+        db.commit()
+
+        yield {
+            "type": "done",
+            "run_id": run_id,
+            "content": state.get("answer", ""),
+            "structured": state.get("answer_structured"),
+            "mode": state.get("output_mode", "qa"),
+            "confidence": state.get("confidence", "MEDIUM"),
+            "flags": state.get("flags", []),
+            "reasoning": _build_reasoning_panel(state),
+        }
 ```
 
 - [ ] **Step 3: Update _step7_answer_generation to use new context builder**
 
 In `_step7_answer_generation`, replace the context construction section with a call to `_build_step7_context(state)`. Also add logic to select the prompt:
 
+In `_step7_answer_generation` (line ~1502), locate the section where the prompt is selected and the context is built. Replace the context-building portion with `_build_step7_context(state)` and add prompt routing:
+
 ```python
-# In _step7_answer_generation, replace the context building section:
+# Prompt selection — add at the start of _step7_answer_generation, before the Claude call:
+prompt_map = {
+    "qa": "LA-S7",
+    "memo": "LA-S7-M2",
+    "comparison": "LA-S7-M3",
+    "compliance": "LA-S7-M4",
+    "checklist": "LA-S7-M5",
+}
+
 if state.get("use_simple_prompt"):
     prompt_id = "LA-S7-simple"
-elif state.get("rl_rap_output") is None:
-    # Fallback to current prompt (no RL-RAP)
-    prompt_map = {"qa": "LA-S7", "memo": "LA-S7-M2", ...}  # existing mapping
-    prompt_id = prompt_map.get(state.get("output_mode", "qa"), "LA-S7")
 else:
-    # RL-RAP-aware prompt
-    prompt_map = {"qa": "LA-S7", "memo": "LA-S7-M2", ...}  # same mapping, updated prompts
     prompt_id = prompt_map.get(state.get("output_mode", "qa"), "LA-S7")
 
+# Replace the inline context construction with:
 user_message = _build_step7_context(state)
+
+# The existing streaming call, JSON parsing, confidence setting, and logging
+# remain unchanged. Only the context source and prompt selection change.
 ```
+
+The existing `_step7_answer_generation` already handles streaming, response parsing, confidence assignment, and logging. Those sections stay as-is. Only the two inputs to the Claude call change: the prompt selection and the user message content.
 
 - [ ] **Step 4: Update _step7_5_citation_validation to use operative_articles**
 
@@ -1799,22 +1858,48 @@ else:
     # ... existing logic
 ```
 
-- [ ] **Step 5: Update resume_pipeline to persist and respect complexity**
+- [ ] **Step 5: Update resume_pipeline to use shared path generators**
 
-In `resume_pipeline`, ensure `complexity` is in the paused state and the resumed path routes correctly. The paused state already includes the full `state` dict, so `complexity` is persisted automatically. Add routing after the resumed Steps 2-3:
+In `resume_pipeline`, the current Steps 4–7.5 block (lines ~427–507) should be replaced with the same routing pattern as `run_pipeline`. The paused state already includes the full `state` dict, so `complexity` is persisted automatically via `save_paused_state`/`load_paused_state`.
+
+Replace the current Steps 4–7.5 section in `resume_pipeline` with:
 
 ```python
-# In resume_pipeline, after re-running Step 2 and Step 3:
-if state.get("complexity") == "SIMPLE":
-    for event in _run_fast_path(state, db):
-        if isinstance(event, dict) and event.get("type"):
-            yield event
+        # Route by complexity — same pattern as run_pipeline
+        if state.get("complexity") == "SIMPLE":
+            path_gen = _run_fast_path(state, db, run_id)
         else:
-            state = event
-else:
-    # Full path from Step 4 onwards (same as run_pipeline)
-    ...
+            path_gen = _run_full_path(state, db, run_id)
+
+        try:
+            event = next(path_gen)
+            while True:
+                yield event
+                event = next(path_gen)
+        except StopIteration as e:
+            if e.value:
+                state = e.value
+
+        if not state.get("answer"):
+            return
+
+        # Finalize
+        complete_run(db, run_id, "ok", state.get("confidence"), state.get("flags"))
+        db.commit()
+
+        yield {
+            "type": "done",
+            "run_id": run_id,
+            "content": state.get("answer", ""),
+            "structured": state.get("answer_structured"),
+            "mode": state.get("output_mode", "qa"),
+            "confidence": state.get("confidence", "MEDIUM"),
+            "flags": state.get("flags", []),
+            "reasoning": _build_reasoning_panel(state),
+        }
 ```
+
+This eliminates the code duplication between `run_pipeline` and `resume_pipeline` for the Steps 4–7.5 section. Both now call `_run_full_path` or `_run_fast_path`.
 
 - [ ] **Step 6: Commit**
 
