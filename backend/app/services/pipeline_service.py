@@ -270,6 +270,18 @@ def _derive_confidence(issues: list[dict]) -> str:
     return "HIGH"
 
 
+def _cap_confidence(state: dict) -> None:
+    """Cap Step 7's confidence to not exceed Step 6.8's derived confidence."""
+    derived = state.get("derived_confidence")
+    if not derived:
+        return
+    CONF_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+    derived_rank = CONF_ORDER.get(derived, 0)
+    actual_rank = CONF_ORDER.get(state.get("confidence", "HIGH"), 2)
+    if actual_rank > derived_rank:
+        state["confidence"] = derived
+
+
 def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
     """Step 6.8: RL-RAP legal reasoning. Returns state with rl_rap_output."""
     t0 = time.time()
@@ -515,64 +527,166 @@ def run_pipeline(
             "selected_versions": state.get("selected_versions"),
         }, time.time() - t0)
 
-        # Step 4: Hybrid Retrieval (BM25 + semantic)
-        yield _step_event(4, "hybrid_retrieval", "running")
-        t0 = time.time()
-        state = _step4_hybrid_retrieval(state, db)
-        yield _step_event(4, "hybrid_retrieval", "done", {
-            "articles_found": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
+        # Route by complexity after Step 3
+        if state.get("complexity") == "SIMPLE":
+            # === FAST PATH ===
+            # Step 4: Reduced retrieval (5+5 instead of 30+30)
+            yield _step_event(4, "hybrid_retrieval", "running")
+            t0 = time.time()
+            state = _step4_hybrid_retrieval(state, db, tier_limits_override={
+                "tier1_primary": 5,
+                "tier2_secondary": 5,
+            })
+            yield _step_event(4, "hybrid_retrieval", "done", {
+                "articles_found": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
 
-        # Step 5: Article Expansion (neighbors + cross-refs)
-        yield _step_event(5, "expansion", "running")
-        t0 = time.time()
-        before_expansion = len(state.get("retrieved_articles_raw", []))
-        state = _step5_expand(state, db)
-        yield _step_event(5, "expansion", "done", {
-            "articles_before": before_expansion,
-            "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
+            # Step 6: Rerank to top 3
+            yield _step_event(6, "article_selection", "running")
+            t0 = time.time()
+            state = _step6_select_articles(state, db, top_k_override=3)
+            yield _step_event(6, "article_selection", "done", {
+                "top_articles": len(state.get("retrieved_articles", [])),
+            }, time.time() - t0)
 
-        # Step 5.5: Exception Retrieval
-        yield _step_event(55, "exception_retrieval", "running")
-        t0 = time.time()
-        before_exceptions = len(state.get("retrieved_articles_raw", []))
-        state = _step5_5_exception_retrieval(state, db)
-        exceptions_added = len(state.get("retrieved_articles_raw", [])) - before_exceptions
-        yield _step_event(55, "exception_retrieval", "done", {
-            "exceptions_added": exceptions_added,
-        }, time.time() - t0)
+            # Step 6.5: Late Relevance Gate
+            gate_events, gate_result = _step6_5_relevance_gate(state, db)
+            for evt in gate_events:
+                yield evt
+            if gate_result:
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield gate_result
+                return
 
-        # Step 6: Article Selection (Claude-based)
-        yield _step_event(6, "article_selection", "running")
-        t0 = time.time()
-        state = _step6_select_articles(state, db)
-        yield _step_event(6, "article_selection", "done", {
-            "top_articles": len(state.get("retrieved_articles", [])),
-        }, time.time() - t0)
+            # Step 7: Direct answer with simplified prompt
+            yield _step_event(8, "answer_generation", "running")
+            t0 = time.time()
+            state["use_simple_prompt"] = True
+            for event in _step7_answer_generation(state, db):
+                yield event
+            yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
 
-        # Step 6.5: Late Relevance Gate — check if selected articles match the question
-        gate_events, gate_result = _step6_5_relevance_gate(state, db)
-        for evt in gate_events:
-            yield evt
-        if gate_result:
-            complete_run(db, run_id, "clarification", None, state.get("flags"))
-            db.commit()
-            yield gate_result
-            return
+            # Step 7.5: Citation Validation
+            yield _step_event(85, "citation_validation", "running")
+            t0 = time.time()
+            state = _step7_5_citation_validation(state, db)
+            yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
-        # Step 7: Answer Generation (Claude streaming)
-        yield _step_event(8, "answer_generation", "running")
-        t0 = time.time()
-        for event in _step7_answer_generation(state, db):
-            yield event
-        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+        else:
+            # === FULL PATH (STANDARD/COMPLEX) ===
+            # Step 4: Hybrid Retrieval
+            yield _step_event(4, "hybrid_retrieval", "running")
+            t0 = time.time()
+            state = _step4_hybrid_retrieval(state, db)
+            yield _step_event(4, "hybrid_retrieval", "done", {
+                "articles_found": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
 
-        # Step 7.5: Citation Validation (code-based, no Claude)
-        yield _step_event(85, "citation_validation", "running")
-        t0 = time.time()
-        state = _step7_5_citation_validation(state, db)
-        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+            # Step 4.5: Pre-Expansion Relevance Filter
+            yield _step_event(45, "pre_expansion_filter", "running")
+            t0 = time.time()
+            before_filter = len(state.get("retrieved_articles_raw", []))
+            state = _step4_5_pre_expansion_filter(state)
+            yield _step_event(45, "pre_expansion_filter", "done", {
+                "before": before_filter,
+                "after": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
+
+            # Step 5: Article Expansion
+            yield _step_event(5, "expansion", "running")
+            t0 = time.time()
+            before_expansion = len(state.get("retrieved_articles_raw", []))
+            state = _step5_expand(state, db)
+            yield _step_event(5, "expansion", "done", {
+                "articles_before": before_expansion,
+                "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
+
+            # Step 5.5: Exception Retrieval
+            yield _step_event(55, "exception_retrieval", "running")
+            t0 = time.time()
+            before_exceptions = len(state.get("retrieved_articles_raw", []))
+            state = _step5_5_exception_retrieval(state, db)
+            yield _step_event(55, "exception_retrieval", "done", {
+                "exceptions_added": len(state.get("retrieved_articles_raw", [])) - before_exceptions,
+            }, time.time() - t0)
+
+            # Step 6: Reranking (dynamic top_k)
+            yield _step_event(6, "article_selection", "running")
+            t0 = time.time()
+            state = _step6_select_articles(state, db)
+            yield _step_event(6, "article_selection", "done", {
+                "top_articles": len(state.get("retrieved_articles", [])),
+            }, time.time() - t0)
+
+            # Step 6.5: Late Relevance Gate
+            gate_events, gate_result = _step6_5_relevance_gate(state, db)
+            for evt in gate_events:
+                yield evt
+            if gate_result:
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield gate_result
+                return
+
+            # Step 6.7: Article-to-Issue Partitioning
+            yield _step_event(67, "article_partitioning", "running")
+            t0 = time.time()
+            state = _step6_7_partition_articles(state)
+            yield _step_event(67, "article_partitioning", "done", {
+                "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
+                "shared_context": len(state.get("shared_context", [])),
+            }, time.time() - t0)
+
+            # Step 6.8: Legal Reasoning (RL-RAP)
+            yield _step_event(68, "legal_reasoning", "running")
+            state = _step6_8_legal_reasoning(state, db)
+            yield _step_event(68, "legal_reasoning", "done", {
+                "has_analysis": state.get("rl_rap_output") is not None,
+                "derived_confidence": state.get("derived_confidence"),
+            })
+
+            # Conditional Retrieval Pass
+            if state.get("rl_rap_output"):
+                missing = _check_missing_articles(state["rl_rap_output"])
+                if missing:
+                    yield _step_event(69, "conditional_retrieval", "running")
+                    t0 = time.time()
+                    fetched = _fetch_missing_articles(missing, state, db)
+                    if fetched:
+                        for art in fetched:
+                            added = False
+                            for iid, arts in state.get("issue_articles", {}).items():
+                                iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
+                                if iv_key in state.get("issue_versions", {}):
+                                    arts.append(art)
+                                    added = True
+                            if not added:
+                                state.setdefault("shared_context", []).append(art)
+                        state = _step6_8_legal_reasoning(state, db)
+                    else:
+                        state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
+                    yield _step_event(69, "conditional_retrieval", "done", {
+                        "requested": len(missing),
+                        "fetched": len(fetched) if fetched else 0,
+                    }, time.time() - t0)
+
+            # Step 7: Answer Generation
+            yield _step_event(8, "answer_generation", "running")
+            t0 = time.time()
+            for event in _step7_answer_generation(state, db):
+                yield event
+            yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+
+            # Step 7.5: Citation Validation
+            yield _step_event(85, "citation_validation", "running")
+            t0 = time.time()
+            state = _step7_5_citation_validation(state, db)
+            yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+
+            # Cap confidence from Step 6.8
+            _cap_confidence(state)
 
         # Finalize
         complete_run(db, run_id, "ok", state.get("confidence"), state.get("flags"))
@@ -753,64 +867,166 @@ def resume_pipeline(
             "selected_versions": state.get("selected_versions"),
         }, time.time() - t0)
 
-        # Step 4: Hybrid Retrieval
-        yield _step_event(4, "hybrid_retrieval", "running")
-        t0 = time.time()
-        state = _step4_hybrid_retrieval(state, db)
-        yield _step_event(4, "hybrid_retrieval", "done", {
-            "articles_found": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
+        # Route by complexity after Step 3
+        if state.get("complexity") == "SIMPLE":
+            # === FAST PATH ===
+            # Step 4: Reduced retrieval (5+5 instead of 30+30)
+            yield _step_event(4, "hybrid_retrieval", "running")
+            t0 = time.time()
+            state = _step4_hybrid_retrieval(state, db, tier_limits_override={
+                "tier1_primary": 5,
+                "tier2_secondary": 5,
+            })
+            yield _step_event(4, "hybrid_retrieval", "done", {
+                "articles_found": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
 
-        # Step 5: Article Expansion
-        yield _step_event(5, "expansion", "running")
-        t0 = time.time()
-        before_expansion = len(state.get("retrieved_articles_raw", []))
-        state = _step5_expand(state, db)
-        yield _step_event(5, "expansion", "done", {
-            "articles_before": before_expansion,
-            "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
+            # Step 6: Rerank to top 3
+            yield _step_event(6, "article_selection", "running")
+            t0 = time.time()
+            state = _step6_select_articles(state, db, top_k_override=3)
+            yield _step_event(6, "article_selection", "done", {
+                "top_articles": len(state.get("retrieved_articles", [])),
+            }, time.time() - t0)
 
-        # Step 5.5: Exception Retrieval
-        yield _step_event(55, "exception_retrieval", "running")
-        t0 = time.time()
-        before_exceptions = len(state.get("retrieved_articles_raw", []))
-        state = _step5_5_exception_retrieval(state, db)
-        exceptions_added = len(state.get("retrieved_articles_raw", [])) - before_exceptions
-        yield _step_event(55, "exception_retrieval", "done", {
-            "exceptions_added": exceptions_added,
-        }, time.time() - t0)
+            # Step 6.5: Late Relevance Gate
+            gate_events, gate_result = _step6_5_relevance_gate(state, db)
+            for evt in gate_events:
+                yield evt
+            if gate_result:
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield gate_result
+                return
 
-        # Step 6: Article Selection (Claude-based)
-        yield _step_event(6, "article_selection", "running")
-        t0 = time.time()
-        state = _step6_select_articles(state, db)
-        yield _step_event(6, "article_selection", "done", {
-            "top_articles": len(state.get("retrieved_articles", [])),
-        }, time.time() - t0)
+            # Step 7: Direct answer with simplified prompt
+            yield _step_event(8, "answer_generation", "running")
+            t0 = time.time()
+            state["use_simple_prompt"] = True
+            for event in _step7_answer_generation(state, db):
+                yield event
+            yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
 
-        # Step 6.5: Late Relevance Gate
-        gate_events, gate_result = _step6_5_relevance_gate(state, db)
-        for evt in gate_events:
-            yield evt
-        if gate_result:
-            complete_run(db, run_id, "clarification", None, state.get("flags"))
-            db.commit()
-            yield gate_result
-            return
+            # Step 7.5: Citation Validation
+            yield _step_event(85, "citation_validation", "running")
+            t0 = time.time()
+            state = _step7_5_citation_validation(state, db)
+            yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
-        # Step 7: Answer Generation
-        yield _step_event(8, "answer_generation", "running")
-        t0 = time.time()
-        for event in _step7_answer_generation(state, db):
-            yield event
-        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+        else:
+            # === FULL PATH (STANDARD/COMPLEX) ===
+            # Step 4: Hybrid Retrieval
+            yield _step_event(4, "hybrid_retrieval", "running")
+            t0 = time.time()
+            state = _step4_hybrid_retrieval(state, db)
+            yield _step_event(4, "hybrid_retrieval", "done", {
+                "articles_found": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
 
-        # Step 7.5: Citation Validation
-        yield _step_event(85, "citation_validation", "running")
-        t0 = time.time()
-        state = _step7_5_citation_validation(state, db)
-        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+            # Step 4.5: Pre-Expansion Relevance Filter
+            yield _step_event(45, "pre_expansion_filter", "running")
+            t0 = time.time()
+            before_filter = len(state.get("retrieved_articles_raw", []))
+            state = _step4_5_pre_expansion_filter(state)
+            yield _step_event(45, "pre_expansion_filter", "done", {
+                "before": before_filter,
+                "after": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
+
+            # Step 5: Article Expansion
+            yield _step_event(5, "expansion", "running")
+            t0 = time.time()
+            before_expansion = len(state.get("retrieved_articles_raw", []))
+            state = _step5_expand(state, db)
+            yield _step_event(5, "expansion", "done", {
+                "articles_before": before_expansion,
+                "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
+            }, time.time() - t0)
+
+            # Step 5.5: Exception Retrieval
+            yield _step_event(55, "exception_retrieval", "running")
+            t0 = time.time()
+            before_exceptions = len(state.get("retrieved_articles_raw", []))
+            state = _step5_5_exception_retrieval(state, db)
+            yield _step_event(55, "exception_retrieval", "done", {
+                "exceptions_added": len(state.get("retrieved_articles_raw", [])) - before_exceptions,
+            }, time.time() - t0)
+
+            # Step 6: Reranking (dynamic top_k)
+            yield _step_event(6, "article_selection", "running")
+            t0 = time.time()
+            state = _step6_select_articles(state, db)
+            yield _step_event(6, "article_selection", "done", {
+                "top_articles": len(state.get("retrieved_articles", [])),
+            }, time.time() - t0)
+
+            # Step 6.5: Late Relevance Gate
+            gate_events, gate_result = _step6_5_relevance_gate(state, db)
+            for evt in gate_events:
+                yield evt
+            if gate_result:
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield gate_result
+                return
+
+            # Step 6.7: Article-to-Issue Partitioning
+            yield _step_event(67, "article_partitioning", "running")
+            t0 = time.time()
+            state = _step6_7_partition_articles(state)
+            yield _step_event(67, "article_partitioning", "done", {
+                "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
+                "shared_context": len(state.get("shared_context", [])),
+            }, time.time() - t0)
+
+            # Step 6.8: Legal Reasoning (RL-RAP)
+            yield _step_event(68, "legal_reasoning", "running")
+            state = _step6_8_legal_reasoning(state, db)
+            yield _step_event(68, "legal_reasoning", "done", {
+                "has_analysis": state.get("rl_rap_output") is not None,
+                "derived_confidence": state.get("derived_confidence"),
+            })
+
+            # Conditional Retrieval Pass
+            if state.get("rl_rap_output"):
+                missing = _check_missing_articles(state["rl_rap_output"])
+                if missing:
+                    yield _step_event(69, "conditional_retrieval", "running")
+                    t0 = time.time()
+                    fetched = _fetch_missing_articles(missing, state, db)
+                    if fetched:
+                        for art in fetched:
+                            added = False
+                            for iid, arts in state.get("issue_articles", {}).items():
+                                iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
+                                if iv_key in state.get("issue_versions", {}):
+                                    arts.append(art)
+                                    added = True
+                            if not added:
+                                state.setdefault("shared_context", []).append(art)
+                        state = _step6_8_legal_reasoning(state, db)
+                    else:
+                        state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
+                    yield _step_event(69, "conditional_retrieval", "done", {
+                        "requested": len(missing),
+                        "fetched": len(fetched) if fetched else 0,
+                    }, time.time() - t0)
+
+            # Step 7: Answer Generation
+            yield _step_event(8, "answer_generation", "running")
+            t0 = time.time()
+            for event in _step7_answer_generation(state, db):
+                yield event
+            yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+
+            # Step 7.5: Citation Validation
+            yield _step_event(85, "citation_validation", "running")
+            t0 = time.time()
+            state = _step7_5_citation_validation(state, db)
+            yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+
+            # Cap confidence from Step 6.8
+            _cap_confidence(state)
 
         status = "ok" if not state.get("is_partial") else "partial"
         complete_run(db, run_id, status, state.get("confidence"), state.get("flags"))
@@ -1923,14 +2139,17 @@ def _step6_7_partition_articles(state: dict) -> dict:
 def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, None]:
     # Determine which prompt to use based on output mode
     mode = state.get("output_mode", "qa")
-    prompt_map = {
-        "qa": "LA-S7",
-        "memo": "LA-S7-M2",
-        "comparison": "LA-S7-M3",
-        "compliance": "LA-S7-M4",
-        "checklist": "LA-S7-M5",
-    }
-    prompt_id = prompt_map.get(mode, "LA-S7")
+    if state.get("use_simple_prompt"):
+        prompt_id = "LA-S7-simple"
+    else:
+        prompt_map = {
+            "qa": "LA-S7",
+            "memo": "LA-S7-M2",
+            "comparison": "LA-S7-M3",
+            "compliance": "LA-S7-M4",
+            "checklist": "LA-S7-M5",
+        }
+        prompt_id = prompt_map.get(mode, "LA-S7")
     prompt_text, prompt_ver = load_prompt(prompt_id, db)
 
     # Use reranked articles from the pipeline (already in state["retrieved_articles"])
@@ -1943,100 +2162,15 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         state["flags"].append("No relevant articles found in Legal Library")
         state["confidence"] = "LOW"
 
-    # Build the context for Claude
-    articles_context = ""
-    if retrieved:
-        articles_context = "RETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:\n\n"
-        for i, art in enumerate(retrieved, 1):
-            doc_type = art.get("doc_type", "article")
-            role_tag = f"[{art.get('role', 'SECONDARY')}] " if art.get("role") else ""
-            abrogated_tag = " [ABROGATED — this article has been repealed]" if art.get("is_abrogated") else ""
-
-            if doc_type == "annex":
-                articles_context += (
-                    f"[Annex {i}] {role_tag}{art.get('law_title', '')} "
-                    f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
-                    f"{art.get('annex_title', art.get('article_number', ''))}"
-                )
-            else:
-                articles_context += (
-                    f"[Article {i}] {role_tag}{abrogated_tag}{art.get('law_title', '')} "
-                    f"({art.get('law_number', '')}/{art.get('law_year', '')}), "
-                    f"Art. {art.get('article_number', '')}"
-                )
-
-            if art.get("date_in_force"):
-                articles_context += f", version {art['date_in_force']}"
-            if art.get("reranker_score") is not None:
-                articles_context += f" [relevance: {art['reranker_score']:.2f}]"
-            articles_context += f"\n{art.get('text', '')}\n\n"
-
-    # Build temporal analysis context
-    temporal_context = ""
-    if state.get("events") or state.get("issue_versions"):
-        temporal_context = "TEMPORAL ANALYSIS:\n"
-
-        # Events
-        events = state.get("events", [])
-        if events:
-            temporal_context += "  Events:\n"
-            for i, evt in enumerate(events, 1):
-                line = f"    {i}. {evt.get('date', '?')} — {evt.get('event', '?')}"
-                if evt.get("date_reasoning"):
-                    line += f" ({evt['date_reasoning']})"
-                temporal_context += line + "\n"
-            temporal_context += "\n"
-
-        # Legal issues with versions
-        issue_versions = state.get("issue_versions", {})
-        legal_issues = state.get("legal_issues", [])
-        if legal_issues:
-            temporal_context += "  Legal Issues & Applicable Versions:\n"
-            for issue in legal_issues:
-                iid = issue.get("issue_id", "?")
-                temporal_context += (
-                    f"    {iid}: {issue.get('description', '?')}\n"
-                    f"      Relevant date: {issue.get('relevant_date', '?')} "
-                    f"({issue.get('temporal_rule', '?')})\n"
-                )
-                for law_key in issue.get("applicable_laws", []):
-                    combo = f"{iid}:{law_key}"
-                    iv = issue_versions.get(combo, {})
-                    date_in_force = iv.get("date_in_force", "?")
-                    temporal_context += f"      -> {law_key} version {date_in_force}\n"
-            temporal_context += "\n"
-    else:
-        # Fallback: simple version context (for Type A questions or missing decomposition)
-        if state.get("selected_versions"):
-            temporal_context = "SELECTED LAW VERSIONS:\n"
-            for key, v in state["selected_versions"].items():
-                temporal_context += f"  {key}: version {v.get('date_in_force', 'unknown')} "
-                temporal_context += "(current)" if v.get("is_current") else "(historical)"
-                temporal_context += "\n"
-
-    # Build flags context
-    flags_context = ""
-    if state.get("flags"):
-        flags_context = "FLAGS AND WARNINGS:\n" + "\n".join(f"  - {f}" for f in state["flags"]) + "\n"
+    # Build user message using centralized context builder
+    user_message = _build_step7_context(state)
 
     # Build conversation history for session memory
     history_msgs = []
     for msg in state.get("session_context", [])[-5:]:
         history_msgs.append({"role": msg["role"], "content": msg["content"][:500]})
 
-    user_msg = (
-        f"CLASSIFICATION:\n"
-        f"  Question type: {state.get('question_type', 'A')}\n"
-        f"  Legal domain: {state.get('legal_domain', 'other')}\n"
-        f"  Output mode: {mode}\n"
-        f"  Core issue: {state.get('core_issue', '')}\n\n"
-        f"{temporal_context}\n"
-        f"{articles_context}\n"
-        f"{flags_context}\n"
-        f"USER QUESTION:\n{state['question']}"
-    )
-
-    messages = history_msgs + [{"role": "user", "content": user_msg}]
+    messages = history_msgs + [{"role": "user", "content": user_message}]
 
     # Stream the answer
     full_text = ""
@@ -2167,12 +2301,25 @@ def _step7_5_citation_validation(state: dict, db: Session) -> dict:
         )
         return state
 
-    # Build a set of (law_number/year, article_number) tuples from provided articles
-    provided = set()
-    for art in state.get("retrieved_articles", []):
-        law_key = f"{art.get('law_number', '')}/{art.get('law_year', '')}"
-        art_num = str(art.get("article_number", "")).strip()
-        provided.add((law_key, art_num))
+    # Use operative articles from RL-RAP if available (stricter validation)
+    if state.get("operative_articles"):
+        provided = set()
+        for oa in state["operative_articles"]:
+            ref = oa.get("article_ref", "")
+            # Parse "Legea 31/1990 art.197 alin.(3)" into components
+            law_match = re.search(r"(\d+)/(\d{4})", ref)
+            art_match = re.search(r"art\.?\s*(\d+(?:\^\d+)?)", ref)
+            if law_match and art_match:
+                law_key = f"{law_match.group(1)}/{law_match.group(2)}"
+                art_num = art_match.group(1)
+                provided.add((law_key, art_num))
+    else:
+        # Fallback: build from retrieved_articles (existing behavior)
+        provided = set()
+        for art in state.get("retrieved_articles", []):
+            law_key = f"{art.get('law_number', '')}/{art.get('law_year', '')}"
+            art_num = str(art.get("article_number", "")).strip()
+            provided.add((law_key, art_num))
 
     # Also build a set of just article numbers per law for fuzzy matching
     provided_by_law_num = {}
