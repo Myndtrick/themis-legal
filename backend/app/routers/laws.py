@@ -1,3 +1,4 @@
+import datetime
 import difflib
 import logging
 import re
@@ -404,6 +405,7 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
                 "date_imported": str(v.date_imported),
                 "state": v.state,
                 "is_current": v.is_current,
+                "diff_summary": v.diff_summary,
             }
             for v in sorted(law.versions, key=lambda v: v.date_in_force or "", reverse=True)
         ],
@@ -494,6 +496,26 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
 
     db.commit()
 
+    # Compute diff summary for the new version (and update the next version if it exists)
+    from app.services.diff_summary import compute_diff_summary
+    new_version.diff_summary = compute_diff_summary(db, new_version)
+
+    # Also recompute the version right after this one (if any), since its predecessor changed
+    next_ver = (
+        db.query(LawVersion)
+        .filter(
+            LawVersion.law_id == law_id,
+            LawVersion.id != new_version.id,
+            LawVersion.date_in_force > new_version.date_in_force if new_version.date_in_force else False,
+        )
+        .order_by(LawVersion.date_in_force.asc())
+        .first()
+    )
+    if next_ver:
+        next_ver.diff_summary = compute_diff_summary(db, next_ver)
+
+    db.commit()
+
     return {"status": "imported", "ver_id": req.ver_id, "law_version_id": new_version.id}
 
 
@@ -548,6 +570,12 @@ def import_all_missing(law_id: int, db: Session = Depends(get_db)):
         dated[0][0].is_current = True
 
     db.commit()
+
+    # Backfill diff summaries for all versions of this law
+    from app.services.diff_summary import backfill_diff_summaries
+    backfilled = backfill_diff_summaries(db)
+    if backfilled:
+        db.commit()
 
     return {"status": "done", "imported": imported_count, "errors": errors}
 
@@ -705,6 +733,8 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
         if next_ver:
             existing = db.query(LawVersion).filter(LawVersion.ver_id == next_ver).first()
             if existing:
+                law.last_checked_at = datetime.datetime.utcnow()
+                db.commit()
                 return {"has_update": False, "message": "This law is up to date."}
 
             _ls._stored_article_ids = set()
@@ -719,6 +749,8 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
             new_versions = [h for h in history if h["ver_id"] not in stored_ver_ids]
 
             if not new_versions:
+                law.last_checked_at = datetime.datetime.utcnow()
+                db.commit()
                 return {"has_update": False, "message": "This law is up to date."}
 
             for entry in new_versions:
@@ -741,6 +773,7 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
             from app.services.leropa_service import detect_law_status
             law.status = detect_law_status(db, law)
 
+        law.last_checked_at = datetime.datetime.utcnow()
         db.commit()
         return {"has_update": True, "message": "New version found and imported!"}
 
