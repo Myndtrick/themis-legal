@@ -2,7 +2,6 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import DiffSelector from "./diff-selector";
 import DeleteVersionsButton from "./delete-versions-button";
-import CheckUpdatesButton from "./check-updates-button";
 import StatusBadge from "./status-badge";
 import VersionsSection from "./versions-section";
 
@@ -48,7 +47,7 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
           </div>
         ) : (
           <div className="flex items-center gap-2 text-sm mb-2">
-            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">Necategorizat</span>
+            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">Uncategorized</span>
           </div>
         )}
         <h1 className="text-2xl font-bold text-gray-900">{law.title}</h1>
@@ -67,59 +66,21 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
             initialStatus={law.status}
             initialOverride={law.status_override}
           />
-          <CheckUpdatesButton lawId={law.id} />
-        </div>
-      </div>
-
-      <DiffSelector lawId={law.id} versions={law.versions} />
-
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">
-            Versions ({law.versions.length})
-          </h2>
           <DeleteVersionsButton
             lawId={law.id}
             oldVersionCount={law.versions.filter((v) => !v.is_current).length}
           />
         </div>
-        <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-200">
-          {law.versions.map((version) => (
-            <Link
-              key={version.id}
-              href={`/laws/${law.id}/versions/${version.id}`}
-              className="block p-4 hover:bg-gray-50 transition-colors"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-medium text-gray-900">
-                    {version.date_in_force || "Date unknown"}
-                  </span>
-                  <span className="ml-2 text-sm text-gray-500">
-                    (ver_id: {version.ver_id})
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                      version.is_current
-                        ? "bg-green-100 text-green-700"
-                        : "bg-gray-100 text-gray-500"
-                    }`}
-                  >
-                    {version.is_current ? "Current" : version.state}
-                  </span>
-                </div>
-              </div>
-            </Link>
-          ))}
-        </div>
+      </div>
+
+      <div id="diff-selector">
+        <DiffSelector lawId={law.id} versions={law.versions} />
       </div>
 
       <VersionsSection
         lawId={law.id}
         lastCheckedAt={law.last_checked_at}
-        importedVerIds={new Set(law.versions.map((v) => v.ver_id))}
+        versions={law.versions}
       />
     </div>
   );
