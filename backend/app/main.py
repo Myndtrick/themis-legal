@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI):
         backfill_law_mapping_fields(db)
         from app.services.bm25_service import ensure_fts_index
         ensure_fts_index(db)
+        from app.services.version_discovery import seed_known_versions_from_imported
+        seeded = seed_known_versions_from_imported(db)
+        if seeded:
+            logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
     finally:
         db.close()
 

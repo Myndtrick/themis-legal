@@ -211,3 +211,35 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
         db.close()
 
     return results
+
+
+def seed_known_versions_from_imported(db: Session) -> int:
+    """Backfill KnownVersion from existing LawVersion rows.
+
+    For each LawVersion that has no corresponding KnownVersion, create one.
+    This ensures clean initial state after deploying the KnownVersion feature.
+    Returns the number of rows created.
+    """
+    existing_known = {row[0] for row in db.query(KnownVersion.ver_id).all()}
+
+    versions = db.query(LawVersion).all()
+    count = 0
+    now = datetime.datetime.utcnow()
+
+    for v in versions:
+        if v.ver_id in existing_known:
+            continue
+        kv = KnownVersion(
+            law_id=v.law_id,
+            ver_id=v.ver_id,
+            date_in_force=v.date_in_force or datetime.date(1900, 1, 1),
+            is_current=v.is_current,
+            discovered_at=now,
+        )
+        db.add(kv)
+        existing_known.add(v.ver_id)
+        count += 1
+
+    if count > 0:
+        db.commit()
+    return count
