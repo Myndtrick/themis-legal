@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -96,6 +96,7 @@ class LawVersion(Base):
         String(50), default=DocumentState.ACTUAL.value
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    diff_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
     law: Mapped["Law"] = relationship(back_populates="versions")
     structural_elements: Mapped[list["StructuralElement"]] = relationship(
