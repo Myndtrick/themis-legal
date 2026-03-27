@@ -126,6 +126,8 @@ export interface LawDetail {
   source_url: string | null;
   status: string;
   status_override: boolean;
+  last_checked_at: string | null;
+  unimported_version_count: number;
   versions: LawVersionSummary[];
   category: {
     id: number;
@@ -146,6 +148,22 @@ export interface LawVersionSummary {
   date_imported: string;
   state: string;
   is_current: boolean;
+}
+
+export interface KnownVersionData {
+  id: number;
+  ver_id: string;
+  date_in_force: string;
+  is_current: boolean;
+  is_imported: boolean;
+  discovered_at: string;
+}
+
+export interface KnownVersionsResponse {
+  law_id: number;
+  last_checked_at: string | null;
+  versions: KnownVersionData[];
+  unimported_count: number;
 }
 
 export interface ArticleData {
@@ -458,6 +476,18 @@ export const api = {
     checkUpdates: (id: number) =>
       apiFetch<{ has_update: boolean; message: string }>(
         `/api/laws/${id}/check-updates`,
+        { method: "POST" }
+      ),
+    getKnownVersions: (lawId: number) =>
+      apiFetch<KnownVersionsResponse>(`/api/laws/${lawId}/known-versions`),
+    importKnownVersion: (lawId: number, verId: string) =>
+      apiFetch<{ status: string; ver_id: string; law_version_id: number }>(
+        `/api/laws/${lawId}/known-versions/import`,
+        { method: "POST", body: JSON.stringify({ ver_id: verId }) }
+      ),
+    importAllMissing: (lawId: number) =>
+      apiFetch<{ status: string; imported: number; errors: Array<{ ver_id: string; error: string }> }>(
+        `/api/laws/${lawId}/known-versions/import-all`,
         { method: "POST" }
       ),
     advancedSearch: (params: Record<string, string>) => {
