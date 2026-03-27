@@ -340,6 +340,16 @@ def list_laws(db: Session = Depends(get_db)):
             ),
             "status": law.status,
             "status_override": law.status_override,
+            "issuer": law.issuer,
+            "category_id": law.category_id,
+            "category_group_slug": law.category.group.slug if law.category else None,
+            "category_confidence": law.category_confidence,
+            "unimported_version_count": db.query(KnownVersion).filter(
+                KnownVersion.law_id == law.id,
+                KnownVersion.ver_id.notin_(
+                    db.query(LawVersion.ver_id).filter(LawVersion.law_id == law.id)
+                ),
+            ).count(),
         }
         for law in laws
     ]

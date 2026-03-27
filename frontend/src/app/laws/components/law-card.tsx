@@ -96,6 +96,11 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
         <span className="text-xs text-gray-400">
           {law.version_count} version{law.version_count !== 1 ? "s" : ""}
         </span>
+        {law.unimported_version_count > 0 && (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+            {law.unimported_version_count} new
+          </span>
+        )}
         {showAssignButton && onAssign && (
           <button
             onClick={(e) => { e.preventDefault(); onAssign(law.id); }}

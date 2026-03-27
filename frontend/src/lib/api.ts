@@ -75,6 +75,7 @@ export interface LibraryLaw {
   category_id: number | null;
   category_group_slug: string | null;
   category_confidence: string | null;
+  unimported_version_count: number;
   current_version: {
     id: number;
     state: string;
