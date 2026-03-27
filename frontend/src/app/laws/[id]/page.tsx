@@ -4,6 +4,7 @@ import DiffSelector from "./diff-selector";
 import DeleteVersionsButton from "./delete-versions-button";
 import CheckUpdatesButton from "./check-updates-button";
 import StatusBadge from "./status-badge";
+import VersionsSection from "./versions-section";
 
 export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
   const { id } = await props.params;
@@ -114,6 +115,12 @@ export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
           ))}
         </div>
       </div>
+
+      <VersionsSection
+        lawId={law.id}
+        lastCheckedAt={law.last_checked_at}
+        importedVerIds={new Set(law.versions.map((v) => v.ver_id))}
+      />
     </div>
   );
 }
