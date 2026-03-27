@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.models.law import Annex, Article, Law, LawVersion, StructuralElement
+from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, StructuralElement
 from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
@@ -379,6 +379,13 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
         "status_override": law.status_override,
         "category": category_info,
         "category_confidence": law.category_confidence,
+        "last_checked_at": str(law.last_checked_at) if law.last_checked_at else None,
+        "unimported_version_count": db.query(KnownVersion).filter(
+            KnownVersion.law_id == law.id,
+            KnownVersion.ver_id.notin_(
+                db.query(LawVersion.ver_id).filter(LawVersion.law_id == law.id)
+            ),
+        ).count(),
         "versions": [
             {
                 "id": v.id,
@@ -391,6 +398,148 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
             for v in sorted(law.versions, key=lambda v: v.date_in_force or "", reverse=True)
         ],
     }
+
+
+@router.get("/{law_id}/known-versions")
+def get_known_versions(law_id: int, db: Session = Depends(get_db)):
+    """Get all known versions for a law, with import status."""
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    known = (
+        db.query(KnownVersion)
+        .filter(KnownVersion.law_id == law_id)
+        .order_by(KnownVersion.date_in_force.desc())
+        .all()
+    )
+
+    # Get imported ver_ids for this law
+    imported_ver_ids = {
+        row[0]
+        for row in db.query(LawVersion.ver_id)
+        .filter(LawVersion.law_id == law_id)
+        .all()
+    }
+
+    return {
+        "law_id": law_id,
+        "last_checked_at": str(law.last_checked_at) if law.last_checked_at else None,
+        "versions": [
+            {
+                "id": kv.id,
+                "ver_id": kv.ver_id,
+                "date_in_force": str(kv.date_in_force),
+                "is_current": kv.is_current,
+                "is_imported": kv.ver_id in imported_ver_ids,
+                "discovered_at": str(kv.discovered_at),
+            }
+            for kv in known
+        ],
+        "unimported_count": sum(
+            1 for kv in known if kv.ver_id not in imported_ver_ids
+        ),
+    }
+
+
+class ImportKnownVersionRequest(BaseModel):
+    ver_id: str
+
+
+@router.post("/{law_id}/known-versions/import")
+def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Session = Depends(get_db)):
+    """Import a specific known version (full text extraction)."""
+    from app.services.leropa_service import fetch_and_store_version
+    import app.services.leropa_service as _ls
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    # Verify it's a known version for this law
+    kv = (
+        db.query(KnownVersion)
+        .filter(KnownVersion.law_id == law_id, KnownVersion.ver_id == req.ver_id)
+        .first()
+    )
+    if not kv:
+        raise HTTPException(status_code=404, detail="Version not found in known versions")
+
+    # Check if already imported
+    existing = db.query(LawVersion).filter(LawVersion.ver_id == req.ver_id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="This version is already imported")
+
+    _ls._stored_article_ids = set()
+    _, new_version = fetch_and_store_version(db, req.ver_id, law=law)
+
+    # Update is_current flags on LawVersion
+    all_versions = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
+    dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
+    if dated:
+        dated.sort(key=lambda x: x[1], reverse=True)
+        for v in all_versions:
+            v.is_current = False
+        dated[0][0].is_current = True
+
+    db.commit()
+
+    return {"status": "imported", "ver_id": req.ver_id, "law_version_id": new_version.id}
+
+
+@router.post("/{law_id}/known-versions/import-all")
+def import_all_missing(law_id: int, db: Session = Depends(get_db)):
+    """Import all known versions that aren't imported yet."""
+    from app.services.leropa_service import fetch_and_store_version
+    import app.services.leropa_service as _ls
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    imported_ver_ids = {
+        row[0]
+        for row in db.query(LawVersion.ver_id)
+        .filter(LawVersion.law_id == law_id)
+        .all()
+    }
+
+    missing = (
+        db.query(KnownVersion)
+        .filter(
+            KnownVersion.law_id == law_id,
+            KnownVersion.ver_id.notin_(imported_ver_ids) if imported_ver_ids else True,
+        )
+        .order_by(KnownVersion.date_in_force.asc())
+        .all()
+    )
+
+    if not missing:
+        return {"status": "nothing_to_import", "imported": 0}
+
+    imported_count = 0
+    errors = []
+    for kv in missing:
+        try:
+            _ls._stored_article_ids = set()
+            fetch_and_store_version(db, kv.ver_id, law=law)
+            imported_count += 1
+        except Exception as e:
+            logger.error(f"Failed to import version {kv.ver_id}: {e}")
+            errors.append({"ver_id": kv.ver_id, "error": str(e)[:200]})
+
+    # Update is_current flags
+    all_versions = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
+    dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
+    if dated:
+        dated.sort(key=lambda x: x[1], reverse=True)
+        for v in all_versions:
+            v.is_current = False
+        dated[0][0].is_current = True
+
+    db.commit()
+
+    return {"status": "done", "imported": imported_count, "errors": errors}
 
 
 @router.get("/{law_id}/versions/{version_id}")
