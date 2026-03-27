@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -69,9 +69,15 @@ class Law(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+    last_checked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
 
     category: Mapped["Category | None"] = relationship(back_populates="laws")
     versions: Mapped[list["LawVersion"]] = relationship(
+        back_populates="law", cascade="all, delete-orphan"
+    )
+    known_versions: Mapped[list["KnownVersion"]] = relationship(
         back_populates="law", cascade="all, delete-orphan"
     )
 
@@ -101,6 +107,22 @@ class LawVersion(Base):
     annexes: Mapped[list["Annex"]] = relationship(
         back_populates="law_version", cascade="all, delete-orphan"
     )
+
+
+class KnownVersion(Base):
+    __tablename__ = "known_versions"
+    __table_args__ = (UniqueConstraint("law_id", "ver_id", name="uq_known_versions_law_ver"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), nullable=False)
+    ver_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    date_in_force: Mapped[datetime.date] = mapped_column(nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    discovered_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+
+    law: Mapped["Law"] = relationship(back_populates="known_versions")
 
 
 class StructuralElement(Base):
