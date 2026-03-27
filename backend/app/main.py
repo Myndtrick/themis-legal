@@ -52,6 +52,22 @@ async def lifespan(app: FastAPI):
         seeded = seed_known_versions_from_imported(db)
         if seeded:
             logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
+
+        # Add diff_summary column if it doesn't exist (SQLite migration)
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        columns = [c["name"] for c in inspector.get_columns("law_versions")]
+        if "diff_summary" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE law_versions ADD COLUMN diff_summary JSON"))
+            logger.info("Added diff_summary column to law_versions")
+
+        # Backfill diff summaries for existing versions
+        from app.services.diff_summary import backfill_diff_summaries
+        backfilled = backfill_diff_summaries(db)
+        if backfilled:
+            db.commit()
+            logger.info(f"Backfilled diff_summary for {backfilled} versions")
     finally:
         db.close()
 
