@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def run_update_check():
-    """Scheduled job: check all laws for new versions."""
-    from app.services.update_checker import check_for_updates
+    """Scheduled job: discover new versions for all laws (metadata only)."""
+    from app.services.version_discovery import run_daily_discovery
 
-    logger.info("Running scheduled law update check...")
-    results = check_for_updates()
+    logger.info("Running scheduled version discovery...")
+    results = run_daily_discovery()
     logger.info(
-        f"Update check complete: {results['checked']} checked, "
-        f"{results['updated']} updated, {results['errors']} errors"
+        f"Version discovery complete: {results['checked']} checked, "
+        f"{results['discovered']} new versions discovered, {results['errors']} errors"
     )
 
 
