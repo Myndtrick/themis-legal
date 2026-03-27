@@ -1296,6 +1296,7 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
     primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
     needs_pause = any(
         law.get("availability") in ("missing", "wrong_version")
+        or law.get("version_status") == "stale"
         or law.get("currency_status") == "stale"
         for law in primary_laws
     )
@@ -1322,8 +1323,11 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
                     law_key, state.get("legal_issues", [])
                 ),
                 "currency_status": law.get("currency_status", "not_checked"),
+                "version_status": law.get("version_status", "not_checked"),
                 "official_latest_date": law.get("official_latest_date"),
                 "official_latest_ver_id": law.get("official_latest_ver_id"),
+                "official_current_ver_id": law.get("official_current_ver_id"),
+                "official_current_date": law.get("official_current_date"),
                 "db_latest_date": law.get("db_latest_date"),
             }
             laws_preview.append(preview)
@@ -1331,7 +1335,10 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
         # Build user-friendly message
         missing = [l for l in primary_laws if l.get("availability") == "missing"]
         wrong_ver = [l for l in primary_laws if l.get("availability") == "wrong_version"]
-        stale = [l for l in primary_laws if l.get("currency_status") == "stale"]
+        stale = [
+            l for l in primary_laws
+            if l.get("version_status") == "stale" or l.get("currency_status") == "stale"
+        ]
         parts = []
         if missing:
             names = ", ".join(f"{l.get('title', '')} ({l['law_number']}/{l['law_year']})" for l in missing)
@@ -1342,7 +1349,8 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
         if stale:
             names = ", ".join(
                 f"{l.get('title', '')} ({l['law_number']}/{l['law_year']}) — "
-                f"biblioteca: {l.get('db_latest_date', '?')}, legislatie.just.ro: {l.get('official_latest_date', '?')}"
+                f"biblioteca: {l.get('db_latest_date') or l.get('available_version_date', '?')}, "
+                f"legislatie.just.ro: {l.get('official_latest_date') or l.get('official_current_date', '?')}"
                 for l in stale
             )
             parts.append(f"au versiune mai nouă disponibilă: {names}")
@@ -2218,12 +2226,20 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         state["is_partial"] = True
 
     # Cap confidence for stale versions (user continued without updating)
-    if state.get("stale_versions"):
+    # stale_versions comes from resume decisions; version_status comes from KnownVersion
+    stale_laws_in_use = [
+        c for c in state.get("candidate_laws", [])
+        if c.get("version_status") == "stale" and c.get("role") == "PRIMARY"
+    ]
+    if state.get("stale_versions") or stale_laws_in_use:
         if state["confidence"] == "HIGH":
             state["confidence"] = "MEDIUM"
+        stale_names = state.get("stale_versions", []) or [
+            f"{c['law_number']}/{c['law_year']}" for c in stale_laws_in_use
+        ]
         state["flags"].append(
             "Version currency: answer based on potentially outdated law version(s): "
-            + ", ".join(state["stale_versions"])
+            + ", ".join(stale_names)
         )
 
     # Build output_data with answer details
