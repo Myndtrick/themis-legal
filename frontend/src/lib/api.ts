@@ -149,6 +149,7 @@ export interface LawVersionSummary {
   date_imported: string;
   state: string;
   is_current: boolean;
+  diff_summary: { modified: number; added: number; removed: number } | null;
 }
 
 export interface KnownVersionData {
