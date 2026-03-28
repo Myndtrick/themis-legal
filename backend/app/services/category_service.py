@@ -554,6 +554,23 @@ def get_library_data(db: Session) -> dict:
     }
 
 
+def get_unimported_suggestions(db: Session) -> list[LawMapping]:
+    """Return LawMapping entries that haven't been imported yet."""
+    laws = db.query(Law).all()
+    imported_numbers = {law.law_number for law in laws}
+    imported_titles = {law.title.lower() for law in laws}
+
+    all_mappings = db.query(LawMapping).all()
+    unimported = []
+    for m in all_mappings:
+        if m.law_number and m.law_number in imported_numbers:
+            continue
+        if any(t in m.title.lower() or m.title.lower() in t for t in imported_titles):
+            continue
+        unimported.append(m)
+    return unimported
+
+
 def assign_category(db: Session, law_id: int, category_id: int) -> dict:
     """Assign a category to a law and update law_mappings."""
     law = db.query(Law).filter(Law.id == law_id).first()

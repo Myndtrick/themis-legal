@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { api, importSuggestionSSE, LibraryData, LibraryLaw, SuggestedLaw } from "@/lib/api";
+import { api, importSuggestionSSE, importAllSuggestionsSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
@@ -37,6 +37,32 @@ export default function LibraryPage() {
     suggestion: SuggestedLaw;
     importHistory: boolean;
   } | null>(null);
+
+  // Bulk import state
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<BulkImportProgress | null>(null);
+  const [bulkResult, setBulkResult] = useState<BulkImportResult | null>(null);
+
+  function handleImportAll() {
+    setBulkImporting(true);
+    setBulkProgress(null);
+    setBulkResult(null);
+
+    importAllSuggestionsSSE(
+      (progress) => setBulkProgress(progress),
+      () => { /* item done — will refresh at end */ },
+      () => { /* item error — tracked in final result */ },
+      (result) => {
+        setBulkImporting(false);
+        setBulkProgress(null);
+        setBulkResult(result);
+        fetchData();
+      },
+    ).catch(() => {
+      setBulkImporting(false);
+      setBulkProgress(null);
+    });
+  }
 
   const fetchData = useCallback(async () => {
     try {
@@ -243,10 +269,36 @@ export default function LibraryPage() {
   return (
     <div>
       {/* Header */}
-      <div className="mb-4">
-        <h1 className="text-3xl font-bold text-gray-900">Legal Library</h1>
-        <p className="mt-1 text-gray-600">Browse Romanian laws with full version history</p>
+      <div className="mb-4 flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Legal Library</h1>
+          <p className="mt-1 text-gray-600">Browse Romanian laws with full version history</p>
+        </div>
+        {activeSuggestions.length > 0 && (
+          <button
+            onClick={handleImportAll}
+            disabled={bulkImporting}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {bulkImporting
+              ? `Importing ${bulkProgress?.current || 0}/${bulkProgress?.total || activeSuggestions.length}...`
+              : `Import All (${activeSuggestions.length})`}
+          </button>
+        )}
       </div>
+
+      {/* Bulk import result */}
+      {bulkResult && (
+        <div className="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 flex items-center justify-between">
+          <p className="text-sm text-green-700">
+            Imported {bulkResult.imported} of {bulkResult.total} laws.
+            {bulkResult.failed > 0 && ` ${bulkResult.failed} failed.`}
+          </p>
+          <button onClick={() => setBulkResult(null)} className="text-green-600 text-xs font-medium">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Combined search */}
       <CombinedSearch

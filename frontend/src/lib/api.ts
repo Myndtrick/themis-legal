@@ -581,6 +581,73 @@ export async function importSuggestionSSE(
   }
 }
 
+export interface BulkImportProgress {
+  current: number;
+  total: number;
+  title: string;
+  status: string;
+}
+
+export interface BulkImportResult {
+  imported: number;
+  failed: number;
+  total: number;
+}
+
+export async function importAllSuggestionsSSE(
+  onProgress: (event: BulkImportProgress) => void,
+  onItemDone: (data: { title: string; law_id: number }) => void,
+  onItemError: (data: { title: string; error: string }) => void,
+  onComplete: (result: BulkImportResult) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/api/laws/import-all-suggestions/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    onComplete({ imported: 0, failed: 0, total: 0 });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    let currentEvent = "progress";
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        try {
+          const data = JSON.parse(line.slice(5).trim());
+          if (currentEvent === "progress") onProgress(data);
+          else if (currentEvent === "item_done") onItemDone(data);
+          else if (currentEvent === "item_error") onItemError(data);
+          else if (currentEvent === "item_skip") { /* skip silently */ }
+          else if (currentEvent === "complete") onComplete(data);
+        } catch {
+          // Skip malformed data
+        }
+      }
+    }
+  }
+}
+
 // API functions
 export const api = {
   laws: {
