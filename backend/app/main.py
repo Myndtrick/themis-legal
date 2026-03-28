@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
-from app.models import assistant, pipeline, prompt, category  # noqa: F401 — register models
+from app.models import assistant, pipeline, prompt, category, user  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.routers import assistant as assistant_router
 from app.routers import categories, laws, notifications
