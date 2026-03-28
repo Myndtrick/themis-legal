@@ -8,6 +8,12 @@ interface PendingImportEntry {
   suggestion: SuggestedLaw;
   error?: string;
   errorCode?: string;
+  progress?: {
+    phase: string;
+    current?: number;
+    total?: number;
+    message: string;
+  };
 }
 
 const WARNING_ERROR_CODES = ["db_locked", "search_failed"];
@@ -116,9 +122,30 @@ export default function CategoryGroupSection({
                     {p.error}
                   </div>
                 ) : (
-                  <div className="text-xs text-gray-400 mt-1 flex items-center gap-1.5">
-                    <span className="inline-block w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
-                    Importing...
+                  <div className="mt-1">
+                    <div className="text-xs text-gray-400 flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                      {p.progress ? (
+                        <span>
+                          {p.progress.message}
+                          {p.progress.phase === "version" && p.progress.current != null && p.progress.total != null && (
+                            <span className="ml-1 text-gray-500">
+                              {p.progress.current} / {p.progress.total}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span>Importing...</span>
+                      )}
+                    </div>
+                    {p.progress?.phase === "version" && p.progress.current != null && p.progress.total != null && (
+                      <div className="mt-1 h-1 bg-gray-100 rounded overflow-hidden">
+                        <div
+                          className="h-1 bg-blue-500 rounded transition-all"
+                          style={{ width: `${(p.progress.current / p.progress.total) * 100}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

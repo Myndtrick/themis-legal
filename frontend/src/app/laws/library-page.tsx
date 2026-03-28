@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { api, LibraryData, LibraryLaw, SuggestedLaw } from "@/lib/api";
+import { api, importSuggestionSSE, LibraryData, LibraryLaw, SuggestedLaw } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
@@ -22,9 +22,14 @@ export default function LibraryPage() {
   // Category modal (for existing laws)
   const [assigningLawId, setAssigningLawId] = useState<number | null>(null);
 
-  // Pending imports: suggestion id → { suggestion, error?, errorCode? }
+  // Pending imports: suggestion id → { suggestion, error?, errorCode?, progress? }
   const [pendingImports, setPendingImports] = useState<
-    Map<number, { suggestion: SuggestedLaw; error?: string; errorCode?: string }>
+    Map<number, {
+      suggestion: SuggestedLaw;
+      error?: string;
+      errorCode?: string;
+      progress?: { phase: string; current?: number; total?: number; message: string };
+    }>
   >(new Map());
 
   // Category pick for suggestions without a predetermined category
@@ -103,7 +108,7 @@ export default function LibraryPage() {
 
   // Group pending imports by group_slug
   const pendingByGroup = useMemo(() => {
-    const map = new Map<string, { suggestion: SuggestedLaw; error?: string; errorCode?: string }[]>();
+    const map = new Map<string, { suggestion: SuggestedLaw; error?: string; errorCode?: string; progress?: { phase: string; current?: number; total?: number; message: string } }[]>();
     for (const [, entry] of pendingImports) {
       const key = entry.suggestion.group_slug;
       if (!map.has(key)) map.set(key, []);
@@ -152,14 +157,25 @@ export default function LibraryPage() {
       return next;
     });
 
-    // Fire import in background (not awaited)
+    // Fire SSE import in background (not awaited)
     const controller = new AbortController();
     const timeoutMs = importHistory ? 600_000 : 120_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    api.laws
-      .importSuggestion(suggestion.id, importHistory, controller.signal)
-      .then(() => {
+    importSuggestionSSE(
+      suggestion.id,
+      importHistory,
+      (progressEvent) => {
+        setPendingImports((prev) => {
+          const next = new Map(prev);
+          const entry = next.get(suggestion.id);
+          if (entry) {
+            next.set(suggestion.id, { ...entry, progress: progressEvent });
+          }
+          return next;
+        });
+      },
+      () => {
         clearTimeout(timer);
         setPendingImports((prev) => {
           const next = new Map(prev);
@@ -167,22 +183,30 @@ export default function LibraryPage() {
           return next;
         });
         fetchData();
-      })
-      .catch((err) => {
+      },
+      (err) => {
         clearTimeout(timer);
-        const message =
-          err instanceof DOMException && err.name === "AbortError"
-            ? "Import timed out — try current version only."
-            : err instanceof Error
-              ? err.message
-              : "Import failed";
-        const errorCode = err instanceof Error ? (err as any).code as string | undefined : undefined;
         setPendingImports((prev) => {
           const next = new Map(prev);
-          next.set(suggestion.id, { suggestion, error: message, errorCode });
+          next.set(suggestion.id, { suggestion, error: err.message, errorCode: err.code });
           return next;
         });
+      },
+      controller.signal,
+    ).catch((err) => {
+      clearTimeout(timer);
+      const message =
+        err instanceof DOMException && err.name === "AbortError"
+          ? "Import timed out — try current version only."
+          : err instanceof Error
+            ? err.message
+            : "Import failed";
+      setPendingImports((prev) => {
+        const next = new Map(prev);
+        next.set(suggestion.id, { suggestion, error: message });
+        return next;
       });
+    });
   }
 
   function handleSuggestionCategoryConfirm(categoryId: number) {

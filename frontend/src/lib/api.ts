@@ -467,6 +467,57 @@ export interface HealthStats {
   most_common_warnings: string[];
 }
 
+export async function importSuggestionSSE(
+  mappingId: number,
+  importHistory: boolean,
+  onProgress: (event: { phase: string; current?: number; total?: number; message: string }) => void,
+  onComplete: (data: { law_id: number; title: string; versions_imported: number }) => void,
+  onError: (error: { code: string; message: string }) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/laws/import-suggestion/${mappingId}/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ import_history: importHistory }),
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    onError({ code: body.code || "import_failed", message: body.message || "Import failed" });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    let currentEvent = "progress";
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        try {
+          const data = JSON.parse(line.slice(5).trim());
+          if (currentEvent === "progress") onProgress(data);
+          else if (currentEvent === "complete") onComplete(data);
+          else if (currentEvent === "error") onError(data);
+        } catch {
+          // Skip malformed data lines
+        }
+      }
+    }
+  }
+}
+
 // API functions
 export const api = {
   laws: {
