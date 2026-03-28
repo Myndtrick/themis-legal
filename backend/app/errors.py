@@ -1,6 +1,11 @@
 """Structured error codes for Themis API responses."""
 
+import functools
+import logging
 import sqlite3
+import time
+
+logger = logging.getLogger(__name__)
 
 
 class ThemisError(Exception):
@@ -56,6 +61,34 @@ class ImportFailedError(ThemisError):
     def __init__(self, context: str = ""):
         msg = f"Import failed: {context}. Please try again." if context else "Import failed. Please try again."
         super().__init__(msg)
+
+
+def with_sqlite_retry(max_retries: int = 3):
+    """Decorator that retries on SQLite 'database is locked' errors with exponential backoff."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if "database is locked" not in str(e):
+                        raise
+                    if attempt >= max_retries:
+                        raise DbLockedError() from e
+                    wait = 2**attempt  # 1s, 2s, 4s
+                    logger.warning(
+                        f"SQLite locked, retry {attempt + 1}/{max_retries} in {wait}s"
+                    )
+                    # If first arg looks like a DB session, rollback
+                    if args and hasattr(args[0], "rollback"):
+                        args[0].rollback()
+                    time.sleep(wait)
+
+        return wrapper
+
+    return decorator
 
 
 def map_exception_to_error(exc: Exception) -> ThemisError:
