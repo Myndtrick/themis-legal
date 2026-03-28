@@ -11,7 +11,7 @@ from app.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-INITIAL_BACKOFF = 2  # seconds
+INITIAL_BACKOFF = 20  # seconds (rate limit is per-minute, need longer waits)
 
 
 def _cacheable_system(system: str) -> list[dict]:
@@ -84,7 +84,7 @@ def call_claude(
                     "Vă rugăm să așteptați un minut și să încercați din nou."
                 ) from e
         except anthropic.APIError as e:
-            logger.error("Claude API error: %s", e)
+            logger.error("Claude API error (type=%s, status=%s): %s", type(e).__name__, getattr(e, 'status_code', '?'), e)
             raise RuntimeError(
                 "A apărut o eroare la comunicarea cu serviciul AI. "
                 "Vă rugăm să încercați din nou."
