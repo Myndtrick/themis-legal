@@ -45,15 +45,17 @@ def call_claude(
     messages: list[dict],
     max_tokens: int = 4096,
     temperature: float = 0.2,
+    model: str | None = None,
 ) -> dict:
     """Call Claude API synchronously. Returns dict with content, usage stats."""
     client = get_client()
+    use_model = model or CLAUDE_MODEL
     start = time.time()
 
     for attempt in range(MAX_RETRIES):
         try:
             response = client.messages.create(
-                model=CLAUDE_MODEL,
+                model=use_model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 system=_cacheable_system(system),
@@ -70,7 +72,7 @@ def call_claude(
                 "tokens_in": response.usage.input_tokens,
                 "tokens_out": response.usage.output_tokens,
                 "duration": duration,
-                "model": CLAUDE_MODEL,
+                "model": use_model,
             }
         except anthropic.RateLimitError as e:
             if attempt < MAX_RETRIES - 1:

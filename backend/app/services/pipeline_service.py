@@ -446,13 +446,13 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
 
     if state.get("complexity") == "SIMPLE":
         # === FAST PATH ===
-        # Step 4: Reduced retrieval (5+5 instead of 30+30)
+        # Step 4: Reduced retrieval (15+5 instead of 30+15)
         yield _step_event(4, "hybrid_retrieval", "running")
         t0 = time.time()
         state = _step4_hybrid_retrieval(state, db, tier_limits_override={
-            "tier1_primary": 5,
+            "tier1_primary": 15,
             "tier2_secondary": 5,
-        }, skip_entity_retrieval=True)
+        })
         yield _step_event(4, "hybrid_retrieval", "done", {
             "articles_found": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
@@ -789,8 +789,12 @@ def run_pipeline(
         logger.info(f"Pipeline {run_id} connection lost: {e}")
     except Exception as e:
         logger.exception(f"Pipeline error in run {run_id}")
+        # Include original cause for API errors
+        error_detail = str(e)
+        if e.__cause__:
+            error_detail += f" | Cause: {type(e.__cause__).__name__}: {e.__cause__}"
         try:
-            complete_run(db, run_id, "error", None, [str(e)])
+            complete_run(db, run_id, "error", None, [error_detail])
             db.commit()
         except Exception:
             pass
@@ -1056,11 +1060,14 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
         context_msg = f"CONVERSATION HISTORY:\n{history}\n\nCURRENT QUESTION:\n{state['question']}"
 
     context_msg += library_context
+    context_msg += f"\n\nTODAY'S DATE: {state['today']}"
 
+    from app.config import CLAUDE_MODEL_FAST
     result = call_claude(
         system=prompt_text,
         messages=[{"role": "user", "content": context_msg}],
         max_tokens=2048,
+        model=CLAUDE_MODEL_FAST,
     )
 
     log_api_call(
@@ -1993,14 +2000,26 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
         )
 
     if gate_will_trigger:
-        clarification_round = _count_clarification_rounds(state.get("session_context", []))
-
-        # Try to identify missing laws from the domain mapping
+        # Try to identify missing laws from the candidate list
         candidate_laws = state.get("candidate_laws", [])
         primary_missing = [
             c for c in candidate_laws
             if c.get("tier") == "tier1_primary" and not c.get("db_law_id")
         ]
+
+        # If all primary laws ARE in the library, proceed anyway — the reranker
+        # may score Romanian text low but the articles are there.
+        primary_in_db = [
+            c for c in candidate_laws
+            if c.get("tier") == "tier1_primary" and c.get("db_law_id")
+        ]
+        if primary_in_db and not primary_missing:
+            state["flags"].append(
+                f"Low reranker relevance (score: {relevance_score:.2f}) but primary laws "
+                f"are in library — proceeding with available articles"
+            )
+            state["confidence"] = "MEDIUM"
+            return events, None
 
         if primary_missing:
             # We know which laws are needed → offer import
@@ -2036,15 +2055,7 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
                 ],
             }
 
-        if clarification_round >= 1:
-            state["flags"].append(
-                f"Low relevance (score: {relevance_score:.2f}) but proceeding after "
-                f"{clarification_round} clarification round(s)"
-            )
-            state["confidence"] = "MEDIUM"
-            return events, None
-
-        # First time: trigger clarification
+        # No primary laws at all — ask for clarification
         state["confidence"] = "LOW"
         clarification_msg = (
             "Nu am putut identifica articole suficient de relevante pentru "
