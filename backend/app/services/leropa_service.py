@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -877,6 +878,7 @@ def import_law(
     ver_id: str,
     import_history: bool = True,
     rate_limit_delay: float = 2.0,
+    on_progress: Optional[Callable] = None,
 ) -> dict:
     """Import a law and optionally all its historical versions.
 
@@ -907,6 +909,9 @@ def import_law(
     doc = meta["doc"]
     history = meta["history"]
     date_lookup = meta["date_lookup"]
+
+    if on_progress:
+        on_progress({"event": "progress", "data": {"phase": "metadata", "message": "Fetching law metadata from legislatie.just.ro"}})
 
     # Decide which versions to import.
     #
@@ -970,6 +975,8 @@ def import_law(
                         f"(date={date_lookup.get(hist_ver_id)}, "
                         f"{len(versions_imported)}/{len(history) + 1})"
                     )
+                    if on_progress:
+                        on_progress({"event": "progress", "data": {"phase": "version", "current": len(versions_imported), "total": len(history) + 1, "message": f"Importing version {hist_ver_id}"}})
                 except Exception as e:
                     logger.error(f"Failed to import version {hist_ver_id}: {e}")
                     continue
@@ -996,6 +1003,9 @@ def import_law(
     db.commit()
 
     # Index articles into ChromaDB for semantic search
+    if on_progress:
+        on_progress({"event": "progress", "data": {"phase": "indexing", "message": "Building search index"}})
+
     try:
         from app.services.chroma_service import index_law_version as chroma_index
 

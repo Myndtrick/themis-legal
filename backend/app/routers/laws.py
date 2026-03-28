@@ -1,11 +1,14 @@
+import asyncio
 import datetime
 import difflib
+import json
 import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
+from sse_starlette.sse import EventSourceResponse
 
 from app.database import get_db
 from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
@@ -25,6 +28,11 @@ class ImportRequest(BaseModel):
 class ImportSuggestionRequest(BaseModel):
     mapping_id: int
     import_history: bool = False
+
+
+class ImportStreamRequest(BaseModel):
+    import_history: bool = False
+    category_id: int | None = None
 
 
 # LawMapping.document_type stores English keys; advanced_search expects
@@ -297,6 +305,103 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
         "law_id": result["law_id"],
         "title": result.get("title", mapping.title),
     }
+
+
+@router.post("/import-suggestion/{mapping_id}/stream")
+async def import_suggestion_stream(
+    mapping_id: int,
+    req: ImportStreamRequest,
+    db: Session = Depends(get_db),
+):
+    """SSE endpoint that streams import progress."""
+    from app.services.search_service import advanced_search
+    from app.services.leropa_service import import_law as do_import
+    from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, map_exception_to_error
+
+    # Validate mapping
+    mapping = db.query(LawMapping).filter(LawMapping.id == mapping_id).first()
+    if not mapping:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps({"code": "not_found", "message": "Suggestion not found"})}
+        return EventSourceResponse(error_stream())
+
+    if not mapping.law_number:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(NoLawNumberError().to_dict())}
+        return EventSourceResponse(error_stream())
+
+    # Check for duplicate
+    existing_query = db.query(Law).filter(Law.law_number == mapping.law_number)
+    if mapping.document_type:
+        existing_query = existing_query.filter(Law.document_type == mapping.document_type)
+    if mapping.law_year:
+        existing_query = existing_query.filter(Law.law_year == mapping.law_year)
+    existing = existing_query.first()
+    if existing:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(DuplicateImportError(existing.title).to_dict())}
+        return EventSourceResponse(error_stream())
+
+    # Search legislatie.just.ro
+    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
+    year_str = str(mapping.law_year) if mapping.law_year else ""
+    try:
+        results = advanced_search(
+            doc_type=doc_type_code,
+            number=mapping.law_number,
+            year=year_str,
+        )
+    except Exception as e:
+        logger.error(f"Search failed for suggestion {mapping_id}: {e}")
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(SearchFailedError().to_dict())}
+        return EventSourceResponse(error_stream())
+
+    if not results:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps({"code": "not_found", "message": f"No results found on legislatie.just.ro for {mapping.title}"})}
+        return EventSourceResponse(error_stream())
+
+    ver_id = str(results[0].ver_id)
+
+    # Check if version already imported
+    existing_ver = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
+    if existing_ver:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(DuplicateImportError(existing_ver.law.title).to_dict())}
+        return EventSourceResponse(error_stream())
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def on_progress(event: dict):
+        queue.put_nowait(event)
+
+    async def run_import():
+        try:
+            result = await asyncio.to_thread(
+                do_import, db, ver_id,
+                import_history=req.import_history,
+                on_progress=on_progress,
+            )
+            await queue.put({"event": "complete", "data": result})
+        except Exception as e:
+            error = map_exception_to_error(e)
+            await queue.put({"event": "error", "data": error.to_dict()})
+
+    async def event_generator():
+        task = asyncio.create_task(run_import())
+        try:
+            while True:
+                event = await queue.get()
+                event_type = event.get("event", "progress")
+                data = event.get("data", event)
+                yield {"event": event_type, "data": json.dumps(data) if isinstance(data, dict) else data}
+                if event_type in ("complete", "error"):
+                    break
+        except asyncio.CancelledError:
+            pass  # Client disconnected; import continues in background
+
+    return EventSourceResponse(event_generator())
 
 
 @router.get("/")
