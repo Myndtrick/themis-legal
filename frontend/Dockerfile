@@ -12,4 +12,5 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 RUN npm run build
 
-CMD ["npm", "start"]
+ENV PORT=3000
+CMD ["node", ".next/standalone/server.js"]
