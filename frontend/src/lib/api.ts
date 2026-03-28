@@ -294,6 +294,26 @@ export interface EmitentsResponse {
   emitents: string[];
 }
 
+// --- Compare types ---
+
+export interface CompareModelResult {
+  model_id: string;
+  model_label: string;
+  status: "success" | "error";
+  duration_ms: number;
+  usage?: { input_tokens: number; output_tokens: number };
+  cost_usd: number;
+  answer?: string;
+  citations?: any[];
+  pipeline_steps?: Record<string, any>;
+  error?: string;
+}
+
+export interface CompareResponse {
+  question: string;
+  results: CompareModelResult[];
+}
+
 // --- Legal Assistant types ---
 
 export interface ChatSession {
@@ -632,6 +652,11 @@ export const api = {
         method: "DELETE",
       }),
     // sendMessage is NOT here — it uses SSE streaming via fetch directly
+    compare: (question: string, models: string[], mode: "full" | "pipeline_steps" = "full") =>
+      apiFetch<CompareResponse>("/api/assistant/compare", {
+        method: "POST",
+        body: JSON.stringify({ question, models, mode }),
+      }),
     resume: (sessionId: string, runId: string, decisions: Record<string, string>) =>
       fetch(`${API_BASE}/api/assistant/sessions/${sessionId}/resume`, {
         method: "POST",
