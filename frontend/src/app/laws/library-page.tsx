@@ -22,9 +22,9 @@ export default function LibraryPage() {
   // Category modal (for existing laws)
   const [assigningLawId, setAssigningLawId] = useState<number | null>(null);
 
-  // Pending imports: suggestion id → { suggestion, error? }
+  // Pending imports: suggestion id → { suggestion, error?, errorCode? }
   const [pendingImports, setPendingImports] = useState<
-    Map<number, { suggestion: SuggestedLaw; error?: string }>
+    Map<number, { suggestion: SuggestedLaw; error?: string; errorCode?: string }>
   >(new Map());
 
   // Category pick for suggestions without a predetermined category
@@ -103,7 +103,7 @@ export default function LibraryPage() {
 
   // Group pending imports by group_slug
   const pendingByGroup = useMemo(() => {
-    const map = new Map<string, { suggestion: SuggestedLaw; error?: string }[]>();
+    const map = new Map<string, { suggestion: SuggestedLaw; error?: string; errorCode?: string }[]>();
     for (const [, entry] of pendingImports) {
       const key = entry.suggestion.group_slug;
       if (!map.has(key)) map.set(key, []);
@@ -176,9 +176,10 @@ export default function LibraryPage() {
             : err instanceof Error
               ? err.message
               : "Import failed";
+        const errorCode = err instanceof Error ? (err as any).code as string | undefined : undefined;
         setPendingImports((prev) => {
           const next = new Map(prev);
-          next.set(suggestion.id, { suggestion, error: message });
+          next.set(suggestion.id, { suggestion, error: message, errorCode });
           return next;
         });
       });

@@ -7,6 +7,13 @@ import LawCard from "./law-card";
 interface PendingImportEntry {
   suggestion: SuggestedLaw;
   error?: string;
+  errorCode?: string;
+}
+
+const WARNING_ERROR_CODES = ["db_locked", "search_failed"];
+
+function isWarningError(code?: string): boolean {
+  return code !== undefined && WARNING_ERROR_CODES.includes(code);
 }
 
 interface CategoryGroupSectionProps {
@@ -99,7 +106,15 @@ export default function CategoryGroupSection({
                   {p.suggestion.title}
                 </div>
                 {p.error ? (
-                  <div className="text-xs text-red-600 mt-1">{p.error}</div>
+                  <div
+                    className={`text-xs mt-1 px-2 py-1 rounded border ${
+                      isWarningError(p.errorCode)
+                        ? "bg-amber-50 text-amber-800 border-amber-200"
+                        : "bg-red-50 text-red-700 border-red-200"
+                    }`}
+                  >
+                    {p.error}
+                  </div>
                 ) : (
                   <div className="text-xs text-gray-400 mt-1 flex items-center gap-1.5">
                     <span className="inline-block w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />

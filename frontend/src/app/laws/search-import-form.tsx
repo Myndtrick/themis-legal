@@ -45,6 +45,12 @@ const STATUS_OPTIONS = [
   { label: "Only repealed", value: "only_repealed" },
 ];
 
+const WARNING_ERROR_CODES = ["db_locked", "search_failed"];
+
+function isWarningError(code?: string): boolean {
+  return code !== undefined && WARNING_ERROR_CODES.includes(code);
+}
+
 const DOC_TYPE_COLORS: Record<string, string> = {
   CONSTITUTIE: "bg-red-100 text-red-800",
   "CONSTITUȚIE": "bg-red-100 text-red-800",
@@ -100,11 +106,11 @@ export default function SearchImportForm() {
   const [pendingImportId, setPendingImportId] = useState<string | null>(null);
   const [importingIds, setImportingIds] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Map<string, number>>(new Map());
-  const [importErrors, setImportErrors] = useState<Map<string, string>>(new Map());
+  const [importErrors, setImportErrors] = useState<Map<string, { message: string; code?: string }>>(new Map());
 
   // Direct URL import
   const [urlImporting, setUrlImporting] = useState(false);
-  const [urlError, setUrlError] = useState<string | null>(null);
+  const [urlError, setUrlError] = useState<{ message: string; code?: string } | null>(null);
   const [urlImportedId, setUrlImportedId] = useState<number | null>(null);
   const [urlPendingChoice, setUrlPendingChoice] = useState(false);
 
@@ -251,16 +257,30 @@ export default function SearchImportForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
-      const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.detail || "Import failed");
+        let errorMessage: string;
+        let errorCode: string | undefined;
+        try {
+          const errorBody = await res.json();
+          errorCode = errorBody.code;
+          errorMessage = errorBody.message || errorBody.detail || "Import failed";
+        } catch {
+          errorMessage = "Import failed";
+        }
+        setImportErrors((prev) => {
+          const next = new Map(prev);
+          next.set(verId, { message: errorMessage, code: errorCode });
+          return next;
+        });
+        return;
       }
+      const data = await res.json();
       setImportedIds((prev) => new Map(prev).set(verId, data.law_id));
       router.refresh();
     } catch (err) {
       setImportErrors((prev) => {
         const next = new Map(prev);
-        next.set(verId, err instanceof Error ? err.message : "Import failed");
+        next.set(verId, { message: err instanceof Error ? err.message : "Import failed" });
         return next;
       });
     } finally {
@@ -286,12 +306,24 @@ export default function SearchImportForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
+      if (!res.ok) {
+        let errorMessage: string;
+        let errorCode: string | undefined;
+        try {
+          const errorBody = await res.json();
+          errorCode = errorBody.code;
+          errorMessage = errorBody.message || errorBody.detail || "Import failed";
+        } catch {
+          errorMessage = "Import failed";
+        }
+        setUrlError({ message: errorMessage, code: errorCode });
+        return;
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Import failed");
       setUrlImportedId(data.law_id);
       router.refresh();
     } catch (err) {
-      setUrlError(err instanceof Error ? err.message : "Import failed");
+      setUrlError({ message: err instanceof Error ? err.message : "Import failed" });
     } finally {
       setUrlImporting(false);
     }
@@ -391,8 +423,16 @@ export default function SearchImportForm() {
           </div>
         )}
         {detectedUrl && urlError && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-md">
-            <p className="text-sm text-red-700">{urlError}</p>
+          <div
+            className={`p-3 rounded-md border ${
+              isWarningError(urlError.code)
+                ? "bg-amber-50 border-amber-200"
+                : "bg-red-50 border-red-200"
+            }`}
+          >
+            <p className={`text-sm ${isWarningError(urlError.code) ? "text-amber-800" : "text-red-700"}`}>
+              {urlError.message}
+            </p>
           </div>
         )}
 
@@ -623,7 +663,7 @@ export default function SearchImportForm() {
             const justImported = importedIds.has(r.ver_id);
             const isAlreadyImported = r.already_imported || justImported;
             const localId = r.local_law_id || importedIds.get(r.ver_id);
-            const error = importErrors.get(r.ver_id);
+            const importError = importErrors.get(r.ver_id);
             const colorClass = DOC_TYPE_COLORS[r.doc_type] || "bg-gray-100 text-gray-600";
 
             return (
@@ -642,8 +682,16 @@ export default function SearchImportForm() {
                     {r.issuer && (
                       <p className="text-xs text-gray-400 mt-0.5">Emitent: {r.issuer}</p>
                     )}
-                    {error && (
-                      <p className="text-xs text-red-600 mt-1">{error}</p>
+                    {importError && (
+                      <p
+                        className={`text-xs mt-1 px-2 py-1 rounded border ${
+                          isWarningError(importError.code)
+                            ? "bg-amber-50 text-amber-800 border-amber-200"
+                            : "bg-red-50 text-red-700 border-red-200"
+                        }`}
+                      >
+                        {importError.message}
+                      </p>
                     )}
                   </div>
                   <div className="ml-4 shrink-0">

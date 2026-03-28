@@ -19,8 +19,20 @@ export async function apiFetch<T>(
     );
   }
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`API error ${res.status}: ${body || res.statusText}`);
+    let errorMessage: string;
+    let errorCode: string | undefined;
+    try {
+      const errorBody = await res.json();
+      errorCode = errorBody.code;
+      errorMessage = errorBody.message || errorBody.detail || res.statusText;
+    } catch {
+      const body = await res.text().catch(() => "");
+      errorMessage = body || res.statusText;
+    }
+    const error = new Error(errorMessage);
+    (error as any).code = errorCode;
+    (error as any).statusCode = res.status;
+    throw error;
   }
   return res.json();
 }
