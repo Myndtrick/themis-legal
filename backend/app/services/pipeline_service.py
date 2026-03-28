@@ -41,6 +41,75 @@ from app.services.version_currency import check_version_currency
 
 import re
 
+logger = logging.getLogger(__name__)
+
+
+def _call_model(
+    task: str,
+    system: str,
+    messages: list[dict],
+    max_tokens: int = 4096,
+    temperature: float = 0.0,
+    model_overrides: dict[str, str] | None = None,
+    db: Session | None = None,
+) -> dict:
+    """Call the assigned model for a pipeline task.
+
+    Checks model_overrides first, then DB assignments, then falls back to
+    call_claude.  Returns the same dict shape as call_claude for compatibility:
+    {"content", "tokens_in", "tokens_out", "duration", "model"}.
+    """
+    model_id = None
+
+    # Check overrides first (used by the compare feature)
+    if model_overrides and task in model_overrides:
+        model_id = model_overrides[task]
+
+    # Then check DB assignments
+    if not model_id and db:
+        try:
+            from app.models.model_config import ModelAssignment
+            assignment = db.query(ModelAssignment).filter(
+                ModelAssignment.task == task
+            ).first()
+            if assignment:
+                model_id = assignment.model_id
+        except Exception:
+            pass  # Table may not exist yet; fall through to default
+
+    # If we have a model_id, use the provider abstraction
+    if model_id:
+        try:
+            from app.providers import get_provider
+            provider = get_provider(model_id)
+            start = time.time()
+            response = provider.chat(
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return {
+                "content": response.content,
+                "tokens_in": response.usage.input_tokens,
+                "tokens_out": response.usage.output_tokens,
+                "duration": time.time() - start,
+                "model": model_id,
+            }
+        except Exception as e:
+            logger.warning(
+                "[pipeline] Provider %s failed for task '%s', falling back to call_claude: %s",
+                model_id, task, e,
+            )
+
+    # Default fallback: use existing call_claude
+    return call_claude(
+        system=system,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
 
 def _strip_json_comments(text: str) -> str:
     """Remove // line comments from JSON-like text (not inside strings)."""
@@ -114,8 +183,6 @@ def _extract_json(text: str) -> dict | None:
                     break
 
     return None
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +413,13 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
     user_message = _build_step6_8_context(state)
     prompt_text, prompt_ver = load_prompt("LA-S6.8", db)
 
-    response = call_claude(
+    response = _call_model(
+        "legal_reasoning",
         system=prompt_text,
         messages=[{"role": "user", "content": user_message}],
         max_tokens=4096,
         temperature=0.1,
+        db=db,
     )
 
     raw_text = response.get("content", "")
@@ -1098,10 +1167,12 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     context_msg += library_context
     context_msg += f"\n\nTODAY'S DATE: {state['today']}"
 
-    result = call_claude(
+    result = _call_model(
+        "issue_classification",
         system=prompt_text,
         messages=[{"role": "user", "content": context_msg}],
         max_tokens=2048,
+        db=db,
     )
 
     log_api_call(
@@ -2214,6 +2285,9 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     messages = history_msgs + [{"role": "user", "content": user_message}]
 
     # Stream the answer
+    # TODO: Migrate stream_claude to use provider abstraction (_call_model equivalent
+    # for streaming). Requires adapting the provider's stream() iterator to yield the
+    # same {"type": "token"/"done", ...} dict format. Deferred to avoid breaking SSE.
     full_text = ""
     total_tokens_in = 0
     total_tokens_out = 0
