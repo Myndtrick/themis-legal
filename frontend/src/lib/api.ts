@@ -370,6 +370,23 @@ export interface LawPreview {
   db_latest_date?: string | null;
 }
 
+// --- Settings: Models types ---
+
+export interface ModelConfig {
+  id: string;
+  provider: string;
+  api_model_id: string;
+  label: string;
+  cost_tier: string;
+  capabilities: string[];
+  enabled: boolean;
+}
+
+export interface ModelAssignment {
+  task: string;
+  model_id: string;
+}
+
 // --- Settings: Prompts types ---
 
 export interface PromptSummary {
@@ -677,6 +694,22 @@ export const api = {
         apiFetch<PipelineRunDetail>(`/api/settings/pipeline/runs/${runId}`),
       health: () =>
         apiFetch<HealthStats>("/api/settings/pipeline/health"),
+    },
+    models: {
+      list: () => apiFetch<ModelConfig[]>("/api/settings/models"),
+      update: (id: string, update: { enabled?: boolean }) =>
+        apiFetch<ModelConfig>(`/api/settings/models/${id}`, {
+          method: "PUT",
+          body: JSON.stringify(update),
+        }),
+    },
+    assignments: {
+      list: () => apiFetch<ModelAssignment[]>("/api/settings/model-assignments"),
+      update: (task: string, modelId: string) =>
+        apiFetch<ModelAssignment>("/api/settings/model-assignments", {
+          method: "PUT",
+          body: JSON.stringify({ task, model_id: modelId }),
+        }),
     },
   },
 };

@@ -8,6 +8,7 @@ import { HealthDashboard } from "./pipeline/health-dashboard";
 import { RunTable } from "./pipeline/run-table";
 import { VersionHistory } from "./versions/version-history";
 import { CategoriesTable } from "./categories/categories-table";
+import { ModelsTable } from "./models/models-table";
 
 function SettingsContent() {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -50,6 +51,10 @@ function SettingsContent() {
 
           if (activeTab === "categories") {
             return <CategoriesTable />;
+          }
+
+          if (activeTab === "models") {
+            return <ModelsTable />;
           }
 
           return null;
