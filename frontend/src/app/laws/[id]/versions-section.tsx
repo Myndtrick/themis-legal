@@ -59,7 +59,7 @@ export default function VersionsSection({
         onKnownVersionsLoaded={handleKnownVersionsLoaded}
       />
 
-      <ImportedVersionsTable lawId={lawId} versions={versions} />
+      <ImportedVersionsTable lawId={lawId} versions={versions} knownVersions={knownVersions} />
 
       {!loading && knownVersions && unimportedVersions.length > 0 && (
         <UnimportedVersionsTable

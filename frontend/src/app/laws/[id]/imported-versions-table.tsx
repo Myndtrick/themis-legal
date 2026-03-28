@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import type { LawVersionSummary } from "@/lib/api";
+import type { KnownVersionData, LawVersionSummary } from "@/lib/api";
 
 interface ImportedVersionsTableProps {
   lawId: number;
   versions: LawVersionSummary[];
+  knownVersions: KnownVersionData[] | null;
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -16,17 +17,30 @@ function formatDate(dateStr: string | null): string {
   return `${d.getDate().toString().padStart(2, "0")} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-export default function ImportedVersionsTable({ lawId, versions }: ImportedVersionsTableProps) {
+export default function ImportedVersionsTable({ lawId, versions, knownVersions }: ImportedVersionsTableProps) {
   const [showAll, setShowAll] = useState(false);
 
   if (versions.length === 0) return null;
 
-  // Sort by date ascending to assign version numbers, then reverse for display
+  // Build version number map from ALL known versions (ordinal by date)
+  // so imported version numbers reflect their true position in the full history.
+  // Fallback to imported-only numbering if known versions aren't loaded yet.
+  const versionNumberMap = new Map<string, number>();
+  if (knownVersions && knownVersions.length > 0) {
+    const allSortedAsc = [...knownVersions].sort((a, b) =>
+      a.date_in_force.localeCompare(b.date_in_force)
+    );
+    allSortedAsc.forEach((v, i) => versionNumberMap.set(v.ver_id, i + 1));
+  } else {
+    const sortedAsc = [...versions].sort((a, b) =>
+      (a.date_in_force || "").localeCompare(b.date_in_force || "")
+    );
+    sortedAsc.forEach((v, i) => versionNumberMap.set(v.ver_id, i + 1));
+  }
+
   const sortedAsc = [...versions].sort((a, b) =>
     (a.date_in_force || "").localeCompare(b.date_in_force || "")
   );
-  const versionNumberMap = new Map<number, number>();
-  sortedAsc.forEach((v, i) => versionNumberMap.set(v.id, i + 1));
 
   const sortedDesc = [...sortedAsc].reverse();
   const visible = showAll ? sortedDesc : sortedDesc.slice(0, 3);
@@ -56,7 +70,7 @@ export default function ImportedVersionsTable({ lawId, versions }: ImportedVersi
 
       {/* Rows */}
       {visible.map((version, idx) => {
-        const vNum = versionNumberMap.get(version.id) ?? 0;
+        const vNum = versionNumberMap.get(version.ver_id) ?? 0;
         const isOlder = showAll && idx >= 3;
         return (
           <div

@@ -101,7 +101,8 @@ export default function UpdateBanner({
 
   const checkedText = formatCheckedTime(checkedAt);
 
-  if (checking) {
+  // Still loading known versions or actively checking — show spinner
+  if (checking || knownVersions === null) {
     return (
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 flex items-center gap-3">
         <div className="w-5 h-5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
