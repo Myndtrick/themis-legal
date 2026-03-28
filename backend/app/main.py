@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI):
         from app.services.category_service import seed_categories, backfill_law_mapping_fields
         seed_categories(db)
         backfill_law_mapping_fields(db)
+        from app.services.user_service import seed_admin_users
+        seed_admin_users(db)
         from app.services.model_seed import seed_models
         seed_models(db)
         from app.services.bm25_service import ensure_fts_index
