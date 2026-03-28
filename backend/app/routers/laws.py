@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
+from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
 from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, StructuralElement
 from app.models.category import LawMapping
 
@@ -161,20 +162,14 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
     # whose history versions are already stored)
     existing = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This law is already imported as '{existing.law.title}'",
-        )
+        raise DuplicateImportError(existing.law.title)
 
     # Also check by source_url — the main page ver_id may differ from stored
     # version ver_ids, but the source_url will match.
     source_url = f"https://legislatie.just.ro/Public/DetaliiDocument/{ver_id}"
     existing_law = db.query(Law).filter(Law.source_url == source_url).first()
     if existing_law:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This law is already imported as '{existing_law.title}'",
-        )
+        raise DuplicateImportError(existing_law.title)
 
     try:
         result = do_import(db, ver_id, import_history=req.import_history)
@@ -219,11 +214,11 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
         return result
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=422, detail=str(e))
+        raise ImportFailedError(str(e))
     except Exception as e:
         logger.exception(f"Failed to import ver_id={ver_id}")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        raise ImportFailedError(str(e))
 
 
 @router.post("/import-suggestion")
@@ -239,10 +234,7 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
 
     # 2. Validate law_number exists
     if not mapping.law_number:
-        raise HTTPException(
-            status_code=400,
-            detail="This suggestion cannot be auto-imported (no law number)",
-        )
+        raise NoLawNumberError()
 
     # 3. Check if already imported by law_number (+ document_type/year if available)
     existing_query = db.query(Law).filter(Law.law_number == mapping.law_number)
@@ -252,10 +244,7 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
         existing_query = existing_query.filter(Law.law_year == mapping.law_year)
     existing = existing_query.first()
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This law is already imported as '{existing.title}'",
-        )
+        raise DuplicateImportError(existing.title)
 
     # 4. Search legislatie.just.ro
     doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
@@ -269,7 +258,7 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
         )
     except Exception as e:
         logger.error(f"Search failed for suggestion {req.mapping_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
+        raise SearchFailedError()
 
     if not results:
         raise HTTPException(
@@ -284,21 +273,18 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
     # 6. Check if this ver_id is already imported
     existing_ver = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
     if existing_ver:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This law is already imported as '{existing_ver.law.title}'",
-        )
+        raise DuplicateImportError(existing_ver.law.title)
 
     # 7. Import
     try:
         result = do_import(db, ver_id, import_history=req.import_history)
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=422, detail=str(e))
+        raise ImportFailedError(str(e))
     except Exception as e:
         logger.exception(f"Failed to import suggestion {req.mapping_id} (ver_id={ver_id})")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        raise ImportFailedError(str(e))
 
     # 8. Auto-assign category
     law = db.query(Law).filter(Law.id == result["law_id"]).first()
