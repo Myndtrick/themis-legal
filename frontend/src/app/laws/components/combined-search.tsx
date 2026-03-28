@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { api, LocalSearchResult, CategoryGroupData, SuggestedLaw } from "@/lib/api";
+import { api, getAuthToken, LocalSearchResult, CategoryGroupData, SuggestedLaw } from "@/lib/api";
 import Link from "next/link";
 import CategoryModal from "./category-modal";
 
@@ -130,12 +130,17 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   // Fetch filter options on mount
   useEffect(() => {
-    fetch(`${API_BASE}/api/laws/filter-options`)
-      .then((res) => res.ok ? res.json() : null)
-      .then((data) => {
-        if (data?.doc_types?.length) setActTypes(data.doc_types);
+    (async () => {
+      const token = await getAuthToken();
+      fetch(`${API_BASE}/api/laws/filter-options`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      .catch(() => { /* keep defaults */ });
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          if (data?.doc_types?.length) setActTypes(data.doc_types);
+        })
+        .catch(() => { /* keep defaults */ });
+    })();
   }, []);
 
   // Close dropdowns on outside click
@@ -158,7 +163,10 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   const fetchEmitents = useCallback(async (q: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/laws/emitents?q=${encodeURIComponent(q)}`);
+      const token = await getAuthToken();
+      const res = await fetch(`${API_BASE}/api/laws/emitents?q=${encodeURIComponent(q)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setEmitentSuggestions(data.emitents);
@@ -196,7 +204,10 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/laws/local-search?q=${encodeURIComponent(q)}`);
+      const token = await getAuthToken();
+      const res = await fetch(`${API_BASE}/api/laws/local-search?q=${encodeURIComponent(q)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setLocalResults(data.results);
@@ -230,7 +241,10 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     params.set("include_repealed", "only_in_force");
 
     try {
-      const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`);
+      const token = await getAuthToken();
+      const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) throw new Error(`Search failed (${res.status})`);
       const data = await res.json();
       setExternalResults(data.results);
@@ -253,9 +267,13 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       const controller = new AbortController();
       const timeoutMs = importHistory ? 600_000 : 120_000;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
         signal: controller.signal,
       });
@@ -311,9 +329,13 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       const controller = new AbortController();
       const timeoutMs = importHistory ? 600_000 : 120_000;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
         signal: controller.signal,
       });

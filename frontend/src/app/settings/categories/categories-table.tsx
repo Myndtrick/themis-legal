@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { apiFetch } from "@/lib/api";
 
 interface CategoryRow {
   id: number;
@@ -29,8 +28,8 @@ export function CategoriesTable() {
 
   async function fetchCategories() {
     try {
-      const res = await fetch(`${API_BASE}/api/settings/categories`);
-      if (res.ok) setCategories(await res.json());
+      const data = await apiFetch<CategoryRow[]>("/api/settings/categories");
+      setCategories(data);
     } catch { /* silent */ }
     setLoading(false);
   }
@@ -39,24 +38,23 @@ export function CategoriesTable() {
 
   async function handleAddSubcategory(e: React.FormEvent) {
     e.preventDefault();
-    const res = await fetch(`${API_BASE}/api/settings/categories/subcategory`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        group_slug: formGroup,
-        name_ro: formNameRo,
-        name_en: formNameEn,
-        description: formDesc,
-      }),
-    });
-    if (res.ok) {
+    try {
+      await apiFetch("/api/settings/categories/subcategory", {
+        method: "POST",
+        body: JSON.stringify({
+          group_slug: formGroup,
+          name_ro: formNameRo,
+          name_en: formNameEn,
+          description: formDesc,
+        }),
+      });
       setShowForm(false);
       setFormGroup("");
       setFormNameRo("");
       setFormNameEn("");
       setFormDesc("");
       fetchCategories();
-    }
+    } catch { /* silent */ }
   }
 
   // Get unique groups for the dropdown

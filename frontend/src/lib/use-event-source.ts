@@ -9,6 +9,26 @@ import type { LawPreview, StructuredAnswer } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+let cachedToken: { token: string; expires: number } | null = null;
+
+async function getAuthToken(): Promise<string | null> {
+  if (cachedToken && cachedToken.expires > Date.now()) {
+    return cachedToken.token;
+  }
+  try {
+    const res = await fetch("/api/token");
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.token) {
+      cachedToken = { token: data.token, expires: Date.now() + 4 * 60 * 1000 };
+      return data.token;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export interface SSEHandlers {
   onStep?: (data: {
     step: number;
@@ -46,11 +66,15 @@ export async function streamChat(
 ): Promise<void> {
   let response: Response;
   try {
+    const token = await getAuthToken();
     response = await fetch(
       `${API_BASE}/api/assistant/sessions/${sessionId}/messages`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ content: message }),
         signal,
       }
@@ -78,11 +102,15 @@ export async function streamResume(
 ): Promise<void> {
   let response: Response;
   try {
+    const token = await getAuthToken();
     response = await fetch(
       `${API_BASE}/api/assistant/sessions/${sessionId}/resume`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ run_id: runId, decisions }),
         signal,
       }
@@ -110,11 +138,15 @@ export async function streamRetry(
 ): Promise<void> {
   let response: Response;
   try {
+    const token = await getAuthToken();
     response = await fetch(
       `${API_BASE}/api/assistant/sessions/${sessionId}/retry`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ run_id: runId, mode }),
         signal,
       }

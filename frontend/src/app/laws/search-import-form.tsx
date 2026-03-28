@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { getAuthToken } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -126,14 +127,19 @@ export default function SearchImportForm() {
 
   // Fetch filter options on mount
   useEffect(() => {
-    fetch(`${API_BASE}/api/laws/filter-options`)
-      .then((res) => res.ok ? res.json() : null)
-      .then((data) => {
-        if (data?.doc_types?.length) {
-          setActTypes(data.doc_types);
-        }
+    (async () => {
+      const token = await getAuthToken();
+      fetch(`${API_BASE}/api/laws/filter-options`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      .catch(() => { /* keep defaults */ });
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          if (data?.doc_types?.length) {
+            setActTypes(data.doc_types);
+          }
+        })
+        .catch(() => { /* keep defaults */ });
+    })();
   }, []);
 
   useEffect(() => {
@@ -158,7 +164,10 @@ export default function SearchImportForm() {
 
   const fetchEmitents = useCallback(async (q: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/laws/emitents?q=${encodeURIComponent(q)}`);
+      const token = await getAuthToken();
+      const res = await fetch(`${API_BASE}/api/laws/emitents?q=${encodeURIComponent(q)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setEmitentSuggestions(data.emitents);
@@ -215,7 +224,10 @@ export default function SearchImportForm() {
     params.set("include_repealed", includeRepealed);
 
     try {
-      const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`);
+      const token = await getAuthToken();
+      const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || `Search failed (${res.status})`);
@@ -252,9 +264,13 @@ export default function SearchImportForm() {
     });
 
     try {
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
       if (!res.ok) {
@@ -301,9 +317,13 @@ export default function SearchImportForm() {
     setUrlImportedId(null);
 
     try {
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/laws/import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
       });
       if (!res.ok) {

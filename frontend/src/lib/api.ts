@@ -1,15 +1,37 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+let cachedToken: { token: string; expires: number } | null = null;
+
+export async function getAuthToken(): Promise<string | null> {
+  if (cachedToken && cachedToken.expires > Date.now()) {
+    return cachedToken.token;
+  }
+  try {
+    const res = await fetch("/api/token");
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.token) {
+      cachedToken = { token: data.token, expires: Date.now() + 4 * 60 * 1000 };
+      return data.token;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export async function apiFetch<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
   let res: Response;
   try {
+    const token = await getAuthToken();
     res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...options?.headers,
       },
     });
@@ -512,9 +534,13 @@ export async function importSuggestionSSE(
   onError: (error: { code: string; message: string }) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const token = await getAuthToken();
   const res = await fetch(`${API_BASE}/api/laws/import-suggestion/${mappingId}/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ import_history: importHistory }),
     signal,
   });
@@ -657,12 +683,17 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ question, models, mode }),
       }),
-    resume: (sessionId: string, runId: string, decisions: Record<string, string>) =>
-      fetch(`${API_BASE}/api/assistant/sessions/${sessionId}/resume`, {
+    resume: async (sessionId: string, runId: string, decisions: Record<string, string>) => {
+      const token = await getAuthToken();
+      return fetch(`${API_BASE}/api/assistant/sessions/${sessionId}/resume`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ run_id: runId, decisions }),
-      }),
+      });
+    },
   },
   settings: {
     prompts: {

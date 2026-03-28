@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { apiFetch } from "@/lib/api";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   in_force: { label: "In Force", className: "bg-green-100 text-green-700" },
@@ -31,16 +30,15 @@ export default function StatusBadge({ lawId, initialStatus, initialOverride }: S
   async function handleStatusChange(newStatus: string) {
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/api/laws/${lawId}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus, override: true }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data.status);
-        setOverride(data.status_override);
-      }
+      const data = await apiFetch<{ status: string; status_override: boolean }>(
+        `/api/laws/${lawId}/status`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status: newStatus, override: true }),
+        }
+      );
+      setStatus(data.status);
+      setOverride(data.status_override);
     } catch {
       // Silently fail
     } finally {
@@ -52,16 +50,15 @@ export default function StatusBadge({ lawId, initialStatus, initialOverride }: S
   async function handleResetToAuto() {
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/api/laws/${lawId}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, override: false }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data.status);
-        setOverride(data.status_override);
-      }
+      const data = await apiFetch<{ status: string; status_override: boolean }>(
+        `/api/laws/${lawId}/status`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status, override: false }),
+        }
+      );
+      setStatus(data.status);
+      setOverride(data.status_override);
     } catch {
       // Silently fail
     } finally {
