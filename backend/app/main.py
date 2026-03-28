@@ -106,6 +106,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.responses import JSONResponse
+from app.errors import ThemisError, map_exception_to_error
+import sqlite3
+
+
+@app.exception_handler(ThemisError)
+async def themis_error_handler(request, exc: ThemisError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=exc.to_dict(),
+    )
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def sqlite_error_handler(request, exc: sqlite3.OperationalError):
+    error = map_exception_to_error(exc)
+    return JSONResponse(
+        status_code=error.status_code,
+        content=error.to_dict(),
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request, exc: Exception):
+    import logging
+    logging.getLogger(__name__).exception(f"Unhandled error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"code": "internal", "message": "Something went wrong. Please try again."},
+    )
+
+
 app.include_router(categories.router)
 app.include_router(laws.router)
 app.include_router(notifications.router)
