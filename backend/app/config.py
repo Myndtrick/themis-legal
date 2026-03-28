@@ -16,3 +16,4 @@ CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5-202510
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "data/chroma")
 CHROMA_COLLECTION = "legal_articles"
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+NEXTAUTH_SECRET = os.environ.get("NEXTAUTH_SECRET", "dev-secret-change-me")

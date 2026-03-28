@@ -14,6 +14,7 @@ dependencies = [
     "leropa",
     "mistralai>=2.1.3",
     "openai>=2.30.0",
+    "pyjwt>=2.12.1",
     "python-multipart>=0.0.22",
     "sentence-transformers>=3.0",
     "sqlalchemy>=2.0.48",
