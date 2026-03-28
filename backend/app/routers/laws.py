@@ -405,13 +405,18 @@ async def import_suggestion_stream(
     return EventSourceResponse(event_generator())
 
 
+class BulkImportRequest(BaseModel):
+    import_history: bool = False
+
+
 @router.post("/import-all-suggestions/stream")
-async def import_all_suggestions_stream(db: Session = Depends(get_db)):
+async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = Depends(get_db)):
     """Import all unimported suggested laws sequentially, streaming progress via SSE."""
     from app.services.search_service import advanced_search
     from app.services.leropa_service import import_law as do_import
     from app.services.category_service import get_unimported_suggestions
 
+    import_history = req.import_history
     suggestions = get_unimported_suggestions(db)
     total = len(suggestions)
 
@@ -473,7 +478,7 @@ async def import_all_suggestions_stream(db: Session = Depends(get_db)):
                     }})
                     continue
 
-                result = await asyncio.to_thread(do_import, db, ver_id, import_history=False)
+                result = await asyncio.to_thread(do_import, db, ver_id, import_history=import_history)
 
                 # Auto-assign category
                 law = db.query(Law).filter(Law.id == result["law_id"]).first()

@@ -595,6 +595,7 @@ export interface BulkImportResult {
 }
 
 export async function importAllSuggestionsSSE(
+  importHistory: boolean,
   onProgress: (event: BulkImportProgress) => void,
   onItemDone: (data: { title: string; law_id: number }) => void,
   onItemError: (data: { title: string; error: string }) => void,
@@ -608,6 +609,7 @@ export async function importAllSuggestionsSSE(
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
+    body: JSON.stringify({ import_history: importHistory }),
     signal,
   });
 

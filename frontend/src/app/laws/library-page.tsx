@@ -43,12 +43,13 @@ export default function LibraryPage() {
   const [bulkProgress, setBulkProgress] = useState<BulkImportProgress | null>(null);
   const [bulkResult, setBulkResult] = useState<BulkImportResult | null>(null);
 
-  function handleImportAll() {
+  function handleImportAll(importHistory: boolean) {
     setBulkImporting(true);
     setBulkProgress(null);
     setBulkResult(null);
 
     importAllSuggestionsSSE(
+      importHistory,
       (progress) => setBulkProgress(progress),
       () => { /* item done — will refresh at end */ },
       () => { /* item error — tracked in final result */ },
@@ -275,15 +276,28 @@ export default function LibraryPage() {
           <p className="mt-1 text-gray-600">Browse Romanian laws with full version history</p>
         </div>
         {activeSuggestions.length > 0 && (
-          <button
-            onClick={handleImportAll}
-            disabled={bulkImporting}
-            className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors whitespace-nowrap"
-          >
-            {bulkImporting
-              ? `Importing ${bulkProgress?.current || 0}/${bulkProgress?.total || activeSuggestions.length}...`
-              : `Import All (${activeSuggestions.length})`}
-          </button>
+          <div className="flex gap-2">
+            {bulkImporting ? (
+              <span className="px-4 py-2 bg-indigo-100 text-indigo-700 text-sm font-medium rounded-lg">
+                Importing {bulkProgress?.current || 0}/{bulkProgress?.total || activeSuggestions.length}...
+              </span>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleImportAll(false)}
+                  className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                >
+                  Import All — Current ({activeSuggestions.length})
+                </button>
+                <button
+                  onClick={() => handleImportAll(true)}
+                  className="px-4 py-2 bg-white text-indigo-600 border border-indigo-300 text-sm font-medium rounded-lg hover:bg-indigo-50 transition-colors whitespace-nowrap"
+                >
+                  Import All — With History
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
 
