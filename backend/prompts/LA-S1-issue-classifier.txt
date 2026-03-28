@@ -112,12 +112,9 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "applicable_laws": ["<law_number/law_year>"]
     }
   ],
-  "complexity": "SIMPLE" | "STANDARD" | "COMPLEX",
-  // SIMPLE: Single factual question about a current rule, definition, threshold, or procedure. No scenario, no multiple parties, no temporal dimension.
-  // STANDARD: Specific situation with 1-2 issues, potentially requiring temporal or exception analysis.
-  // COMPLEX: Multi-issue scenario with multiple parties, dates, conflicting laws, or comprehensive analysis needed.
+  "complexity": "SIMPLE or STANDARD or COMPLEX",
 
-  "facts": {                    // OMIT entirely for SIMPLE queries
+  "facts": {
     "stated": [
       {"fact_id": "F1", "description": "...", "date": "YYYY-MM-DD or null", "legal_category": "..."}
     ],

@@ -42,24 +42,60 @@ from app.services.version_currency import check_version_currency
 import re
 
 
+def _strip_json_comments(text: str) -> str:
+    """Remove // line comments from JSON-like text (not inside strings)."""
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        # Remove // comments that aren't inside quotes
+        in_string = False
+        escape = False
+        for i, ch in enumerate(line):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            if not in_string and line[i:i+2] == "//":
+                line = line[:i].rstrip()
+                break
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+def _try_parse_json(text: str) -> dict | None:
+    """Try to parse JSON, with and without comment stripping."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try stripping // comments
+    try:
+        return json.loads(_strip_json_comments(text))
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
 def _extract_json(text: str) -> dict | None:
     """Extract JSON from Claude's response, handling markdown wrappers and preamble text."""
     text = text.strip()
 
     # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    result = _try_parse_json(text)
+    if result is not None:
+        return result
 
     # Try stripping markdown code blocks
     if "```" in text:
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
         if match:
-            try:
-                return json.loads(match.group(1).strip())
-            except json.JSONDecodeError:
-                pass
+            result = _try_parse_json(match.group(1).strip())
+            if result is not None:
+                return result
 
     # Try finding the first { ... } block
     brace_start = text.find("{")
@@ -72,10 +108,10 @@ def _extract_json(text: str) -> dict | None:
             elif text[i] == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        return json.loads(text[brace_start : i + 1])
-                    except json.JSONDecodeError:
-                        break
+                    result = _try_parse_json(text[brace_start : i + 1])
+                    if result is not None:
+                        return result
+                    break
 
     return None
 
@@ -1077,6 +1113,8 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
 
     parsed = _extract_json(result["content"])
     if not parsed:
+        logger.warning("Failed to parse Step 1 JSON from %s. Raw response (first 500 chars): %s",
+                       result["model"], result["content"][:500])
         parsed = {
             "question_type": "A",
             "legal_domain": "other",
