@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category  # noqa: F401 — register models
+from app.models import model_config  # noqa: F401 — register model config tables
 from app.routers import assistant as assistant_router
 from app.routers import categories, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
@@ -46,6 +47,8 @@ async def lifespan(app: FastAPI):
         from app.services.category_service import seed_categories, backfill_law_mapping_fields
         seed_categories(db)
         backfill_law_mapping_fields(db)
+        from app.services.model_seed import seed_models
+        seed_models(db)
         from app.services.bm25_service import ensure_fts_index
         ensure_fts_index(db)
 
