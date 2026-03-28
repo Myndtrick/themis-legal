@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.models.prompt import PromptVersion
 from app.schemas.prompts import (
@@ -19,7 +20,7 @@ from app.services.prompt_service import PROMPT_MANIFEST, get_all_active_prompts
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings/prompts", tags=["Settings — Prompts"])
+router = APIRouter(prefix="/api/settings/prompts", tags=["Settings — Prompts"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/", response_model=list[PromptSummary])

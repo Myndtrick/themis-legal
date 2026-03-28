@@ -5,6 +5,7 @@ import logging
 import time
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from app.auth import get_current_user
 from app.database import get_db
 from app.schemas.compare import CompareRequest, CompareResponse, CompareModelResult
 from app.providers import get_provider
@@ -13,7 +14,7 @@ from app.providers.base import TokenUsage
 from app.services.model_seed import SEED_MODELS
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/assistant", tags=["assistant"])
+router = APIRouter(prefix="/api/assistant", tags=["assistant"], dependencies=[Depends(get_current_user)])
 
 _MODEL_LABELS = {m["id"]: m["label"] for m in SEED_MODELS}
 

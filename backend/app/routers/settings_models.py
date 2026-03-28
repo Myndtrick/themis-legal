@@ -3,12 +3,13 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from app.auth import get_current_user
 from app.database import get_db
 from app.models.model_config import Model, ModelAssignment
 from app.schemas.model_config import ModelOut, ModelUpdate, AssignmentOut, AssignmentUpdate
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(get_current_user)])
 
 TASK_REQUIRED_CAPABILITY = {
     "issue_classification": "chat",

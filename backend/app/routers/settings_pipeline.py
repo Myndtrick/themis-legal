@@ -7,6 +7,7 @@ from collections import Counter
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.models.pipeline import APICallLog, PipelineRun, StepLog
 from app.schemas.pipeline import (
@@ -19,7 +20,7 @@ from app.schemas.pipeline import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings/pipeline", tags=["Settings — Pipeline"])
+router = APIRouter(prefix="/api/settings/pipeline", tags=["Settings — Pipeline"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/runs", response_model=list[PipelineRunSummary])

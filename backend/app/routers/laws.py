@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from sse_starlette.sse import EventSourceResponse
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
 from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, StructuralElement
@@ -17,7 +18,7 @@ from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/laws", tags=["laws"])
+router = APIRouter(prefix="/api/laws", tags=["laws"], dependencies=[Depends(get_current_user)])
 
 
 class ImportRequest(BaseModel):

@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.models.category import CategoryGroup, Category
 from app.models.law import Law
 
-router = APIRouter(prefix="/api/settings/categories", tags=["settings"])
+router = APIRouter(prefix="/api/settings/categories", tags=["settings"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/")

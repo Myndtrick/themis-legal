@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.schemas.assistant import (
     CreateSessionResponse,
@@ -29,7 +30,7 @@ from app.services.session_service import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/assistant", tags=["Legal Assistant"])
+router = APIRouter(prefix="/api/assistant", tags=["Legal Assistant"], dependencies=[Depends(get_current_user)])
 
 
 @router.post("/sessions", response_model=CreateSessionResponse)
