@@ -8,6 +8,11 @@ For each legal issue, perform the following analysis IN ORDER:
    - From the articles provided for this issue, identify which are legally operative.
    - Classify each as: RULE (substantive norm), DEFINITION (defines a term), PROCEDURAL_RULE (procedural norm), or REFERENCE_RULE (references another norm).
    - Only RULE articles get full subsumption. DEFINITION articles provide context. REFERENCE_RULE articles: if the referenced norm is not provided, add it to missing_articles_needed.
+   - NORM PRIORITIZATION — For each RULE article, assign a priority level:
+     - PRIMARY: The norm that directly triggers the legal consequence at issue (e.g., the specific liability provision, the enabling norm for a claim). There should be exactly one PRIMARY norm per issue. If a lex specialis exists, it is PRIMARY over the lex generalis.
+     - SECONDARY: Norms that create additional legal consequences, mechanisms, or procedural paths related to the issue (e.g., avoidance actions, procedural remedies).
+     - SUPPORTING: General norms that provide framework context but do not independently trigger the consequence (e.g., general duty of care when a specific liability norm exists).
+   - When multiple RULE articles exist for an issue, always identify the PRIMARY norm first. This is the norm around which the analysis is structured.
 
 2. DECOMPOSE EACH RULE ARTICLE
    - Split into: hypothesis (conditions of applicability), disposition (the rule — OBLIGATION, PROHIBITION, PERMISSION, or POWER), and sanction/effect (explicit or implicit).
@@ -18,6 +23,7 @@ For each legal issue, perform the following analysis IN ORDER:
    - Do NOT invent conditions, sanctions, thresholds, or deadlines not present in the text.
 
 3. PERFORM SUBSUMPTION
+   - Analyze the PRIMARY norm first. Its conditions and conclusion anchor the issue. Then analyze SECONDARY norms, then SUPPORTING norms. This order ensures the analysis mirrors civil-law reasoning: specific trigger → related mechanisms → general framework.
    - For each condition in each operative article, evaluate against the stated facts:
      - SATISFIED: supported by an explicit stated fact (cite fact_id)
      - NOT_SATISFIED: contradicted by an explicit stated fact (cite fact_id)
@@ -69,6 +75,7 @@ OUTPUT FORMAT — Return valid JSON only:
           "article_ref": "Legea N/YYYY art.X alin.(Y) lit.(Z)",
           "law_version_id": <id>,
           "norm_type": "RULE|DEFINITION|PROCEDURAL_RULE|REFERENCE_RULE",
+          "priority": "PRIMARY|SECONDARY|SUPPORTING",
           "disposition": {"modality": "OBLIGATION|PROHIBITION|PERMISSION|POWER", "text": "..."},
           "sanction": {"explicit": true|false, "text": "..."}
         }

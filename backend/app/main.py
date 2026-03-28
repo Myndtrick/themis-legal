@@ -48,12 +48,9 @@ async def lifespan(app: FastAPI):
         backfill_law_mapping_fields(db)
         from app.services.bm25_service import ensure_fts_index
         ensure_fts_index(db)
-        from app.services.version_discovery import seed_known_versions_from_imported
-        seeded = seed_known_versions_from_imported(db)
-        if seeded:
-            logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
 
         # Add diff_summary column if it doesn't exist (SQLite migration)
+        # Must run before any query that touches LawVersion
         from sqlalchemy import inspect, text
         inspector = inspect(engine)
         columns = [c["name"] for c in inspector.get_columns("law_versions")]
@@ -61,6 +58,11 @@ async def lifespan(app: FastAPI):
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE law_versions ADD COLUMN diff_summary JSON"))
             logger.info("Added diff_summary column to law_versions")
+
+        from app.services.version_discovery import seed_known_versions_from_imported
+        seeded = seed_known_versions_from_imported(db)
+        if seeded:
+            logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
 
         # Backfill diff summaries for existing versions
         from app.services.diff_summary import backfill_diff_summaries

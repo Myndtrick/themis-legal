@@ -5,7 +5,7 @@ Check identified laws against the database for availability and version status.
 from __future__ import annotations
 from datetime import date as date_type
 from sqlalchemy.orm import Session
-from app.models.law import Law, LawVersion
+from app.models.law import KnownVersion, Law, LawVersion
 
 
 def check_laws_in_db(
@@ -91,5 +91,38 @@ def check_laws_in_db(
             )
             law["availability"] = "available" if any_version else "missing"
             law["available_version_date"] = str(any_version.date_in_force) if any_version else None
+
+    # --- Version status check (uses KnownVersion) ---
+    for law in laws:
+        if not law.get("db_law_id"):
+            law["version_status"] = "not_checked"
+            continue
+
+        known_current = (
+            db.query(KnownVersion)
+            .filter(
+                KnownVersion.law_id == law["db_law_id"],
+                KnownVersion.is_current == True,
+            )
+            .first()
+        )
+
+        if known_current is None:
+            law["version_status"] = "not_checked"
+        else:
+            imported = (
+                db.query(LawVersion)
+                .filter(
+                    LawVersion.law_id == law["db_law_id"],
+                    LawVersion.ver_id == known_current.ver_id,
+                )
+                .first()
+            )
+            if imported:
+                law["version_status"] = "up_to_date"
+            else:
+                law["version_status"] = "stale"
+                law["official_current_ver_id"] = known_current.ver_id
+                law["official_current_date"] = str(known_current.date_in_force)
 
     return laws

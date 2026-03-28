@@ -36,9 +36,17 @@ PROMPT_MANIFEST = {
         "file": "LA-S6.5-relevance-check.txt",
         "desc": "Step 6.5 — Relevance Checker",
     },
+    "LA-S6.8": {
+        "file": "LA-S6.8-legal-reasoning.txt",
+        "desc": "Step 6.8 — Legal Reasoning (RL-RAP)",
+    },
     "LA-S7": {
         "file": "LA-S7-answer-qa.txt",
         "desc": "Step 7 — Answer Generator (Mode 1 Q&A)",
+    },
+    "LA-S7-simple": {
+        "file": "LA-S7-simple.txt",
+        "desc": "Step 7 — Answer Generator (Simple mode)",
     },
     "LA-S7-M2": {
         "file": "LA-S7-M2-answer-memo.txt",

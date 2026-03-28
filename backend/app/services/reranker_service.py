@@ -11,7 +11,7 @@ from sentence_transformers import CrossEncoder
 logger = logging.getLogger(__name__)
 
 _model: CrossEncoder | None = None
-MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+MODEL_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
 # Additive boost to cross-encoder scores based on law role.
 # PRIMARY articles get a relevance bonus so they rank above SECONDARY

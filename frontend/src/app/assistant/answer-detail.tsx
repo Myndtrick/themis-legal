@@ -168,7 +168,7 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
                   <div className="text-xs font-medium text-gray-600 mb-1">Library Coverage</div>
                   {Object.entries(r.step2_law_mapping.coverage_status as Record<string, string>).map(([key, status]) => (
                     <div key={key} className="flex items-center gap-2 text-xs text-gray-600 ml-2">
-                      <span>{status === "full" ? "✅" : status === "partial" ? "⚠️" : "❌"}</span>
+                      <span>{status === "available" || status === "full" ? "✅" : status === "partial" || status === "wrong_version" ? "⚠️" : "❌"}</span>
                       <span>{key}</span>
                       <span className="text-gray-400">— {status}</span>
                     </div>

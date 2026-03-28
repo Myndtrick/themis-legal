@@ -1007,6 +1007,13 @@ def import_law(
     except Exception as e:
         logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
 
+    # Rebuild BM25/FTS5 index so new articles are searchable
+    try:
+        from app.services.bm25_service import rebuild_fts_index
+        rebuild_fts_index(db)
+    except Exception as e:
+        logger.warning(f"FTS5 rebuild failed (non-fatal): {e}")
+
     _stored_article_ids = set()
 
     return {
