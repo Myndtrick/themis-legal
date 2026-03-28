@@ -458,65 +458,75 @@ async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = De
                 }})
                 continue
 
-            import_db = SessionLocal()
-            try:
-                # Check if already imported
-                existing_query = import_db.query(Law).filter(Law.law_number == mapping["law_number"])
-                if mapping["document_type"]:
-                    existing_query = existing_query.filter(Law.document_type == mapping["document_type"])
-                if mapping["law_year"]:
-                    existing_query = existing_query.filter(Law.law_year == mapping["law_year"])
-                if existing_query.first():
-                    await queue.put({"event": "item_skip", "data": {
-                        "title": mapping["title"], "reason": "Already imported",
-                    }})
-                    continue
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                import_db = SessionLocal()
+                try:
+                    # Check if already imported
+                    existing_query = import_db.query(Law).filter(Law.law_number == mapping["law_number"])
+                    if mapping["document_type"]:
+                        existing_query = existing_query.filter(Law.document_type == mapping["document_type"])
+                    if mapping["law_year"]:
+                        existing_query = existing_query.filter(Law.law_year == mapping["law_year"])
+                    if existing_query.first():
+                        await queue.put({"event": "item_skip", "data": {
+                            "title": mapping["title"], "reason": "Already imported",
+                        }})
+                        break
 
-                doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping["document_type"] or "", "")
-                year_str = str(mapping["law_year"]) if mapping["law_year"] else ""
-                results = advanced_search(
-                    doc_type=doc_type_code,
-                    number=mapping["law_number"],
-                    year=year_str,
-                )
-                if not results:
+                    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping["document_type"] or "", "")
+                    year_str = str(mapping["law_year"]) if mapping["law_year"] else ""
+                    results = advanced_search(
+                        doc_type=doc_type_code,
+                        number=mapping["law_number"],
+                        year=year_str,
+                    )
+                    if not results:
+                        failed += 1
+                        await queue.put({"event": "item_error", "data": {
+                            "title": mapping["title"], "error": "Not found on legislatie.just.ro",
+                        }})
+                        break
+
+                    ver_id = str(results[0].ver_id)
+                    existing_ver = import_db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
+                    if existing_ver:
+                        await queue.put({"event": "item_skip", "data": {
+                            "title": mapping["title"], "reason": "Version already imported",
+                        }})
+                        break
+
+                    result = await asyncio.to_thread(do_import, import_db, ver_id, import_history=import_history)
+
+                    # Auto-assign category
+                    law = import_db.query(Law).filter(Law.id == result["law_id"]).first()
+                    if law:
+                        law.category_id = mapping["category_id"]
+                        law.category_confidence = "high"
+                        import_db.commit()
+
+                    imported += 1
+                    await queue.put({"event": "item_done", "data": {
+                        "title": mapping["title"], "law_id": result["law_id"],
+                    }})
+                    break
+
+                except Exception as e:
+                    import_db.rollback()
+                    is_db_locked = "database is locked" in str(e)
+                    if is_db_locked and attempt < max_retries:
+                        logger.warning(f"DB locked for {mapping['title']}, retrying ({attempt + 1}/{max_retries})...")
+                        import_db.close()
+                        await asyncio.sleep(5)
+                        continue
                     failed += 1
+                    logger.error(f"Bulk import failed for {mapping['title']}: {e}")
                     await queue.put({"event": "item_error", "data": {
-                        "title": mapping["title"], "error": "Not found on legislatie.just.ro",
+                        "title": mapping["title"], "error": str(e)[:200],
                     }})
-                    continue
-
-                ver_id = str(results[0].ver_id)
-                existing_ver = import_db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
-                if existing_ver:
-                    await queue.put({"event": "item_skip", "data": {
-                        "title": mapping["title"], "reason": "Version already imported",
-                    }})
-                    continue
-
-                result = await asyncio.to_thread(do_import, import_db, ver_id, import_history=import_history)
-
-                # Auto-assign category
-                law = import_db.query(Law).filter(Law.id == result["law_id"]).first()
-                if law:
-                    law.category_id = mapping["category_id"]
-                    law.category_confidence = "high"
-                    import_db.commit()
-
-                imported += 1
-                await queue.put({"event": "item_done", "data": {
-                    "title": mapping["title"], "law_id": result["law_id"],
-                }})
-
-            except Exception as e:
-                failed += 1
-                import_db.rollback()
-                logger.error(f"Bulk import failed for {mapping['title']}: {e}")
-                await queue.put({"event": "item_error", "data": {
-                    "title": mapping["title"], "error": str(e)[:200],
-                }})
-            finally:
-                import_db.close()
+                    break
+                finally:
+                    import_db.close()
 
         await queue.put({"event": "complete", "data": {
             "imported": imported, "failed": failed, "total": total,
