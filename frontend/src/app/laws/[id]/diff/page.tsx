@@ -1,12 +1,36 @@
-import Link from "next/link";
-import { api } from "@/lib/api";
+"use client";
 
-export default async function DiffPage(props: PageProps<"/laws/[id]/diff">) {
-  const { id } = await props.params;
-  const searchParams = await props.searchParams;
+import { useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { api, DiffResult } from "@/lib/api";
+
+export default function DiffPage() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const id = params.id as string;
   const lawId = parseInt(id, 10);
-  const versionA = parseInt(searchParams?.a as string, 10);
-  const versionB = parseInt(searchParams?.b as string, 10);
+  const versionA = parseInt(searchParams.get("a") || "", 10);
+  const versionB = parseInt(searchParams.get("b") || "", 10);
+
+  const [diff, setDiff] = useState<DiffResult | null>(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!versionA || !versionB) {
+      setLoading(false);
+      return;
+    }
+    api.laws.diff(lawId, versionA, versionB)
+      .then(setDiff)
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
+  }, [lawId, versionA, versionB]);
+
+  if (loading) {
+    return <div className="text-center py-12 text-gray-400">Loading...</div>;
+  }
 
   if (!versionA || !versionB) {
     return (
@@ -27,10 +51,7 @@ export default async function DiffPage(props: PageProps<"/laws/[id]/diff">) {
     );
   }
 
-  let diff;
-  try {
-    diff = await api.laws.diff(lawId, versionA, versionB);
-  } catch {
+  if (error || !diff) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-medium text-red-600">

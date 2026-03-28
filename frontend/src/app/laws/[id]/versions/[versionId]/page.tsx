@@ -1,22 +1,38 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, LawVersionDetail } from "@/lib/api";
 import { ArticleCard } from "./components/article-card";
 import { ArticleList } from "./components/article-list";
 import { StructuralSection } from "./components/structural-section";
 import { LawToolbar } from "./components/law-toolbar";
 import { AnnexCard } from "./components/annex-card";
 
-export default async function VersionDetailPage(
-  props: PageProps<"/laws/[id]/versions/[versionId]">
-) {
-  const { id, versionId } = await props.params;
+export default function VersionDetailPage() {
+  const params = useParams();
+  const id = params.id as string;
+  const versionId = params.versionId as string;
   const lawId = parseInt(id, 10);
   const verIdNum = parseInt(versionId, 10);
 
-  let version;
-  try {
-    version = await api.laws.getVersion(lawId, verIdNum);
-  } catch {
+  const [version, setVersion] = useState<LawVersionDetail | null>(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.laws.getVersion(lawId, verIdNum)
+      .then(setVersion)
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
+  }, [lawId, verIdNum]);
+
+  if (loading) {
+    return <div className="text-center py-12 text-gray-400">Loading...</div>;
+  }
+
+  if (error || !version) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-medium text-gray-900">

@@ -1,18 +1,33 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, LawDetail } from "@/lib/api";
 import DiffSelector from "./diff-selector";
 import DeleteVersionsButton from "./delete-versions-button";
 import StatusBadge from "./status-badge";
 import VersionsSection from "./versions-section";
 
-export default async function LawDetailPage(props: PageProps<"/laws/[id]">) {
-  const { id } = await props.params;
-  const lawId = parseInt(id, 10);
+export default function LawDetailPage() {
+  const params = useParams();
+  const lawId = parseInt(params.id as string, 10);
+  const [law, setLaw] = useState<LawDetail | null>(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  let law;
-  try {
-    law = await api.laws.get(lawId);
-  } catch {
+  useEffect(() => {
+    api.laws.get(lawId)
+      .then(setLaw)
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
+  }, [lawId]);
+
+  if (loading) {
+    return <div className="text-center py-12 text-gray-400">Loading...</div>;
+  }
+
+  if (error || !law) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-medium text-gray-900">Law not found</h2>
