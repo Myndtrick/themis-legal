@@ -9,6 +9,7 @@ import { RunTable } from "./pipeline/run-table";
 import { VersionHistory } from "./versions/version-history";
 import { CategoriesTable } from "./categories/categories-table";
 import { ModelsTable } from "./models/models-table";
+import { UsersTable } from "./users/users-table";
 
 function SettingsContent() {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -55,6 +56,10 @@ function SettingsContent() {
 
           if (activeTab === "models") {
             return <ModelsTable />;
+          }
+
+          if (activeTab === "users") {
+            return <UsersTable />;
           }
 
           return null;
