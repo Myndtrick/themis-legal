@@ -1098,12 +1098,10 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     context_msg += library_context
     context_msg += f"\n\nTODAY'S DATE: {state['today']}"
 
-    from app.config import CLAUDE_MODEL_FAST
     result = call_claude(
         system=prompt_text,
         messages=[{"role": "user", "content": context_msg}],
         max_tokens=2048,
-        model=CLAUDE_MODEL_FAST,
     )
 
     log_api_call(
