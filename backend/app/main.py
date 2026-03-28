@@ -13,6 +13,7 @@ from app.routers import categories, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
 from app.routers import settings_models
 from app.routers import compare
+from app.routers import admin as admin_router
 from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -158,6 +159,7 @@ app.include_router(settings_pipeline.router)
 app.include_router(settings_categories.router)
 app.include_router(settings_models.router)
 app.include_router(compare.router)
+app.include_router(admin_router.router)
 
 
 @app.get("/api/health")
