@@ -17,8 +17,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     async signIn({ user }) {
       // Verify with backend that this email is allowed
+      const url = `${API_BASE}/api/admin/verify-user`;
+      console.log(`[auth] signIn callback: verifying ${user.email} via ${url}`);
       try {
-        const res = await fetch(`${API_BASE}/api/admin/verify-user`, {
+        const res = await fetch(url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -30,8 +32,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             picture: user.image,
           }),
         });
+        const text = await res.text();
+        console.log(`[auth] verify-user response: ${res.status} ${text}`);
         if (!res.ok) return false;
-        const data = await res.json();
+        const data = JSON.parse(text);
         return data.allowed === true;
       } catch (e) {
         console.error("[auth] Failed to verify user:", e);
