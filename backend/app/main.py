@@ -72,12 +72,8 @@ async def lifespan(app: FastAPI):
         if seeded:
             logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
 
-        # Backfill diff summaries for existing versions
-        from app.services.diff_summary import backfill_diff_summaries
-        backfilled = backfill_diff_summaries(db)
-        if backfilled:
-            db.commit()
-            logger.info(f"Backfilled diff_summary for {backfilled} versions")
+        # Diff summary backfill skipped on startup (too slow with many versions).
+        # Run manually via /api/admin/backfill-diffs if needed.
     finally:
         db.close()
 
