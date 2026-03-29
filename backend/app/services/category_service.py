@@ -536,16 +536,6 @@ def get_library_data(db: Session) -> dict:
         for v in db.query(LawVersion).filter(LawVersion.is_current == True).all()
     }
 
-    # Get unimported version counts per law
-    from app.models.law import KnownVersion
-    unimported_counts_rows = (
-        db.query(KnownVersion.law_id, func.count(KnownVersion.id))
-        .filter(KnownVersion.is_imported == False)
-        .group_by(KnownVersion.law_id)
-        .all()
-    )
-    unimported_counts = dict(unimported_counts_rows) if unimported_counts_rows else {}
-
     laws = db.query(Law).order_by(Law.law_year.desc(), Law.law_number).all()
     laws_out = []
     for law in laws:
@@ -559,7 +549,7 @@ def get_library_data(db: Session) -> dict:
             "version_count": version_counts.get(law.id, 0), "status": law.status,
             "category_id": law.category_id, "category_group_slug": group_slug,
             "category_confidence": law.category_confidence,
-            "unimported_version_count": unimported_counts.get(law.id, 0),
+            "unimported_version_count": 0,
             "current_version": {"id": current.id, "state": current.state} if current else None,
         })
 
