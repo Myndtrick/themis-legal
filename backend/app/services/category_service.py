@@ -487,46 +487,86 @@ def backfill_law_mapping_fields(db: Session) -> None:
 
 def get_library_data(db: Session) -> dict:
     """Assemble all data needed for the Legal Library page."""
+    from sqlalchemy import text
     from app.models.law import LawVersion
 
+    # 1. Category law counts in a single query
+    law_counts = dict(
+        db.query(Law.category_id, func.count(Law.id))
+        .filter(Law.category_id.isnot(None))
+        .group_by(Law.category_id)
+        .all()
+    )
+
+    # 2. Groups + categories (eager-loaded)
     groups = (
         db.query(CategoryGroup)
         .order_by(CategoryGroup.sort_order)
         .all()
     )
+
+    # Pre-load all categories with their groups for suggestion lookup
+    all_categories = {c.id: c for g in groups for c in g.categories}
+
     groups_out = []
     for g in groups:
         cats_out = []
         for c in sorted(g.categories, key=lambda x: x.sort_order):
-            count = db.query(func.count(Law.id)).filter(Law.category_id == c.id).scalar()
             cats_out.append({
                 "id": c.id, "slug": c.slug, "name_ro": c.name_ro,
-                "name_en": c.name_en, "description": c.description, "law_count": count,
+                "name_en": c.name_en, "description": c.description,
+                "law_count": law_counts.get(c.id, 0),
             })
         groups_out.append({
             "id": g.id, "slug": g.slug, "name_ro": g.name_ro, "name_en": g.name_en,
             "color_hex": g.color_hex, "sort_order": g.sort_order, "categories": cats_out,
         })
 
+    # 3. Laws with version counts and current version in bulk queries
+    # Get version counts per law
+    version_counts = dict(
+        db.query(LawVersion.law_id, func.count(LawVersion.id))
+        .group_by(LawVersion.law_id)
+        .all()
+    )
+
+    # Get current versions per law
+    current_versions = {
+        v.law_id: v
+        for v in db.query(LawVersion).filter(LawVersion.is_current == True).all()
+    }
+
+    # Get unimported version counts per law
+    from app.models.law import KnownVersion
+    unimported_counts_rows = (
+        db.query(KnownVersion.law_id, func.count(KnownVersion.id))
+        .filter(KnownVersion.is_imported == False)
+        .group_by(KnownVersion.law_id)
+        .all()
+    )
+    unimported_counts = dict(unimported_counts_rows) if unimported_counts_rows else {}
+
     laws = db.query(Law).order_by(Law.law_year.desc(), Law.law_number).all()
     laws_out = []
     for law in laws:
-        current = next((v for v in law.versions if v.is_current), None)
-        cat = law.category
+        current = current_versions.get(law.id)
+        cat = all_categories.get(law.category_id)
         group_slug = cat.group.slug if cat else None
         laws_out.append({
             "id": law.id, "title": law.title, "law_number": law.law_number,
             "law_year": law.law_year, "document_type": law.document_type,
             "description": law.description, "issuer": law.issuer,
-            "version_count": len(law.versions), "status": law.status,
+            "version_count": version_counts.get(law.id, 0), "status": law.status,
             "category_id": law.category_id, "category_group_slug": group_slug,
             "category_confidence": law.category_confidence,
+            "unimported_version_count": unimported_counts.get(law.id, 0),
             "current_version": {"id": current.id, "state": current.state} if current else None,
         })
 
-    total_versions = db.query(func.count(LawVersion.id)).scalar()
+    total_versions = sum(version_counts.values())
     last_imported = db.query(func.max(LawVersion.date_imported)).scalar()
 
+    # 4. Suggestions — use pre-loaded categories, no per-mapping queries
     all_mappings = db.query(LawMapping).all()
     imported_numbers = {law.law_number for law in laws}
     imported_titles = {law.title.lower() for law in laws}
@@ -534,9 +574,10 @@ def get_library_data(db: Session) -> dict:
     for m in all_mappings:
         if m.law_number and m.law_number in imported_numbers:
             continue
-        if any(t in m.title.lower() or m.title.lower() in t for t in imported_titles):
+        m_lower = m.title.lower()
+        if any(t in m_lower or m_lower in t for t in imported_titles):
             continue
-        cat = db.query(Category).filter(Category.id == m.category_id).first()
+        cat = all_categories.get(m.category_id)
         if cat:
             suggested.append({
                 "id": m.id, "title": m.title, "law_number": m.law_number,
