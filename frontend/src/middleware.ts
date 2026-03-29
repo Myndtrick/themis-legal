@@ -7,9 +7,10 @@ export default auth((req) => {
   const isAuthenticated = !!req.auth;
   const isAuthPage = nextUrl.pathname.startsWith("/auth");
   const isApiAuth = nextUrl.pathname.startsWith("/api/auth");
+  const isApiToken = nextUrl.pathname === "/api/token";
 
-  // Allow auth-related routes
-  if (isAuthPage || isApiAuth) {
+  // Allow auth-related routes and token endpoint
+  if (isAuthPage || isApiAuth || isApiToken) {
     // Redirect authenticated users away from sign-in page
     if (isAuthenticated && isAuthPage) {
       return NextResponse.redirect(new URL("/", nextUrl));
