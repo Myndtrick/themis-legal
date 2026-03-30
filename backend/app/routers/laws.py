@@ -28,6 +28,11 @@ class ImportSuggestionRequest(BaseModel):
     import_history: bool = False
 
 
+class EUImportRequest(BaseModel):
+    celex_number: str
+    import_history: bool = True
+
+
 # LawMapping.document_type stores English keys; advanced_search expects
 # Romanian abbreviated keys or numeric codes from legislatie.just.ro.
 _DOC_TYPE_TO_SEARCH_CODE = {
@@ -43,19 +48,29 @@ _DOC_TYPE_TO_SEARCH_CODE = {
 
 
 @router.get("/search")
-def search_external(q: str):
-    """Search legislatie.just.ro for laws matching a query."""
-    from app.services.search_service import search_laws
+def search_laws_endpoint(q: str, source: str | None = None, db: Session = Depends(get_db)):
+    """Search laws from external sources. source: 'ro', 'eu', or None (both)."""
+    results = []
 
-    if len(q.strip()) < 2:
-        return []
+    if source != "eu":
+        from app.services.search_service import search_laws
+        ro_results = search_laws(q)
+        for r in ro_results:
+            d = r.to_dict()
+            d["source"] = "ro"
+            results.append(d)
 
-    try:
-        results = search_laws(q.strip(), max_results=10)
-        return [r.to_dict() for r in results]
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
+    if source != "ro":
+        from app.services.eu_cellar_service import search_eu_legislation
+        eu_results = search_eu_legislation(keyword=q)
+        for r in eu_results:
+            existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+            r.already_imported = existing is not None
+            d = r.to_dict()
+            d["source"] = "eu"
+            results.append(d)
+
+    return results
 
 
 @router.get("/advanced-search")
@@ -68,9 +83,18 @@ def advanced_search_endpoint(
     date_from: str = "",
     date_to: str = "",
     include_repealed: str = "only_in_force",
+    source: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Advanced search on legislatie.just.ro with structured filters."""
+    if source == "eu":
+        from app.services.eu_cellar_service import search_eu_legislation
+        eu_results = search_eu_legislation(keyword=keyword, doc_type=doc_type, year=year, number=number)
+        for r in eu_results:
+            existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+            r.already_imported = existing is not None
+        return {"results": [r.to_dict() for r in eu_results], "total": len(eu_results)}
+
     from app.services.search_service import advanced_search
 
     if not any([keyword, doc_type, number, year, emitent, date_from, date_to]):
@@ -135,6 +159,57 @@ def get_emitents(q: str = ""):
     """Autocomplete emitent (issuer) names."""
     from app.services.filter_options import search_emitents
     return {"emitents": search_emitents(q)}
+
+
+@router.get("/eu/search")
+def eu_search(
+    keyword: str | None = None,
+    doc_type: str | None = None,
+    year: str | None = None,
+    number: str | None = None,
+    in_force_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Search EU legislation via CELLAR SPARQL."""
+    from app.services.eu_cellar_service import search_eu_legislation
+    results = search_eu_legislation(
+        keyword=keyword, doc_type=doc_type, year=year,
+        number=number, in_force_only=in_force_only,
+    )
+    for r in results:
+        existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+        r.already_imported = existing is not None
+    return [r.to_dict() for r in results]
+
+
+@router.post("/eu/import")
+def eu_import(req: EUImportRequest, db: Session = Depends(get_db)):
+    """Import an EU law by CELEX number."""
+    from app.services.eu_cellar_service import import_eu_law
+    existing = db.query(Law).filter(Law.celex_number == req.celex_number).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Already imported as law_id={existing.id}")
+    try:
+        result = import_eu_law(db, req.celex_number, import_history=req.import_history)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.error(f"EU import failed for {req.celex_number}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/eu/filter-options")
+def eu_filter_options():
+    """Return available EU document type filters."""
+    return {
+        "doc_types": [
+            {"value": "directive", "label": "Directive"},
+            {"value": "regulation", "label": "Regulation"},
+            {"value": "eu_decision", "label": "Decision"},
+            {"value": "treaty", "label": "Treaty"},
+        ]
+    }
 
 
 @router.post("/import")
