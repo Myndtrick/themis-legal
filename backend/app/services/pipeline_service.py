@@ -378,6 +378,8 @@ def _derive_final_confidence(
     missing_primary: bool,
     has_stale_versions: bool,
     citation_validation: dict,
+    governing_norm_incomplete: bool = False,
+    uncertainty_sources: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Derive final confidence from all pipeline signals. Returns (confidence, reason)."""
 
@@ -397,6 +399,10 @@ def _derive_final_confidence(
         if any(l == "UNCERTAIN" for l in levels):
             return "LOW", "Legal analysis has uncertain conditions"
 
+    # Rule 3.5: Governing norm missing for primary issue
+    if governing_norm_incomplete:
+        return "LOW", "Governing norm for primary issue not found"
+
     # Start with Claude's assessment, then cap downward
     CONF_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
     confidence = claude_confidence
@@ -409,6 +415,26 @@ def _derive_final_confidence(
             if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
                 confidence = "MEDIUM"
                 reason = "Legal analysis has conditional conclusions"
+
+    # Rule 4.5: LIBRARY_GAP caps at MEDIUM
+    if uncertainty_sources:
+        library_gaps = [u for u in uncertainty_sources if u.get("type") == "LIBRARY_GAP"]
+        if library_gaps:
+            if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+                confidence = "MEDIUM"
+                reason = f"Library gap: {library_gaps[0].get('detail', 'missing provision')}"
+
+    # Rule 4.6: Majority conditions UNKNOWN caps at MEDIUM
+    if rl_rap_issues:
+        for issue in rl_rap_issues:
+            summary = issue.get("subsumption_summary") or {}
+            total = summary.get("total_conditions", 0)
+            unknown = summary.get("unknown", 0)
+            if total > 0 and unknown > total / 2:
+                if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+                    confidence = "MEDIUM"
+                    reason = "Majority of legal conditions could not be evaluated"
+                break
 
     # Rule 5: Primary not from DB
     if not primary_from_db:
@@ -826,14 +852,22 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
     ]
     has_stale = bool(state.get("stale_versions") or stale_laws_in_use)
 
+    # Aggregate uncertainty sources from RL-RAP
+    rl_rap_issues = (state.get("rl_rap_output") or {}).get("issues", [])
+    all_uncertainty_sources = []
+    for issue in rl_rap_issues:
+        all_uncertainty_sources.extend(issue.get("uncertainty_sources", []))
+
     state["confidence"], state["confidence_reason"] = _derive_final_confidence(
         claude_confidence=state.get("claude_confidence", "MEDIUM"),
-        rl_rap_issues=(state.get("rl_rap_output") or {}).get("issues", []),
+        rl_rap_issues=rl_rap_issues,
         has_articles=bool(retrieved),
         primary_from_db=primary_from_db,
         missing_primary=missing_primary,
         has_stale_versions=has_stale,
         citation_validation=state.get("citation_validation", {"downgraded": 0, "total_db": 0}),
+        governing_norm_incomplete=state.get("governing_norm_incomplete", False),
+        uncertainty_sources=all_uncertainty_sources,
     )
 
     return state
