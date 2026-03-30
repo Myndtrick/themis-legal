@@ -26,11 +26,19 @@ _RECITAL_NUM_RE = re.compile(r"^\((\d+)\)")
 
 
 def parse_eu_xhtml(html: str) -> dict:
-    """Parse EUR-Lex XHTML and return structured document data."""
+    """Parse EUR-Lex XHTML and return structured document data.
+
+    Handles two EUR-Lex formats:
+    - Modern (post-2012): eli-container with eli-subdivision divs, oj-* CSS classes
+    - Legacy (pre-2012): flat <p> tags with ti-art, normal, ti-section-1 classes (no oj- prefix)
+    """
     soup = BeautifulSoup(html, "html.parser")
 
     container = soup.find("div", class_="eli-container")
     if not container:
+        # Try legacy format
+        if soup.find("p", class_="ti-art"):
+            return _parse_legacy_format(soup)
         return _empty_result()
 
     title = _extract_title(container)
@@ -495,4 +503,229 @@ def _parse_annex(anx_div: Tag) -> dict:
         "annex_id": anx_id,
         "title": title_text,
         "text": "\n".join(text_parts),
+    }
+
+
+# --- Legacy format parser (pre-2012 EUR-Lex, no eli-container) ---
+
+_LEGACY_ART_RE = re.compile(
+    r"(?:Article|Articolul|Artikel|Articolo|Artículo)\s+(\d+[a-z]?)", re.IGNORECASE
+)
+_LEGACY_TITLE_RE = re.compile(
+    r"(?:TITLUL|TITLE|TITRE)\s+([IVXLCDM]+)", re.IGNORECASE
+)
+_LEGACY_CHAPTER_RE = re.compile(
+    r"(?:CAPITOLUL|CHAPTER|CHAPITRE)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE
+)
+_LEGACY_SECTION_RE = re.compile(
+    r"(?:Secțiunea|Section|Sektion)\s+(\d+)", re.IGNORECASE
+)
+
+
+def _parse_legacy_format(soup: BeautifulSoup) -> dict:
+    """Parse the legacy EUR-Lex format (flat <p> tags, no eli-container).
+
+    Used for older regulations (pre-2012) where:
+    - Articles are <p class="ti-art">
+    - Subtitles are <p class="sti-art">
+    - Paragraphs are <p class="normal">
+    - Sub-clauses are <table> elements
+    - Chapters are <p class="ti-section-1"> / <p class="ti-section-2">
+    """
+    # Extract title
+    title_parts = []
+    for p in soup.find_all("p", class_="doc-ti"):
+        t = p.get_text(strip=True)
+        if t:
+            title_parts.append(t)
+    title = " ".join(title_parts)
+
+    # Walk all elements in document order to build structure
+    body = soup.find("body") or soup
+    articles = {}
+    structure_stack = []  # [(type, id, title, articles)]
+    current_title = None
+    current_chapter = None
+    current_section = None
+
+    # Collect all markers in order
+    markers = body.find_all("p", class_=["ti-section-1", "ti-section-2", "ti-art", "sti-art", "normal"])
+
+    i = 0
+    while i < len(markers):
+        p = markers[i]
+        cls = p.get("class", [])
+        text = p.get_text(strip=True)
+
+        if "ti-section-1" in cls:
+            # Peek at next element for the section title (ti-section-2)
+            section_title = ""
+            if i + 1 < len(markers) and "ti-section-2" in markers[i + 1].get("class", []):
+                section_title = markers[i + 1].get_text(strip=True)
+                i += 1
+
+            title_match = _LEGACY_TITLE_RE.match(text)
+            chapter_match = _LEGACY_CHAPTER_RE.match(text)
+            section_match = _LEGACY_SECTION_RE.match(text)
+
+            if title_match:
+                current_title = {
+                    "title_id": title_match.group(1),
+                    "title": section_title,
+                    "chapters": [],
+                    "articles": [],
+                }
+                structure_stack.append(("title", current_title))
+                current_chapter = None
+                current_section = None
+            elif chapter_match:
+                current_chapter = {
+                    "chapter_id": chapter_match.group(1),
+                    "title": section_title,
+                    "description": None,
+                    "sections": [],
+                    "articles": [],
+                }
+                if current_title:
+                    current_title["chapters"].append(current_chapter)
+                else:
+                    structure_stack.append(("chapter", current_chapter))
+                current_section = None
+            elif section_match:
+                current_section = {
+                    "section_id": section_match.group(1),
+                    "title": section_title,
+                    "description": None,
+                    "articles": [],
+                    "subsections": [],
+                }
+                if current_chapter:
+                    current_chapter["sections"].append(current_section)
+
+            i += 1
+            continue
+
+        if "ti-section-2" in cls:
+            # Already consumed above, skip
+            i += 1
+            continue
+
+        if "ti-art" in cls:
+            art_match = _LEGACY_ART_RE.match(text)
+            if art_match:
+                art_num = art_match.group(1)
+
+                # Get subtitle (sti-art)
+                article_title = ""
+                if i + 1 < len(markers) and "sti-art" in markers[i + 1].get("class", []):
+                    article_title = markers[i + 1].get_text(strip=True)
+                    i += 1
+
+                # Collect paragraphs and tables until next article or section heading
+                paragraphs = []
+                current_para_text = ""
+                current_para_label = ""
+                current_subs = []
+
+                j = i + 1
+                while j < len(markers):
+                    next_p = markers[j]
+                    next_cls = next_p.get("class", [])
+                    if "ti-art" in next_cls or "ti-section-1" in next_cls:
+                        break
+                    if "sti-art" in next_cls:
+                        j += 1
+                        continue
+                    if "normal" in next_cls:
+                        next_text = next_p.get_text(strip=True)
+                        para_match = _PARA_LABEL_RE.match(next_text)
+                        if para_match:
+                            # Save previous paragraph
+                            if current_para_text or current_subs:
+                                paragraphs.append({
+                                    "label": current_para_label,
+                                    "text": current_para_text,
+                                    "subparagraphs": current_subs,
+                                })
+                            current_para_label = f"({para_match.group(1)})"
+                            current_para_text = next_text
+                            current_subs = []
+
+                            # Collect table sub-clauses after this <p>
+                            sibling = next_p.find_next_sibling()
+                            while sibling and isinstance(sibling, Tag) and sibling.name == "table":
+                                tds = sibling.find_all("td")
+                                if len(tds) >= 2:
+                                    sub_label = tds[0].get_text(strip=True)
+                                    sub_text = tds[1].get_text(strip=True)
+                                    current_subs.append({"label": sub_label, "text": sub_text})
+                                sibling = sibling.find_next_sibling()
+                        else:
+                            if not current_para_text:
+                                current_para_text = next_text
+                                current_para_label = ""
+                            else:
+                                current_para_text += " " + next_text
+                    j += 1
+
+                # Save last paragraph
+                if current_para_text or current_subs:
+                    paragraphs.append({
+                        "label": current_para_label,
+                        "text": current_para_text,
+                        "subparagraphs": current_subs,
+                    })
+
+                full_text = _build_full_text(art_num, article_title, paragraphs)
+                articles[art_num] = {
+                    "article_id": art_num,
+                    "label": art_num,
+                    "article_title": article_title,
+                    "full_text": full_text,
+                    "paragraphs": paragraphs,
+                    "notes": [],
+                }
+
+                # Add to current structural element
+                target = current_section or current_chapter or current_title
+                if target:
+                    target["articles"].append(art_num)
+
+            i += 1
+            continue
+
+        i += 1
+
+    # Build books_data
+    titles_list = []
+    chapters_list = []
+    for stype, sdata in structure_stack:
+        if stype == "title":
+            titles_list.append(sdata)
+        elif stype == "chapter":
+            chapters_list.append(sdata)
+
+    if titles_list:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": [], "titles": titles_list,
+        }]
+    elif chapters_list:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": [],
+            "titles": [{"title_id": "default", "title": None, "chapters": chapters_list, "articles": []}],
+        }]
+    else:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": list(articles.keys()), "titles": [],
+        }] if articles else []
+
+    return {
+        "title": title,
+        "preamble": {"citations": [], "recitals": []},
+        "books_data": books_data,
+        "articles": articles,
+        "annexes": [],
     }
