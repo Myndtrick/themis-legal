@@ -382,12 +382,17 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
             try:
                 time.sleep(rate_limit_delay)
                 cv_content, cv_lang = fetch_eu_content(cv["cellar_uri"], cv["celex"])
+                # Skip versions with empty content (CELLAR returns empty XHTML for some)
+                if not cv_content.get("articles"):
+                    logger.info(f"Skipping consolidated version {cv['celex']} — no article content")
+                    continue
                 _store_eu_version(db, law, cv["celex"], cv["date"], cv_content, cv_lang, is_current=False)
                 versions_imported += 1
             except Exception as e:
                 logger.warning(f"Failed to import consolidated version {cv['celex']}: {e}")
 
-        _update_current_version(db, law)
+        # Only update current if a consolidated version has content; otherwise keep base
+        _update_current_version_with_content(db, law)
 
     db.commit()
 
@@ -478,6 +483,22 @@ def _update_current_version(db, law):
     versions = db.query(LawVersion).filter_by(law_id=law.id).order_by(LawVersion.date_in_force.desc()).all()
     for i, v in enumerate(versions):
         v.is_current = (i == 0)
+
+
+def _update_current_version_with_content(db, law):
+    """Mark the newest version WITH articles as current. Falls back to newest overall."""
+    versions = db.query(LawVersion).filter_by(law_id=law.id).order_by(LawVersion.date_in_force.desc()).all()
+    # First, try to find newest version that has articles
+    best = None
+    for v in versions:
+        article_count = db.query(Article).filter_by(law_version_id=v.id).count()
+        if article_count > 0:
+            best = v
+            break
+    if not best and versions:
+        best = versions[0]
+    for v in versions:
+        v.is_current = (v.id == best.id) if best else False
 
 
 def _build_eli_url(doc_type, parsed):
