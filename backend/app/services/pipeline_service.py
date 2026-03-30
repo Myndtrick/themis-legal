@@ -203,6 +203,16 @@ def _build_step7_context(state: dict) -> str:
     parts.append(f"  Output mode: {state.get('output_mode', 'qa')}")
     parts.append(f"  Core issue: {state.get('core_issue', '')}")
 
+    primary_target = state.get("primary_target")
+    if primary_target:
+        parts.append("\nPRIMARY TARGET:")
+        parts.append(f"  Actor: {primary_target.get('actor', 'unknown')}")
+        parts.append(f"  Concern: {primary_target.get('concern', 'unknown')}")
+        parts.append(f"  Primary issue: {primary_target.get('issue_id', 'unknown')}")
+
+    if state.get("governing_norm_incomplete"):
+        parts.append("\nGOVERNING_NORM_INCOMPLETE: The governing norm for the primary issue was not found. See analysis for details.")
+
     rl_rap = state.get("rl_rap_output")
 
     if rl_rap:
@@ -231,11 +241,28 @@ def _build_step7_context(state: dict) -> str:
             for oa in issue.get("operative_articles", []):
                 parts.append(f"    Operative article: {oa['article_ref']} — {oa.get('disposition', {}).get('modality', '')}")
 
-            parts.append("    Conditions:")
-            for c in issue.get("decomposed_conditions", []):
-                fact_refs = ", ".join(c.get("supporting_fact_ids", []))
-                parts.append(f"      {c['condition_id']}: {c['condition_text']} — {c['condition_status']}" +
-                           (f" ({fact_refs})" if fact_refs else ""))
+            # Legacy conditions format (fallback when no condition_table)
+            if not issue.get("condition_table") and issue.get("decomposed_conditions"):
+                parts.append("    Conditions:")
+                for c in issue.get("decomposed_conditions", []):
+                    fact_refs = ", ".join(c.get("supporting_fact_ids", []))
+                    parts.append(f"      {c['condition_id']}: {c['condition_text']} — {c['condition_status']}" +
+                               (f" ({fact_refs})" if fact_refs else ""))
+
+            # Condition table (new format)
+            if issue.get("condition_table"):
+                parts.append("    Condition table:")
+                for ct in issue["condition_table"]:
+                    parts.append(f"      {ct['condition_id']}: {ct['condition_text']} — {ct['status']}"
+                               + (f" (evidence: {ct['evidence']})" if ct.get("evidence") else "")
+                               + (f" [MISSING: {ct['missing_fact']}]" if ct.get("missing_fact") else ""))
+                summary = issue.get("subsumption_summary") or {}
+                if summary:
+                    parts.append(f"    Subsumption: {summary.get('satisfied', 0)} satisfied, "
+                               f"{summary.get('not_satisfied', 0)} not satisfied, "
+                               f"{summary.get('unknown', 0)} unknown → {summary.get('norm_applicable', '?')}")
+                    if summary.get("blocking_unknowns"):
+                        parts.append(f"    Blocking unknowns: {', '.join(summary['blocking_unknowns'])}")
 
             if issue.get("exceptions_checked"):
                 parts.append("    Exceptions checked:")
@@ -251,6 +278,17 @@ def _build_step7_context(state: dict) -> str:
                 parts.append(f"    Temporal risks: {', '.join(ta['temporal_risks'])}")
 
             parts.append(f"    Conclusion: {issue.get('conclusion', '')}")
+
+            # Governing norm status
+            gns = issue.get("governing_norm_status", {})
+            if gns.get("status") and gns["status"] != "PRESENT":
+                parts.append(f"    Governing norm: {gns['status']} — {gns.get('explanation', '')}")
+
+            # Uncertainty sources
+            if issue.get("uncertainty_sources"):
+                parts.append("    Uncertainty sources:")
+                for us in issue["uncertainty_sources"]:
+                    parts.append(f"      {us['type']}: {us['detail']} (impact: {us.get('impact', '')})")
 
             if issue.get("missing_facts"):
                 parts.append(f"    Missing facts: {'; '.join(issue['missing_facts'])}")
