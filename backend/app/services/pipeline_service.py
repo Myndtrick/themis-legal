@@ -1277,6 +1277,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     state["applicable_laws"] = parsed.get("applicable_laws", [])
     state["events"] = parsed.get("events", [])
     state["legal_issues"] = parsed.get("legal_issues", [])
+    state["primary_target"] = parsed.get("primary_target")
 
     # Parse complexity (default to STANDARD if missing)
     state["complexity"] = parsed.get("complexity", "STANDARD")
