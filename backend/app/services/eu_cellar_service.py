@@ -135,10 +135,12 @@ def build_search_sparql(
         filters.append(f'FILTER(CONTAINS(LCASE(?title), LCASE("{escaped}")))')
 
     if year:
-        filters.append(f'FILTER(STRSTARTS(?date, "{year}"))')
+        filters.append(f'FILTER(CONTAINS(STR(?celex), "{year}"))')
 
     if number:
-        filters.append(f'FILTER(CONTAINS(?celex, "{number}"))')
+        # Pad to 4 digits for CELEX matching (679 → 0679)
+        padded = number.zfill(4)
+        filters.append(f'FILTER(CONTAINS(STR(?celex), "{padded}"))')
 
     if in_force_only:
         filters.append('FILTER(?inForce = "true"^^xsd:boolean)')
