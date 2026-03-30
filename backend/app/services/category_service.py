@@ -573,6 +573,7 @@ def get_library_data(db: Session) -> dict:
             "version_count": len(law.versions), "status": law.status,
             "category_id": law.category_id, "category_group_slug": group_slug,
             "category_confidence": law.category_confidence,
+            "source": getattr(law, "source", "ro"),
             "current_version": {"id": current.id, "state": current.state} if current else None,
         })
 

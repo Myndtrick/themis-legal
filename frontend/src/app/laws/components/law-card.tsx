@@ -82,6 +82,20 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
           )}
         </div>
         <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+          {law.source === "eu" ? (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+              EU
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+              RO
+            </span>
+          )}
+          {law.language === "en" && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              EN
+            </span>
+          )}
           {state && (
             <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}>
               {state}

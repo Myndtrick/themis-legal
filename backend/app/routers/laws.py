@@ -422,6 +422,7 @@ def list_laws(db: Session = Depends(get_db)):
             "category_id": law.category_id,
             "category_group_slug": law.category.group.slug if law.category else None,
             "category_confidence": law.category_confidence,
+            "source": getattr(law, "source", "ro"),
             "unimported_version_count": db.query(KnownVersion).filter(
                 KnownVersion.law_id == law.id,
                 KnownVersion.ver_id.notin_(
