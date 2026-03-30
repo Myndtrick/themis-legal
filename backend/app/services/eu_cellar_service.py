@@ -414,6 +414,7 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
 
 
 def _store_eu_version(db, law, ver_celex, date_str, content, language, is_current):
+    """Store a single EU law version with full hierarchy from parsed content."""
     date_in_force = None
     if date_str:
         try:
@@ -428,55 +429,163 @@ def _store_eu_version(db, law, ver_celex, date_str, content, language, is_curren
     db.add(version)
     db.flush()
 
-    chapter_element_map = {}
-    for idx, ch in enumerate(content.get("structure", [])):
-        se = StructuralElement(
-            law_version_id=version.id, element_type="chapter",
-            number=ch["number"], title=ch.get("title", ""), order_index=idx,
-        )
-        db.add(se)
-        db.flush()
-        chapter_element_map[ch["number"]] = se
+    articles = content.get("articles", {})
+    order_counter = [0]  # mutable counter for ordering
+    stored_article_ids = set()
 
-    for idx, art_data in enumerate(content.get("articles", [])):
-        parent_se = chapter_element_map.get(art_data.get("chapter_number"))
-        article = Article(
-            law_version_id=version.id,
-            structural_element_id=parent_se.id if parent_se else None,
-            article_number=f"Art. {art_data['number']}",
-            label=art_data.get("label", ""),
-            full_text=art_data.get("full_text", ""),
-            order_index=idx,
-        )
-        db.add(article)
-        db.flush()
+    # Store preamble as special article
+    preamble = content.get("preamble", {})
+    if preamble.get("citations") or preamble.get("recitals"):
+        _store_preamble_article(db, version, preamble)
 
-        for p_idx, para in enumerate(art_data.get("paragraphs", [])):
-            paragraph = Paragraph(
-                article_id=article.id, paragraph_number=para.get("number", ""),
-                text=para.get("text", ""), order_index=p_idx,
-            )
-            db.add(paragraph)
-            db.flush()
-
-            for s_idx, sub in enumerate(para.get("subparagraphs", [])):
-                subparagraph = Subparagraph(
-                    paragraph_id=paragraph.id, label=sub.get("label", ""),
-                    text=sub.get("text", ""), order_index=s_idx,
+    # Walk hierarchy from books_data
+    for book_data in content.get("books_data", []):
+        for title_data in book_data.get("titles", []):
+            title_el = None
+            if title_data.get("title_id") and title_data["title_id"] != "default":
+                title_el = StructuralElement(
+                    law_version_id=version.id, element_type="title",
+                    number=title_data["title_id"], title=title_data.get("title"),
+                    order_index=order_counter[0],
                 )
-                db.add(subparagraph)
+                db.add(title_el)
+                db.flush()
+                order_counter[0] += 1
 
+            # Articles directly in title
+            for art_id in title_data.get("articles", []):
+                if art_id in articles and art_id not in stored_article_ids:
+                    _store_eu_article(db, version, articles[art_id], title_el, order_counter)
+                    stored_article_ids.add(art_id)
+
+            for ch_data in title_data.get("chapters", []):
+                ch_el = StructuralElement(
+                    law_version_id=version.id,
+                    parent_id=title_el.id if title_el else None,
+                    element_type="chapter", number=ch_data["chapter_id"],
+                    title=ch_data.get("title"), order_index=order_counter[0],
+                )
+                db.add(ch_el)
+                db.flush()
+                order_counter[0] += 1
+
+                # Articles directly in chapter
+                for art_id in ch_data.get("articles", []):
+                    if art_id in articles and art_id not in stored_article_ids:
+                        _store_eu_article(db, version, articles[art_id], ch_el, order_counter)
+                        stored_article_ids.add(art_id)
+
+                for sec_data in ch_data.get("sections", []):
+                    sec_el = StructuralElement(
+                        law_version_id=version.id, parent_id=ch_el.id,
+                        element_type="section", number=sec_data["section_id"],
+                        title=sec_data.get("title"), order_index=order_counter[0],
+                    )
+                    db.add(sec_el)
+                    db.flush()
+                    order_counter[0] += 1
+
+                    for art_id in sec_data.get("articles", []):
+                        if art_id in articles and art_id not in stored_article_ids:
+                            _store_eu_article(db, version, articles[art_id], sec_el, order_counter)
+                            stored_article_ids.add(art_id)
+
+        # Articles directly in book
+        for art_id in book_data.get("articles", []):
+            if art_id in articles and art_id not in stored_article_ids:
+                _store_eu_article(db, version, articles[art_id], None, order_counter)
+                stored_article_ids.add(art_id)
+
+    # Store any articles not in the hierarchy
+    for art_id, art_data in articles.items():
+        if art_id not in stored_article_ids:
+            _store_eu_article(db, version, art_data, None, order_counter)
+
+    # Store annexes
     for idx, annex_data in enumerate(content.get("annexes", [])):
         annex = Annex(
             law_version_id=version.id,
-            source_id=annex_data.get("source_id", f"annex_{idx}"),
+            source_id=annex_data.get("annex_id", f"annex_{idx}"),
             title=annex_data.get("title", ""),
-            full_text=annex_data.get("full_text", ""),
+            full_text=annex_data.get("text", ""),
             order_index=idx,
         )
         db.add(annex)
 
     return version
+
+
+def _store_eu_article(db, version, art_data, parent_el, order_counter):
+    """Store an EU article with proper article_number and label fields."""
+    full_text = art_data.get("full_text", "")
+    is_abrogated = bool(re.search(r"^\s*\(?\s*[Aa]brogat", full_text[:200]))
+
+    article = Article(
+        law_version_id=version.id,
+        structural_element_id=parent_el.id if parent_el else None,
+        article_number=art_data.get("label", ""),  # "Art. 1"
+        label=art_data.get("article_title") or art_data.get("label", ""),
+        full_text=full_text,
+        order_index=order_counter[0],
+        is_abrogated=is_abrogated,
+    )
+    db.add(article)
+    db.flush()
+    order_counter[0] += 1
+
+    for p_idx, para in enumerate(art_data.get("paragraphs", [])):
+        paragraph = Paragraph(
+            article_id=article.id,
+            paragraph_number=para.get("label", "").strip("()") or str(p_idx + 1),
+            label=para.get("label", ""),
+            text=para.get("text", ""),
+            order_index=p_idx,
+        )
+        db.add(paragraph)
+        db.flush()
+
+        for s_idx, sub in enumerate(para.get("subparagraphs", [])):
+            subparagraph = Subparagraph(
+                paragraph_id=paragraph.id,
+                label=sub.get("label", ""),
+                text=sub.get("text", ""),
+                order_index=s_idx,
+            )
+            db.add(subparagraph)
+
+
+def _store_preamble_article(db, version, preamble):
+    """Store preamble as a special article with order_index=-1."""
+    paragraphs_data = []
+    for cit in preamble.get("citations", []):
+        paragraphs_data.append({"label": cit.get("number", ""), "text": cit.get("text", "")})
+    for rct in preamble.get("recitals", []):
+        paragraphs_data.append({"label": f"({rct['number']})", "text": rct.get("text", "")})
+
+    full_parts = ["Preambul"]
+    for p in paragraphs_data:
+        full_parts.append(p["text"])
+
+    article = Article(
+        law_version_id=version.id,
+        structural_element_id=None,
+        article_number="Preambul",
+        label="Preambul",
+        full_text="\n".join(full_parts),
+        order_index=-1,
+    )
+    db.add(article)
+    db.flush()
+
+    for p_idx, para in enumerate(paragraphs_data):
+        paragraph = Paragraph(
+            article_id=article.id,
+            paragraph_number=para.get("label", "").strip("()") or str(p_idx + 1),
+            label=para.get("label", ""),
+            text=para.get("text", ""),
+            order_index=p_idx,
+        )
+        db.add(paragraph)
 
 
 def _update_current_version(db, law):

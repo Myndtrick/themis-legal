@@ -64,10 +64,17 @@ def test_import_eu_law_basic(mock_meta, mock_content, mock_consol):
     assert version.is_current is True
 
     articles = db.query(Article).filter_by(law_version_id=version.id).all()
-    assert len(articles) >= 3
+    # 3 regular articles + 1 preamble article
+    assert len(articles) >= 4
 
-    chapters = db.query(StructuralElement).filter_by(law_version_id=version.id).all()
-    assert len(chapters) >= 2
+    # Check preamble article exists
+    preamble_arts = [a for a in articles if a.article_number == "Preambul"]
+    assert len(preamble_arts) == 1
+    assert preamble_arts[0].order_index == -1
+
+    structural = db.query(StructuralElement).filter_by(law_version_id=version.id).all()
+    # At least 2 chapters (I, II) from the GDPR fixture
+    assert len(structural) >= 2
 
 
 @patch("app.services.eu_cellar_service.fetch_consolidated_versions", return_value=[])
