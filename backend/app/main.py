@@ -65,8 +65,10 @@ async def lifespan(app: FastAPI):
 
         seed_defaults(db)
         sync_prompts_from_files(db)
-        from app.services.category_service import seed_categories, backfill_law_mapping_fields
+        from app.services.category_service import seed_categories, backfill_law_mapping_fields, ensure_eu_decision_category, seed_eu_celex_mappings
         seed_categories(db)
+        ensure_eu_decision_category(db)
+        seed_eu_celex_mappings(db)
         backfill_law_mapping_fields(db)
         from app.services.bm25_service import ensure_fts_index
         ensure_fts_index(db)
