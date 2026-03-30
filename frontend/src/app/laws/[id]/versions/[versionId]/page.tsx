@@ -74,24 +74,22 @@ export default async function VersionDetailPage(
 
       <LawToolbar />
 
-      {version.structure.length > 0 && (
-        <div className="space-y-6">
-          {version.structure.map((element) => (
-            <StructuralSection key={element.id} element={element} />
-          ))}
-        </div>
-      )}
-
+      {/* Preamble and other orphan articles before structure */}
       {orphanCards.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">
-            Articles
-          </h3>
+        <div className="space-y-3 mb-6">
           {orphanCards.length > 40 ? (
             <ArticleList>{orphanCards}</ArticleList>
           ) : (
             orphanCards
           )}
+        </div>
+      )}
+
+      {version.structure.length > 0 && (
+        <div className="space-y-6">
+          {version.structure.map((element) => (
+            <StructuralSection key={element.id} element={element} />
+          ))}
         </div>
       )}
 
