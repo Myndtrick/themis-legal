@@ -305,12 +305,20 @@ def _build_step7_context(state: dict) -> str:
 
 
 def _parse_step6_8_output(raw: str) -> dict | None:
-    """Parse Step 6.8 JSON output. Returns None if malformed."""
+    """Parse Step 6.8 JSON output with backward-compatible defaults for new fields."""
     try:
         parsed = _extract_json(raw)
-        if parsed and "issues" in parsed:
-            return parsed
-        return None
+        if not parsed or "issues" not in parsed:
+            return None
+        # Apply backward-compatible defaults for new fields
+        for issue in parsed.get("issues", []):
+            if "governing_norm_status" not in issue:
+                issue["governing_norm_status"] = {"status": "PRESENT"}
+            if "uncertainty_sources" not in issue:
+                issue["uncertainty_sources"] = []
+            if "subsumption_summary" not in issue:
+                issue["subsumption_summary"] = None
+        return parsed
     except Exception:
         return None
 
