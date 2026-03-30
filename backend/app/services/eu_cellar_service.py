@@ -95,7 +95,21 @@ class EUSearchResult:
         return asdict(self)
 
 
-# --- Task 8: SPARQL Query Builder and Search ---
+# Common EU law abbreviations → title keywords for SPARQL title search
+_EU_ALIASES = {
+    "gdpr": "general data protection regulation",
+    "ai act": "artificial intelligence",
+    "dsa": "digital services act",
+    "dma": "digital markets act",
+    "nis2": "high common level of cybersecurity",
+    "nis 2": "high common level of cybersecurity",
+    "mdr": "medical devices regulation",
+    "mifid": "markets in financial instruments",
+    "psd2": "payment services",
+    "emir": "otc derivatives",
+    "reach": "registration, evaluation, authorisation",
+    "rohs": "restriction of the use of certain hazardous substances",
+}
 
 
 def build_search_sparql(
@@ -156,6 +170,11 @@ def search_eu_legislation(
     limit: int = 50,
 ) -> list[EUSearchResult]:
     """Search EU legislation via CELLAR SPARQL endpoint."""
+    # Expand common abbreviations
+    if keyword:
+        expanded = _EU_ALIASES.get(keyword.strip().lower())
+        if expanded:
+            keyword = expanded
     for lang in ("RON", "ENG"):
         sparql = build_search_sparql(
             keyword=keyword, doc_type=doc_type, year=year, number=number,
