@@ -124,21 +124,29 @@ def build_search_sparql(
     """Build a SPARQL query to search EU legislation via CELLAR."""
     filters = []
 
-    if doc_type and doc_type in EU_DOC_TYPE_TO_RESOURCE:
+    # When year+number are provided, CELEX prefix is precise enough — skip type filter
+    # to avoid SPARQL performance issues with multi-join queries
+    has_celex_filter = bool(year or number)
+    if doc_type and doc_type in EU_DOC_TYPE_TO_RESOURCE and not has_celex_filter:
         type_clause = f"?work cdm:work_has_resource-type <{EU_DOC_TYPE_TO_RESOURCE[doc_type]}> ."
-    else:
+    elif not has_celex_filter:
         type_values = " ".join(f"<{uri}>" for uri in EU_DOC_TYPE_TO_RESOURCE.values())
         type_clause = f"VALUES ?type {{ {type_values} }}\n  ?work cdm:work_has_resource-type ?type ."
+    else:
+        type_clause = ""
 
     if keyword:
         escaped = keyword.replace('"', '\\"')
         filters.append(f'FILTER(CONTAINS(LCASE(?title), LCASE("{escaped}")))')
 
-    if year:
-        filters.append(f'FILTER(CONTAINS(STR(?celex), "{year}"))')
-
-    if number:
-        # Pad to 4 digits for CELEX matching (679 → 0679)
+    if year and number:
+        # When both provided, construct precise CELEX prefix: 3{year}{type}{number}
+        padded = number.zfill(4)
+        # Use STRSTARTS with year prefix + CONTAINS for number (more efficient)
+        filters.append(f'FILTER(STRSTARTS(STR(?celex), "3{year}") && CONTAINS(STR(?celex), "{padded}"))')
+    elif year:
+        filters.append(f'FILTER(STRSTARTS(STR(?celex), "3{year}"))')
+    elif number:
         padded = number.zfill(4)
         filters.append(f'FILTER(CONTAINS(STR(?celex), "{padded}"))')
 
