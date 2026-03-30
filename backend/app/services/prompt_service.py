@@ -20,10 +20,6 @@ PROMPT_MANIFEST = {
         "file": "LA-S2-date-extractor.txt",
         "desc": "Step 2 — Date Extractor",
     },
-"LA-S3": {
-        "file": "LA-S3-law-identifier.txt",
-        "desc": "Step 3 — Law Identifier",
-    },
     "LA-S5": {
         "file": "LA-S5-import-request.txt",
         "desc": "Step 5 — Import Request Generator",
@@ -63,10 +59,6 @@ PROMPT_MANIFEST = {
     "LA-S7-M5": {
         "file": "LA-S7-M5-answer-checklist.txt",
         "desc": "Step 7 — Answer Generator (Mode 5 Checklist)",
-    },
-    "LA-CONF": {
-        "file": "LA-CONF-confidence.txt",
-        "desc": "Confidence Scorer",
     },
     "LA-CONFLICT": {
         "file": "LA-CONFLICT-conflict-resolver.txt",
