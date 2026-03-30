@@ -29,22 +29,43 @@ def _safe_replace_year(d: datetime.date, year: int) -> datetime.date:
 
 
 def extract_date_local(question: str, today: str) -> dict:
-    """Extract a primary date from the question using regex.
+    """Extract dates from the question using regex.
 
     Returns a dict matching the Claude date extractor output schema.
+    Finds ALL dates in the question (not just the first) so comparison
+    questions are handled correctly.
     Always returns a result (falls back to today's date).
     """
     today_date = datetime.date.fromisoformat(today)
+    dates_found: list[dict] = []
 
-    # 1. Full date: DD.MM.YYYY
-    m = _FULL_DATE.search(question)
-    if m:
+    # 1. Full dates: DD.MM.YYYY — find ALL occurrences
+    for m in _FULL_DATE.finditer(question):
         day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
         try:
             d = datetime.date(year, month, day)
-            return _result(d.isoformat(), "explicit", m.group(0))
+            dates_found.append({
+                "date": d.isoformat(),
+                "type": "explicit",
+                "context": "extracted locally",
+                "source_text": m.group(0),
+            })
         except ValueError:
             pass
+
+    if dates_found:
+        # Use the latest date as primary (matters for currency check:
+        # if the latest explicit date < today, all dates are historical)
+        primary = max(dates_found, key=lambda x: x["date"])
+        return {
+            "primary_date": primary["date"],
+            "dates_found": dates_found,
+            "date_logic": (
+                f"Local extraction: {len(dates_found)} explicit date(s) found — "
+                + ", ".join(d["source_text"] for d in dates_found)
+            ),
+            "needs_clarification": False,
+        }
 
     # 2. "in 2023", "din anul 2020", etc. (requires a date-introducing word)
     m = _YEAR_PHRASE.search(question)

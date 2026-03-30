@@ -119,7 +119,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Step 6.8 helpers
+# Step 12 helpers
 # ---------------------------------------------------------------------------
 
 
@@ -293,18 +293,31 @@ def _build_step7_context(state: dict) -> str:
             if issue.get("missing_facts"):
                 parts.append(f"    Missing facts: {'; '.join(issue['missing_facts'])}")
 
-        # Supporting article texts (operative only)
+        # Supporting article texts — operative first, then remaining
         operative_refs = set()
         for issue in rl_rap.get("issues", []):
             for oa in issue.get("operative_articles", []):
                 operative_refs.add(oa.get("article_ref", ""))
 
-        all_articles = state.get("retrieved_articles", [])
-        parts.append("\nSUPPORTING ARTICLE TEXTS:")
+        all_articles = [a for a in state.get("retrieved_articles", []) if a]
+        operative_articles = []
+        other_articles = []
         for art in all_articles:
             art_ref = f"art.{art.get('article_number', '')}"
-            matched = any(art_ref in ref for ref in operative_refs)
-            if matched:
+            if any(art_ref in ref for ref in operative_refs):
+                operative_articles.append(art)
+            else:
+                other_articles.append(art)
+
+        parts.append("\nOPERATIVE ARTICLE TEXTS:")
+        for art in operative_articles:
+            law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
+            parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
+            parts.append(f"  {art.get('text', '')}")
+
+        if other_articles:
+            parts.append("\nADDITIONAL RETRIEVED ARTICLES (not flagged as operative by reasoning step — review for missed provisions):")
+            for art in other_articles:
                 law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
                 parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
                 parts.append(f"  {art.get('text', '')}")
@@ -499,7 +512,7 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
             state["flags"].append(f"{mid}: not analyzed by reasoning step")
 
         log_step(
-            db, state["run_id"], "legal_reasoning", 68, "done", duration,
+            db, state["run_id"], "legal_reasoning", 12, "done", duration,
             prompt_id="LA-S6.8",
             prompt_version=prompt_ver,
             output_summary=f"Analyzed {len(parsed['issues'])} issues",
@@ -513,7 +526,7 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
         state["flags"].append("Step 6.8 failed to produce valid analysis — falling back to direct answer generation")
         logger.warning(f"Step 6.8 failed to parse output for run {state['run_id']}")
         log_step(
-            db, state["run_id"], "legal_reasoning", 68, "done", duration,
+            db, state["run_id"], "legal_reasoning", 12, "done", duration,
             output_summary="Failed to parse — fallback mode",
             warnings=["Malformed RL-RAP output"],
         )
@@ -835,36 +848,36 @@ def _flag_missing_laws_from_answer(state: dict, db: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shared Steps 4-7.5 logic (used by both run_pipeline and resume_pipeline)
+# Shared Steps 7-15 logic (used by both run_pipeline and resume_pipeline)
 # ---------------------------------------------------------------------------
 
 
 def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[dict, None, dict]:
-    """Shared pipeline logic for Steps 4 through 7.5. Used by both run_pipeline and resume_pipeline.
+    """Shared pipeline logic for Steps 7 through 15. Used by both run_pipeline and resume_pipeline.
     Yields SSE events. Returns final state."""
 
     if state.get("complexity") == "SIMPLE":
         # === FAST PATH ===
-        # Step 4: Reduced retrieval (15+5 instead of 30+15)
-        yield _step_event(4, "hybrid_retrieval", "running")
+        # Step 7: Reduced retrieval (15+5 instead of 30+15)
+        yield _step_event(7, "hybrid_retrieval", "running")
         t0 = time.time()
         state = _step4_hybrid_retrieval(state, db, tier_limits_override={
             "tier1_primary": 15,
             "tier2_secondary": 5,
         })
-        yield _step_event(4, "hybrid_retrieval", "done", {
+        yield _step_event(7, "hybrid_retrieval", "done", {
             "articles_found": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 6: Rerank to top 3
-        yield _step_event(6, "article_selection", "running")
+        # Step 9: Rerank to top 3
+        yield _step_event(9, "article_selection", "running")
         t0 = time.time()
         state = _step6_select_articles(state, db, top_k_override=3)
-        yield _step_event(6, "article_selection", "done", {
+        yield _step_event(9, "article_selection", "done", {
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
-        # Step 6.5: Late Relevance Gate
+        # Step 10: Late Relevance Gate
         gate_events, gate_result = _step6_5_relevance_gate(state, db)
         for evt in gate_events:
             yield evt
@@ -875,45 +888,45 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             state["_gate_triggered"] = True
             return state
 
-        # Step 7: Direct answer with simplified prompt
-        yield _step_event(8, "answer_generation", "running")
+        # Step 14: Direct answer with simplified prompt
+        yield _step_event(14, "answer_generation", "running")
         t0 = time.time()
         state["use_simple_prompt"] = True
         for event in _step7_answer_generation(state, db):
             yield event
-        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+        yield _step_event(14, "answer_generation", "done", duration=time.time() - t0)
 
-        # Step 7.5: Citation Validation
-        yield _step_event(85, "citation_validation", "running")
+        # Step 15: Citation Validation
+        yield _step_event(15, "citation_validation", "running")
         t0 = time.time()
         state = _step7_5_citation_validation(state, db)
-        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+        yield _step_event(15, "citation_validation", "done", duration=time.time() - t0)
 
     else:
         # === FULL PATH (STANDARD/COMPLEX) ===
-        # Step 4: Hybrid Retrieval
-        yield _step_event(4, "hybrid_retrieval", "running")
+        # Step 7: Hybrid Retrieval
+        yield _step_event(7, "hybrid_retrieval", "running")
         t0 = time.time()
         state = _step4_hybrid_retrieval(state, db)
-        yield _step_event(4, "hybrid_retrieval", "done", {
+        yield _step_event(7, "hybrid_retrieval", "done", {
             "articles_found": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 5: Graph Expansion (neighbors + cross-refs + exceptions)
-        yield _step_event(5, "graph_expansion", "running")
+        # Step 8: Graph Expansion (neighbors + cross-refs + exceptions)
+        yield _step_event(8, "graph_expansion", "running")
         t0 = time.time()
         state = _step5_graph_expansion(state, db)
-        yield _step_event(5, "graph_expansion", "done", duration=time.time() - t0)
+        yield _step_event(8, "graph_expansion", "done", duration=time.time() - t0)
 
-        # Step 6: Reranking (dynamic top_k)
-        yield _step_event(6, "article_selection", "running")
+        # Step 9: Reranking (dynamic top_k)
+        yield _step_event(9, "article_selection", "running")
         t0 = time.time()
         state = _step6_select_articles(state, db)
-        yield _step_event(6, "article_selection", "done", {
+        yield _step_event(9, "article_selection", "done", {
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
 
-        # Step 6.5: Late Relevance Gate
+        # Step 10: Late Relevance Gate
         gate_events, gate_result = _step6_5_relevance_gate(state, db)
         for evt in gate_events:
             yield evt
@@ -924,19 +937,19 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             state["_gate_triggered"] = True
             return state
 
-        # Step 6.7: Article-to-Issue Partitioning
-        yield _step_event(67, "article_partitioning", "running")
+        # Step 11: Article-to-Issue Partitioning
+        yield _step_event(11, "article_partitioning", "running")
         t0 = time.time()
         state = _step6_7_partition_articles(state, db)
-        yield _step_event(67, "article_partitioning", "done", {
+        yield _step_event(11, "article_partitioning", "done", {
             "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
             "shared_context": len(state.get("shared_context", [])),
         }, time.time() - t0)
 
-        # Step 6.8: Legal Reasoning (RL-RAP)
-        yield _step_event(68, "legal_reasoning", "running")
+        # Step 12: Legal Reasoning (RL-RAP)
+        yield _step_event(12, "legal_reasoning", "running")
         state = _step6_8_legal_reasoning(state, db)
-        yield _step_event(68, "legal_reasoning", "done", {
+        yield _step_event(12, "legal_reasoning", "done", {
             "has_analysis": state.get("rl_rap_output") is not None,
             "derived_confidence": state.get("derived_confidence"),
         })
@@ -955,7 +968,7 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             needs_retrieval = bool(missing) or bool(governing_norm_fetched)
 
             if needs_retrieval:
-                yield _step_event(69, "conditional_retrieval", "running")
+                yield _step_event(13, "conditional_retrieval", "running")
                 t0 = time.time()
 
                 # Fetch standard missing articles
@@ -980,7 +993,7 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
                     if missing:
                         state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
 
-                yield _step_event(69, "conditional_retrieval", "done", {
+                yield _step_event(13, "conditional_retrieval", "done", {
                     "requested": len(missing) + len(governing_norm_fetched),
                     "fetched": len(all_fetched),
                 }, time.time() - t0)
@@ -994,18 +1007,18 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
                 state["_gate_triggered"] = True
                 return state
 
-        # Step 7: Answer Generation
-        yield _step_event(8, "answer_generation", "running")
+        # Step 14: Answer Generation
+        yield _step_event(14, "answer_generation", "running")
         t0 = time.time()
         for event in _step7_answer_generation(state, db):
             yield event
-        yield _step_event(8, "answer_generation", "done", duration=time.time() - t0)
+        yield _step_event(14, "answer_generation", "done", duration=time.time() - t0)
 
-        # Step 7.5: Citation Validation
-        yield _step_event(85, "citation_validation", "running")
+        # Step 15: Citation Validation
+        yield _step_event(15, "citation_validation", "running")
         t0 = time.time()
         state = _step7_5_citation_validation(state, db)
-        yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+        yield _step_event(15, "citation_validation", "done", duration=time.time() - t0)
 
     # Check if Step 7 identified laws that weren't in the pipeline
     _flag_missing_laws_from_answer(state, db)
@@ -1091,17 +1104,20 @@ def run_pipeline(
             "entity_types": state.get("entity_types", []),
         }, time.time() - t0)
 
-        # Step 2: Law Mapping (rule-based, no Claude)
-        yield _step_event(2, "law_mapping", "running")
+        # Step 2: Date Extraction (local regex — sets date_type for currency check)
+        state = _step1b_date_extraction(state, db)
+
+        # Step 3: Law Mapping (rule-based, no Claude)
+        yield _step_event(3, "law_mapping", "running")
         t0 = time.time()
         state = _step2_law_mapping(state, db)
-        yield _step_event(2, "law_mapping", "done", {
+        yield _step_event(3, "law_mapping", "done", {
             "candidate_laws": state.get("candidate_laws"),
             "coverage_status": state.get("coverage_status"),
         }, time.time() - t0)
 
-        # Step 2a: Version Currency Check — verify DB versions against legislatie.just.ro
-        yield _step_event(20, "version_currency_check", "running")
+        # Step 4: Version Currency Check — verify DB versions against legislatie.just.ro
+        yield _step_event(4, "version_currency_check", "running")
         t0 = time.time()
         state["candidate_laws"] = check_version_currency(
             state.get("candidate_laws", []),
@@ -1115,7 +1131,7 @@ def run_pipeline(
         n_current = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "current")
         n_unavailable = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "source_unavailable")
         log_step(
-            db, state["run_id"], "version_currency_check", 20, "done",
+            db, state["run_id"], "version_currency_check", 4, "done",
             currency_duration,
             output_summary=f"Checked: {n_current} current, {n_stale} stale, {n_unavailable} source unavailable",
             output_data={
@@ -1126,14 +1142,14 @@ def run_pipeline(
                 "stale_count": n_stale,
             },
         )
-        yield _step_event(20, "version_currency_check", "done", {
+        yield _step_event(4, "version_currency_check", "done", {
             "stale_count": n_stale,
             "current_count": n_current,
             "unavailable_count": n_unavailable,
         }, currency_duration)
 
-        # Step 2.5: Early Relevance Gate — check if primary laws exist or are stale
-        yield _step_event(25, "early_relevance_gate", "running")
+        # Step 5: Early Relevance Gate — check if primary laws exist or are stale
+        yield _step_event(5, "early_relevance_gate", "running")
         t0 = time.time()
         gate_result = _step2_5_early_relevance_gate(state, db)
         gate_duration = time.time() - t0
@@ -1143,7 +1159,7 @@ def run_pipeline(
             missing_primary = [c for c in primary_laws if c.get("availability") in ("missing", "wrong_version")]
 
             log_step(
-                db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
+                db, state["run_id"], "early_relevance_gate", 5, "done", gate_duration,
                 output_summary=f"Gate triggered: {gate_result.get('type', 'unknown')}",
                 output_data={
                     "gate_triggered": True,
@@ -1156,7 +1172,7 @@ def run_pipeline(
 
             if gate_result.get("type") == "pause":
                 # Pipeline pauses — frontend will show import prompt
-                yield _step_event(25, "early_relevance_gate", "done", {
+                yield _step_event(5, "early_relevance_gate", "done", {
                     "gate_triggered": True,
                     "reason": "pause_for_import",
                 }, gate_duration)
@@ -1166,7 +1182,7 @@ def run_pipeline(
                 # Pipeline terminates (e.g., no laws identified)
                 complete_run(db, run_id, "clarification", None, state.get("flags"))
                 db.commit()
-                yield _step_event(25, "early_relevance_gate", "done", {
+                yield _step_event(5, "early_relevance_gate", "done", {
                     "gate_triggered": True,
                     "reason": gate_result.get("mode", "unknown"),
                 }, gate_duration)
@@ -1174,7 +1190,7 @@ def run_pipeline(
                 return
         else:
             log_step(
-                db, state["run_id"], "early_relevance_gate", 25, "done", gate_duration,
+                db, state["run_id"], "early_relevance_gate", 5, "done", gate_duration,
                 output_summary="Gate passed — pipeline continues",
                 output_data={
                     "gate_triggered": False,
@@ -1182,19 +1198,19 @@ def run_pipeline(
                     "primary_laws_in_db": len([c for c in state.get("candidate_laws", []) if c.get("tier") == "tier1_primary" and c.get("db_law_id")]),
                 },
             )
-            yield _step_event(25, "early_relevance_gate", "done", {
+            yield _step_event(5, "early_relevance_gate", "done", {
                 "gate_triggered": False,
             }, gate_duration)
 
-        # Step 3: Version Selection (DB query)
-        yield _step_event(3, "version_selection", "running")
+        # Step 6: Version Selection (DB query)
+        yield _step_event(6, "version_selection", "running")
         t0 = time.time()
         state = _step3_version_selection(state, db)
-        yield _step_event(3, "version_selection", "done", {
+        yield _step_event(6, "version_selection", "done", {
             "selected_versions": state.get("selected_versions"),
         }, time.time() - t0)
 
-        # Run Steps 4-7.5 (shared between run_pipeline and resume_pipeline)
+        # Run Steps 7-15 (shared between run_pipeline and resume_pipeline)
         path_gen = _run_steps_4_through_7(state, db, run_id)
         try:
             event = next(path_gen)
@@ -1282,7 +1298,7 @@ def resume_pipeline(
                         ver_id = search_legislatie(law_number, law_year)
 
                     if ver_id:
-                        yield {"type": "step", "step": 25, "name": "importing", "status": "running",
+                        yield {"type": "step", "step": 5, "name": "importing", "status": "running",
                                "data": {"importing": law_key}}
 
                         relevant_date = state.get("law_date_map", {}).get(
@@ -1321,7 +1337,7 @@ def resume_pipeline(
                                 f"remaining versions of {law_key}"
                             )
 
-                        yield {"type": "step", "step": 25, "name": "importing", "status": "done",
+                        yield {"type": "step", "step": 5, "name": "importing", "status": "done",
                                "data": {"imported": law_key}}
                     else:
                         state["flags"].append(f"Could not find {law_key} on legislatie.just.ro — continuing without")
@@ -1410,15 +1426,15 @@ def resume_pipeline(
             }
             return
 
-        # Re-run from Step 3: Version Selection
-        yield _step_event(3, "version_selection", "running")
+        # Re-run from Step 6: Version Selection
+        yield _step_event(6, "version_selection", "running")
         t0 = time.time()
         state = _step3_version_selection(state, db)
-        yield _step_event(3, "version_selection", "done", {
+        yield _step_event(6, "version_selection", "done", {
             "selected_versions": state.get("selected_versions"),
         }, time.time() - t0)
 
-        # Run Steps 4-7.5 (shared between run_pipeline and resume_pipeline)
+        # Run Steps 7-15 (shared between run_pipeline and resume_pipeline)
         path_gen = _run_steps_4_through_7(state, db, run_id)
         try:
             event = next(path_gen)
@@ -1505,7 +1521,7 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
     result = call_claude(
         system=prompt_text,
         messages=[{"role": "user", "content": context_msg}],
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
     log_api_call(
@@ -1597,19 +1613,43 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 1b: Date Extraction (Claude)
+# Step 2: Date Extraction (local regex)
 # ---------------------------------------------------------------------------
 
 
 def _step1b_date_extraction(state: dict, db: Session) -> dict:
-    """Extract temporal context — local regex, no Claude call."""
+    """Extract temporal context — local regex, no Claude call.
+
+    Sets state["date_type"] (used by version currency check to skip
+    remote queries for historical questions) and enriches dates_found.
+    Does NOT override primary_date if Step 1 already computed it from
+    per-issue dates via law_date_map.
+    """
     from app.services.date_extractor import extract_date_local
 
     t0 = time.time()
     parsed = extract_date_local(state["question"], state["today"])
 
     if parsed and parsed.get("primary_date"):
-        state["primary_date"] = parsed["primary_date"]
+        # Determine date_type from the extraction (explicit / relative / implicit_current)
+        dates = parsed.get("dates_found", [])
+        if dates:
+            # If any date is explicit, treat the whole query as explicit-dated
+            if any(d.get("type") == "explicit" for d in dates):
+                state["date_type"] = "explicit"
+            elif any(d.get("type") == "relative" for d in dates):
+                state["date_type"] = "relative"
+            else:
+                state["date_type"] = "implicit_current"
+        else:
+            state["date_type"] = "implicit_current"
+
+        # Only override primary_date if Step 1 didn't set it from issue dates.
+        # Step 1 sets primary_date = max(law_date_map.values()) which is per-issue
+        # aware; local extraction is a fallback / enrichment.
+        if not state.get("law_date_map"):
+            state["primary_date"] = parsed["primary_date"]
+
         state["date_logic"] = parsed.get("date_logic", "")
         state["dates_found"] = parsed.get("dates_found", [])
 
@@ -1619,13 +1659,14 @@ def _step1b_date_extraction(state: dict, db: Session) -> dict:
                 f"— using {state['primary_date']} as best estimate"
             )
     else:
+        state["date_type"] = "implicit_current"
         state["flags"].append("No specific date detected — using current law versions")
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "date_extraction", 15, "done", duration,
+        db, state["run_id"], "date_extraction", 2, "done", duration,
         input_summary=state["question"][:200],
-        output_summary=f"primary_date={state.get('primary_date')}",
+        output_summary=f"primary_date={state.get('primary_date')}, date_type={state.get('date_type')}",
         output_data=parsed,
     )
 
@@ -1633,7 +1674,7 @@ def _step1b_date_extraction(state: dict, db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Law Mapping (rule-based — no Claude call)
+# Step 3: Law Mapping (rule-based — no Claude call)
 # ---------------------------------------------------------------------------
 
 
@@ -1653,7 +1694,7 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
         state["coverage_status"] = {}
         duration = time.time() - t0
         log_step(
-            db, state["run_id"], "law_mapping", 2, "done", duration,
+            db, state["run_id"], "law_mapping", 3, "done", duration,
             output_summary="No applicable laws identified by classifier",
             output_data={"candidate_laws": [], "coverage": {}},
         )
@@ -1695,7 +1736,7 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "law_mapping", 2, "done", duration,
+        db, state["run_id"], "law_mapping", 3, "done", duration,
         output_summary=f"Mapped {len(candidate_laws)} laws ({sum(1 for c in candidate_laws if c.get('db_law_id'))} in DB)",
         output_data={
             "mapping": mapping,
@@ -1707,7 +1748,7 @@ def _step2_law_mapping(state: dict, db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 2.5: Early Relevance Gate
+# Step 5: Early Relevance Gate
 # ---------------------------------------------------------------------------
 
 
@@ -1818,7 +1859,7 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Version Selection (DB query — no Claude call)
+# Step 6: Version Selection (DB query — no Claude call)
 # ---------------------------------------------------------------------------
 
 
@@ -1972,7 +2013,7 @@ def _step3_version_selection(state: dict, db: Session) -> dict:
         state["flags"].extend(version_notes)
 
     log_step(
-        db, state["run_id"], "version_selection", 3, "done",
+        db, state["run_id"], "version_selection", 6, "done",
         duration,
         output_summary=f"Selected {len(selected_versions)} law versions for {len(issue_versions)} issue-law pairs",
         output_data={
@@ -2001,7 +2042,7 @@ _ENTITY_KEYWORDS: dict[str, list[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Hybrid Retrieval (BM25 + semantic)
+# Step 7: Hybrid Retrieval (BM25 + semantic)
 # ---------------------------------------------------------------------------
 
 
@@ -2154,7 +2195,7 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "hybrid_retrieval", 4, "done", duration,
+        db, state["run_id"], "hybrid_retrieval", 7, "done", duration,
         output_summary=f"Retrieved {len(all_articles)} articles (BM25: {bm25_count}, semantic: {semantic_count}, entity: {entity_count}, dupes removed: {duplicates_removed})",
         output_data={
             "article_count": len(all_articles),
@@ -2219,7 +2260,7 @@ def _append_new_articles(state: dict, db: Session, new_ids: list[int], source: s
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Article Expansion (neighbors + cross-refs)
+# Step 8: Article Expansion (neighbors + cross-refs)
 # ---------------------------------------------------------------------------
 
 
@@ -2263,7 +2304,7 @@ def _step5_graph_expansion(state: dict, db: Session) -> dict:
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "graph_expansion", 5, "done", duration,
+        db, state["run_id"], "graph_expansion", 8, "done", duration,
         output_summary=f"Graph expansion: +{added_neighbors} neighbors/crossrefs, +{added_exceptions} exceptions",
         output_data={
             "articles_before": len(raw_ids),
@@ -2280,7 +2321,7 @@ def _step5_graph_expansion(state: dict, db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Article Selection (Claude-based, with local reranker fallback)
+# Step 9: Article Selection (Claude-based, with local reranker fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -2295,7 +2336,7 @@ def _step6_select_articles(state: dict, db: Session, top_k_override: int | None 
     raw = state.get("retrieved_articles_raw", [])
     if not raw:
         state["retrieved_articles"] = []
-        log_step(db, state["run_id"], "article_selection", 6, "done", 0,
+        log_step(db, state["run_id"], "article_selection", 9, "done", 0,
                  output_summary="No articles to select from")
         return state
 
@@ -2307,7 +2348,7 @@ def _step6_select_articles(state: dict, db: Session, top_k_override: int | None 
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "article_selection", 6, "done", duration,
+        db, state["run_id"], "article_selection", 9, "done", duration,
         output_summary=f"Reranker: {len(raw)} -> top {len(ranked)} articles",
         output_data={
             "method": "reranker",
@@ -2328,7 +2369,7 @@ def _step6_select_articles(state: dict, db: Session, top_k_override: int | None 
 
 
 # ---------------------------------------------------------------------------
-# Step 6.5: Late Relevance Gate
+# Step 10: Late Relevance Gate
 # ---------------------------------------------------------------------------
 
 
@@ -2342,7 +2383,7 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
     events = []
 
     if not retrieved:
-        events.append(_step_event(7, "relevance_check", "done", {"skipped": True}, 0))
+        events.append(_step_event(10, "relevance_check", "done", {"skipped": True}, 0))
         return events, None
 
     # Use the top reranker score as a relevance proxy
@@ -2358,7 +2399,7 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
     gate_will_warn = 0.2 <= relevance_score < 0.4  # ~top_score < 1
 
     duration = time.time() - t0
-    events.append(_step_event(7, "relevance_check", "done", {
+    events.append(_step_event(10, "relevance_check", "done", {
         "relevance_score": round(relevance_score, 3),
         "top_reranker_score": round(top_score, 3),
         "avg_reranker_score": round(avg_score, 3),
@@ -2510,7 +2551,7 @@ def _step6_7_partition_articles(state: dict, db: Session = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Answer Generation (RAG + Claude streaming)
+# Step 14: Answer Generation (RAG + Claude streaming)
 # ---------------------------------------------------------------------------
 
 
@@ -2638,7 +2679,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
             answer_output_data["confidence_reasoning"] = structured["confidence_reasoning"]
 
     log_step(
-        db, state["run_id"], "answer_generation", 8, "done",
+        db, state["run_id"], "answer_generation", 14, "done",
         total_duration,
         prompt_id=prompt_id, prompt_version=prompt_ver,
         input_summary=f"Retrieved {len(retrieved)} articles, mode={mode}",
@@ -2649,7 +2690,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
 
 
 # ---------------------------------------------------------------------------
-# Step 7.5: Citation Validation (code-based, no Claude)
+# Step 15: Citation Validation (code-based, no Claude)
 # ---------------------------------------------------------------------------
 
 
@@ -2663,7 +2704,7 @@ def _step7_5_citation_validation(state: dict, db: Session) -> dict:
     structured = state.get("answer_structured")
     if not structured:
         log_step(
-            db, state["run_id"], "citation_validation", 85, "done", time.time() - t0,
+            db, state["run_id"], "citation_validation", 15, "done", time.time() - t0,
             output_summary="Skipped — no structured answer to validate",
             output_data={"skipped": True, "reason": "no_structured_answer"},
         )
@@ -2672,7 +2713,7 @@ def _step7_5_citation_validation(state: dict, db: Session) -> dict:
     sources = structured.get("sources", [])
     if not sources:
         log_step(
-            db, state["run_id"], "citation_validation", 85, "done", time.time() - t0,
+            db, state["run_id"], "citation_validation", 15, "done", time.time() - t0,
             output_summary="Skipped — no sources to validate",
             output_data={"skipped": True, "reason": "no_sources"},
         )
@@ -2770,7 +2811,7 @@ def _step7_5_citation_validation(state: dict, db: Session) -> dict:
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "citation_validation", 85, "done", duration,
+        db, state["run_id"], "citation_validation", 15, "done", duration,
         output_summary=f"Validated {validated}, downgraded {downgraded} citations" + (" — confidence lowered to LOW" if confidence_downgraded else ""),
         output_data={
             "skipped": False,
@@ -2815,11 +2856,11 @@ def _build_reasoning_panel(state: dict) -> dict:
             "core_issue": state.get("core_issue"),
             "sub_issues": state.get("sub_issues", []),
         },
-        "step2_law_mapping": {
+        "step3_law_mapping": {
             "candidate_laws": state.get("candidate_laws", []),
             "coverage_status": state.get("coverage_status", {}),
         },
-        "step2a_version_currency": {
+        "step4_version_currency": {
             "results": {
                 f"{c['law_number']}/{c['law_year']}": {
                     "currency_status": c.get("currency_status", "not_checked"),
@@ -2830,22 +2871,22 @@ def _build_reasoning_panel(state: dict) -> dict:
             },
             "stale_versions": state.get("stale_versions", []),
         },
-        "step3_versions": {
+        "step6_versions": {
             "selected_versions": state.get("selected_versions", {}),
             "version_notes": state.get("version_notes", []),
         },
-        "step4_retrieval": {
+        "step7_retrieval": {
             "articles_found": len(raw),
             "bm25_count": len(bm25_articles),
             "semantic_count": len(semantic_articles),
             "entity_count": len(entity_articles),
         },
-        "step5_expansion": {
+        "step8_expansion": {
             "articles_after_expansion": len(raw),
             "expansion_added": len(expansion_articles),
             "exceptions_added": len(exception_articles),
         },
-        "step6_selection": {
+        "step9_selection": {
             "total_candidates": len(raw),
             "selected_count": len(state.get("retrieved_articles", [])),
             "top_articles": [
@@ -2853,29 +2894,29 @@ def _build_reasoning_panel(state: dict) -> dict:
                 for a in state.get("retrieved_articles", [])[:10]
             ],
         },
-        "step6_5_relevance": {
+        "step10_relevance": {
             "relevance_score": state.get("relevance_score"),
         },
-        "step7_answer": {
+        "step14_answer": {
             "articles_used": len(state.get("retrieved_articles", [])),
             "confidence": state.get("confidence"),
             "flags": state.get("flags", []),
         },
     }
 
-    # Step 6.7: Partitioning
+    # Step 11: Partitioning
     if state.get("issue_articles"):
-        panel["step6_7_partitioning"] = {
+        panel["step11_partitioning"] = {
             "issues_with_articles": {
                 iid: len(arts) for iid, arts in state.get("issue_articles", {}).items()
             },
             "shared_context_count": len(state.get("shared_context", [])),
         }
 
-    # Step 6.8: Legal Reasoning (RL-RAP)
+    # Step 12: Legal Reasoning (RL-RAP)
     if state.get("rl_rap_output"):
         rl_rap = state["rl_rap_output"]
-        panel["step6_8_reasoning"] = {
+        panel["step12_reasoning"] = {
             "issues_analyzed": len(rl_rap.get("issues", [])),
             "certainty_levels": {
                 i["issue_id"]: i.get("certainty_level", "UNKNOWN")

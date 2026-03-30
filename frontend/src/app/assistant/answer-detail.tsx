@@ -26,13 +26,13 @@ interface CombinedData {
   } | null;
   reasoning?: {
     step1_classification?: { legal_domain?: string; legal_topic?: string; entity_types?: string[]; output_mode?: string; core_issue?: string };
-    step2_law_mapping?: { candidate_laws?: Array<{ law_number: string; law_year: number; source: string; role: string; title?: string; tier?: string }>; coverage_status?: Record<string, string> };
-    step2a_version_currency?: { results?: Record<string, { currency_status?: string; official_latest_date?: string; db_latest_date?: string }>; stale_versions?: string[] };
-    step3_versions?: { selected_versions?: Record<string, { date_in_force?: string; is_current?: boolean }> };
-    step4_retrieval?: { articles_found?: number };
-    step5_expansion?: { articles_after_expansion?: number };
-    step6_reranking?: { top_articles?: Array<{ article_number: string; score: number; law: string }> };
-    step7_answer?: { articles_used?: number; confidence?: string; flags?: string[] };
+    step3_law_mapping?: { candidate_laws?: Array<{ law_number: string; law_year: number; source: string; role: string; title?: string; tier?: string }>; coverage_status?: Record<string, string> };
+    step4_version_currency?: { results?: Record<string, { currency_status?: string; official_latest_date?: string; db_latest_date?: string }>; stale_versions?: string[] };
+    step6_versions?: { selected_versions?: Record<string, { date_in_force?: string; is_current?: boolean }> };
+    step7_retrieval?: { articles_found?: number };
+    step8_expansion?: { articles_after_expansion?: number };
+    step9_selection?: { top_articles?: Array<{ article_number: string; score: number; law: string }> };
+    step14_answer?: { articles_used?: number; confidence?: string; flags?: string[] };
   } | null;
   confidence?: string | null;
   flags?: string[];
@@ -72,7 +72,7 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
   const s = data.structured;
   const r = data.reasoning;
   const hasStructured = s?.version_logic || s?.sources?.length;
-  const hasReasoning = r?.step2_law_mapping?.candidate_laws?.length;
+  const hasReasoning = r?.step3_law_mapping?.candidate_laws?.length;
   const hasFlags = data.flags && data.flags.length > 0;
 
   if (!hasStructured && !hasReasoning && !hasFlags) return null;
@@ -144,10 +144,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Pipeline Reasoning</h4>
 
               {/* Laws mapped (Step 2) */}
-              {r.step2_law_mapping?.candidate_laws && r.step2_law_mapping.candidate_laws.length > 0 && (
+              {r.step3_law_mapping?.candidate_laws && r.step3_law_mapping.candidate_laws.length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Applicable Laws</div>
-                  {r.step2_law_mapping.candidate_laws.map((law, i) => (
+                  {r.step3_law_mapping.candidate_laws.map((law, i) => (
                     <div key={i} className="flex items-center gap-2 text-xs text-gray-600 ml-2">
                       <span className={`px-1.5 py-0.5 rounded font-medium ${
                         law.source === "DB" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
@@ -163,10 +163,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               )}
 
               {/* Coverage (Step 2) */}
-              {r.step2_law_mapping?.coverage_status && Object.keys(r.step2_law_mapping.coverage_status as Record<string, string>).length > 0 && (
+              {r.step3_law_mapping?.coverage_status && Object.keys(r.step3_law_mapping.coverage_status as Record<string, string>).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Library Coverage</div>
-                  {Object.entries(r.step2_law_mapping.coverage_status as Record<string, string>).map(([key, status]) => (
+                  {Object.entries(r.step3_law_mapping.coverage_status as Record<string, string>).map(([key, status]) => (
                     <div key={key} className="flex items-center gap-2 text-xs text-gray-600 ml-2">
                       <span>{status === "available" || status === "full" ? "✅" : status === "partial" || status === "wrong_version" ? "⚠️" : "❌"}</span>
                       <span>{key}</span>
@@ -177,10 +177,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               )}
 
               {/* Versions (Step 3) */}
-              {r.step3_versions?.selected_versions && Object.keys(r.step3_versions.selected_versions as Record<string, Record<string, unknown>>).length > 0 && (
+              {r.step6_versions?.selected_versions && Object.keys(r.step6_versions.selected_versions as Record<string, Record<string, unknown>>).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Versions Selected</div>
-                  {Object.entries(r.step3_versions.selected_versions as Record<string, Record<string, unknown>>).map(([key, v]) => (
+                  {Object.entries(r.step6_versions.selected_versions as Record<string, Record<string, unknown>>).map(([key, v]) => (
                     <div key={key} className="text-xs text-gray-600 ml-2">
                       {key}: version {(v.date_in_force as string) || "unknown"}{" "}
                       {v.is_current ? "(current)" : "(historical)"}
@@ -190,10 +190,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               )}
 
               {/* Version Currency (Step 2a) */}
-              {r.step2a_version_currency?.results && Object.keys(r.step2a_version_currency.results).length > 0 && (
+              {r.step4_version_currency?.results && Object.keys(r.step4_version_currency.results).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Version Currency</div>
-                  {Object.entries(r.step2a_version_currency.results as Record<string, Record<string, unknown>>).map(([key, v]) => (
+                  {Object.entries(r.step4_version_currency.results as Record<string, Record<string, unknown>>).map(([key, v]) => (
                     <div key={key} className="text-xs text-gray-600 ml-2 flex items-center gap-1">
                       <span>
                         {v.currency_status === "current" ? "\u2705" : v.currency_status === "stale" ? "\uD83D\uDD04" : v.currency_status === "source_unavailable" ? "\u2753" : "\u2014"}
@@ -210,10 +210,10 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               )}
 
               {/* Top articles from reranking (Step 6) */}
-              {r.step6_reranking?.top_articles && (r.step6_reranking.top_articles as Array<Record<string, unknown>>).length > 0 && (
+              {r.step9_selection?.top_articles && (r.step9_selection.top_articles as Array<Record<string, unknown>>).length > 0 && (
                 <div className="mb-2">
                   <div className="text-xs font-medium text-gray-600 mb-1">Top Articles (by relevance)</div>
-                  {(r.step6_reranking.top_articles as Array<Record<string, unknown>>).map((art, i) => (
+                  {(r.step9_selection.top_articles as Array<Record<string, unknown>>).map((art, i) => (
                     <div key={i} className="text-xs text-gray-600 ml-2">
                       Art. {art.article_number as string} ({art.law as string}) — score: {(art.score as number)?.toFixed(3)}
                     </div>
@@ -222,13 +222,13 @@ export function AnswerDetail({ reasoningData }: { reasoningData: string | null }
               )}
 
               {/* Summary stats */}
-              {r.step4_retrieval?.articles_found != null && (
+              {r.step7_retrieval?.articles_found != null && (
                 <div className="text-xs text-gray-400 ml-2">
-                  Articles found: {r.step4_retrieval.articles_found as number}
-                  {r.step5_expansion?.articles_after_expansion != null &&
-                    ` → ${r.step5_expansion.articles_after_expansion as number} after expansion`}
-                  {r.step7_answer?.articles_used != null &&
-                    ` → ${r.step7_answer.articles_used as number} sent to Claude`}
+                  Articles found: {r.step7_retrieval.articles_found as number}
+                  {r.step8_expansion?.articles_after_expansion != null &&
+                    ` → ${r.step8_expansion.articles_after_expansion as number} after expansion`}
+                  {r.step14_answer?.articles_used != null &&
+                    ` → ${r.step14_answer.articles_used as number} sent to Claude`}
                 </div>
               )}
             </div>

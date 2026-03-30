@@ -14,6 +14,21 @@ For each legal issue, perform the following analysis IN ORDER:
      - SUPPORTING: General norms that provide framework context but do not independently trigger the consequence (e.g., general duty of care when a specific liability norm exists).
    - When multiple RULE articles exist for an issue, always identify the PRIMARY norm first. This is the norm around which the analysis is structured.
 
+   FULL ARTICLE SCANNING (REQUIRED):
+   A single article often contains multiple alineate/litere, each establishing a SEPARATE
+   legal ground with different conditions. Do NOT stop at the first matching provision.
+   Scan every alineat and every litera of each retrieved article to identify ALL provisions
+   that could independently apply to the facts — even if their applicability depends on an
+   unknown fact. Each such provision must be listed as a separate operative_articles entry.
+
+   Example: Art. 117 of an insolvency law might contain:
+   - alin. (2) lit. c) — fraudulent acts (requires intent)
+   - alin. (2) lit. f) — early debt repayment (requires maturity date after insolvency)
+   - alin. (4) lit. c) — acts with 20%+ shareholders (requires shareholding threshold)
+   All three are separate legal grounds. If facts satisfy (4)(c) but the maturity date is
+   unknown for (2)(f), you must STILL list (2)(f) as operative and mark its key condition
+   as UNKNOWN — producing a conditional conclusion, not silence.
+
 1b. GOVERNING NORM CHECK (REQUIRED — perform before subsumption)
    For each issue, before beginning condition analysis, answer:
    "Do I have the specific norm that triggers the main legal consequence for this issue?"
@@ -104,6 +119,46 @@ For each legal issue, perform the following analysis IN ORDER:
    - PROBABLE: Minor factual dependencies that do not normally change the outcome.
    - CONDITIONAL: At least one material condition or exception is UNKNOWN. State what the outcome would be under each scenario.
    - UNCERTAIN: Missing critical law text, unresolved conflict, or severe temporal risk.
+
+   SILENT SKIP PROHIBITION:
+   If a provision's applicability depends on a fact the user did not provide, you MUST NOT
+   silently omit that provision from the analysis. Instead:
+   1. Include it as an operative article
+   2. Mark the missing-fact condition as UNKNOWN in the condition_table
+   3. Produce a CONDITIONAL conclusion: "If [missing fact], then [legal consequence]"
+   A provision with UNKNOWN conditions is a conditional path — not an absent one.
+   This applies across all fields of law.
+
+   RISK DERIVATION FROM CONDITION COMPLETENESS (MANDATORY):
+   The certainty_level MUST be derived mechanically from the condition_table:
+   - ALL conditions SATISFIED, no blocking exceptions → CERTAIN
+   - Most conditions SATISFIED, 1 minor UNKNOWN → PROBABLE
+   - Any material condition UNKNOWN → CONDITIONAL (never higher)
+   - Governing norm MISSING or majority conditions UNKNOWN → UNCERTAIN
+
+   You MUST NOT assign CERTAIN or PROBABLE when material conditions are UNKNOWN.
+   "A norm exists that could apply" is not the same as "the norm applies."
+   Risk is a function of (condition completeness × legal consequence severity):
+   - High severity + all conditions met → high risk
+   - High severity + conditions unknown → CONDITIONAL risk (state what it depends on)
+   - High severity + conditions unmet → no risk from this norm
+
+   CAUSATION AND INTENT AS EXPLICIT CONDITIONS:
+   When a norm requires causation (e.g., "causing damage", "prejudicing creditors") or
+   intent/fault (e.g., "with intent to defraud", "through negligence"), these are MANDATORY
+   conditions that must appear in the condition_table. They are NOT optional annotations.
+   - Causation: Was there a causal link between the act and the harm? Temporal proximity
+     alone does NOT prove causation — state this explicitly when proximity is the only evidence.
+   - Intent/fault: Was the required mental state present?
+   If these facts are not stated, mark them UNKNOWN. Never infer causation or intent from
+   context or temporal proximity alone.
+
+   RELEVANCE GATE PER NORM:
+   Before including a norm in the analysis, verify: "Does this norm materially affect the
+   user's specific question?" If a norm is legally correct but does not change the answer
+   to what the user asked (e.g., creditor voting rights when the user asked about administrator
+   liability), mark it as SUPPORTING context only — do not give it a full subsumption analysis.
+   Focus analytical depth on norms that directly answer the user's question.
 
 8. CLASSIFY UNCERTAINTY SOURCES (REQUIRED when certainty_level is not CERTAIN)
    When certainty_level is PROBABLE, CONDITIONAL, or UNCERTAIN, populate uncertainty_sources:

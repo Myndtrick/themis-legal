@@ -17,16 +17,20 @@ const STEP_CONFIG: Record<
   { label: string; displayNum: string; order: number }
 > = {
   1: { label: "Issue Classification", displayNum: "1", order: 1 },
-  2: { label: "Law Mapping", displayNum: "2", order: 2 },
-  15: { label: "Date Extraction", displayNum: "2a", order: 2.5 },
-  25: { label: "Early Relevance Gate", displayNum: "2.5", order: 3 },
-  3: { label: "Version Selection", displayNum: "3", order: 4 },
-  4: { label: "Hybrid Retrieval", displayNum: "4", order: 5 },
-  5: { label: "Graph Expansion", displayNum: "5", order: 6 },
-  6: { label: "Article Selection", displayNum: "6", order: 8 },
-  7: { label: "Relevance Check", displayNum: "6.5", order: 9 },
-  8: { label: "Answer Generation", displayNum: "7", order: 10 },
-  85: { label: "Citation Validation", displayNum: "7.5", order: 11 },
+  2: { label: "Date Extraction", displayNum: "2", order: 2 },
+  3: { label: "Law Mapping", displayNum: "3", order: 3 },
+  4: { label: "Version Currency Check", displayNum: "4", order: 4 },
+  5: { label: "Early Relevance Gate", displayNum: "5", order: 5 },
+  6: { label: "Version Selection", displayNum: "6", order: 6 },
+  7: { label: "Hybrid Retrieval", displayNum: "7", order: 7 },
+  8: { label: "Graph Expansion", displayNum: "8", order: 8 },
+  9: { label: "Article Selection", displayNum: "9", order: 9 },
+  10: { label: "Relevance Check", displayNum: "10", order: 10 },
+  11: { label: "Article Partitioning", displayNum: "11", order: 11 },
+  12: { label: "Legal Reasoning", displayNum: "12", order: 12 },
+  13: { label: "Conditional Retrieval", displayNum: "13", order: 13 },
+  14: { label: "Answer Generation", displayNum: "14", order: 14 },
+  15: { label: "Citation Validation", displayNum: "15", order: 15 },
 };
 
 function getStepConfig(step: StepLogData) {
@@ -592,8 +596,30 @@ export function RunDetail({
   const totalTokensIn = run.api_calls.reduce((s, c) => s + c.tokens_in, 0);
   const totalTokensOut = run.api_calls.reduce((s, c) => s + c.tokens_out, 0);
 
-  // Sort steps by execution order instead of raw step_number
-  const sortedSteps = [...run.steps].sort(
+  // Deduplicate steps by step_name (old runs may have both old and new numbers)
+  // and sort by execution order
+  const deduped = Object.values(
+    run.steps.reduce<Record<string, StepLogData>>((acc, step) => {
+      const existing = acc[step.step_name];
+      if (!existing) {
+        acc[step.step_name] = step;
+      } else {
+        // Prefer the entry that has a known STEP_CONFIG mapping
+        const existingKnown = existing.step_number in STEP_CONFIG;
+        const currentKnown = step.step_number in STEP_CONFIG;
+        if (currentKnown && !existingKnown) {
+          acc[step.step_name] = step;
+        } else if (!currentKnown && existingKnown) {
+          // keep existing
+        } else if (step.duration_seconds && !existing.duration_seconds) {
+          // prefer the one with actual data
+          acc[step.step_name] = step;
+        }
+      }
+      return acc;
+    }, {})
+  );
+  const sortedSteps = deduped.sort(
     (a, b) => getStepConfig(a).order - getStepConfig(b).order
   );
 

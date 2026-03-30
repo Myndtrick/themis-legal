@@ -22,19 +22,19 @@ PROMPT_MANIFEST = {
     },
     "LA-S5": {
         "file": "LA-S5-import-request.txt",
-        "desc": "Step 5 — Import Request Generator",
+        "desc": "Step 3 — Import Request Generator",
     },
     "LA-S6": {
         "file": "LA-S6-article-selector.txt",
-        "desc": "Step 6 — Article Selector",
+        "desc": "Step 4 — Article Selector",
     },
     "LA-S6.5": {
         "file": "LA-S6.5-relevance-check.txt",
-        "desc": "Step 6.5 — Relevance Checker",
+        "desc": "Step 5 — Relevance Checker",
     },
     "LA-S6.8": {
         "file": "LA-S6.8-legal-reasoning.txt",
-        "desc": "Step 6.8 — Legal Reasoning (RL-RAP)",
+        "desc": "Step 6 — Legal Reasoning (RL-RAP)",
     },
     "LA-S7-template": {
         "file": "LA-S7-answer-template.txt",

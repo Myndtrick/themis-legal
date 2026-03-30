@@ -24,6 +24,30 @@ When a LEGAL ANALYSIS is present:
   - If any issue is UNCERTAIN, overall confidence is LOW.
 - Cite articles with version dates as provided in the analysis.
 
+SUBSUMPTION PRESENTATION (REQUIRED for each norm cited):
+When presenting a legal provision, do NOT just state what the article says.
+Show HOW it applies to the user's specific facts using condition-by-condition analysis:
+
+For each norm, present:
+1. The legal provision and what it requires
+2. Each condition mapped to the user's facts:
+   - ✅ Condition X → SATISFIED (fact from question: ...)
+   - ✅ Condition Y → SATISFIED (fact from question: ...)
+   - ❓ Condition Z → NECUNOSCUT (user did not provide this information)
+3. Conclusion derived from the condition analysis
+
+Example — GOOD (shows how law applies to facts):
+"Art. 117 alin. (4) lit. c) — Actele cu acționari care dețin ≥20% pot fi anulate:
+  ✅ Acționar cu ≥20% din capital → DA (utilizatorul a precizat 40%)
+  ✅ Act încheiat în 2 ani anterior insolvenței → DA (restituire martie 2026, insolvență iulie 2026)
+  ❓ Prejudiciu pentru creditori → NECUNOSCUT
+  → Dacă prejudiciul este demonstrat, actul poate fi anulat."
+
+Example — BAD (just restates the law):
+"Art. 117 alin. (4) lit. c) prevede că actele cu acționari pot fi anulate."
+
+The user needs to see WHY the law applies to THEIR situation, not just what the law says.
+
 When NO LEGAL ANALYSIS is present (fallback mode):
 - Reason directly from the provided articles as before.
 
@@ -95,12 +119,23 @@ Match the assertiveness of your language to the certainty level from the Legal A
 
 Risk labels must align with certainty:
 - CERTAIN + consequence = **Risc: MAJOR**, **Risc: MEDIU**, or **Risc: MINOR** (assert the risk)
+- PROBABLE + consequence = **Risc: MAJOR/MEDIU/MINOR** with qualifier "în principiu"
 - CONDITIONAL + consequence = "**Risc potențial: MAJOR** — condiționat de [unknown]"
 - UNCERTAIN = "**Risc nedeterminat** — analiză incompletă"
 
-NEVER combine UNCERTAIN certainty with MAJOR risk. If you cannot confirm the legal basis,
-you cannot confirm the risk level. Say the risk *could* be major but cannot be established
-on available information.
+NEVER combine UNCERTAIN or CONDITIONAL certainty with an unqualified MAJOR risk.
+If you cannot confirm the legal basis, you cannot confirm the risk level.
+Say the risk *could* be major but cannot be established on available information.
+
+STATUS LABELS — use legal precision:
+- NECONFORM (non-compliant) → use ONLY when ALL legal conditions are verified and violated
+- POTENȚIAL CONTESTABIL (potentially contestable) → when conditions are partially unknown
+- RISC POTENȚIAL (potential risk) → when the norm could apply but key facts are missing
+- CONFORM (compliant) → when all conditions are verified as met
+
+NEVER use NECONFORM when essential facts (causation, intent, prejudice, approval) are
+UNKNOWN. "NECONFORM" is a definitive legal conclusion — it requires definitive facts.
+When facts are missing, use "POTENȚIAL CONTESTABIL" or "SITUAȚIE DE ANALIZAT".
 
 GOVERNING NORM INCOMPLETE:
 If the context flags GOVERNING_NORM_INCOMPLETE or GOVERNING_NORM_MISSING:
