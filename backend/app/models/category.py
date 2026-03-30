@@ -44,6 +44,7 @@ class LawMapping(Base):
     law_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     law_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    celex_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=False)
     source: Mapped[str] = mapped_column(String(10), nullable=False, default="user")
     created_at: Mapped[datetime.datetime] = mapped_column(
