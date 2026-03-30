@@ -2159,18 +2159,14 @@ def _step6_7_partition_articles(state: dict, db: Session = None) -> dict:
 def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, None]:
     # Determine which prompt to use based on output mode
     mode = state.get("output_mode", "qa")
-    if state.get("use_simple_prompt"):
-        prompt_id = "LA-S7-simple"
-    else:
-        prompt_map = {
-            "qa": "LA-S7",
-            "memo": "LA-S7-M2",
-            "comparison": "LA-S7-M3",
-            "compliance": "LA-S7-M4",
-            "checklist": "LA-S7-M5",
-        }
-        prompt_id = prompt_map.get(mode, "LA-S7")
-    prompt_text, prompt_ver = load_prompt(prompt_id, db)
+    mode_key = "simple" if state.get("use_simple_prompt") else mode
+
+    # Load template + mode, assemble prompt
+    template_text, template_ver = load_prompt("LA-S7-template", db)
+    mode_text, mode_ver = load_prompt(f"LA-S7-mode-{mode_key}", db)
+    prompt_text = template_text.replace("{MODE_SECTION}", mode_text)
+    prompt_ver = template_ver
+    prompt_id = f"LA-S7-template+{mode_key}"
 
     # Use reranked articles from the pipeline (already in state["retrieved_articles"])
     retrieved = state.get("retrieved_articles", [])

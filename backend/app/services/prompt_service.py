@@ -36,29 +36,33 @@ PROMPT_MANIFEST = {
         "file": "LA-S6.8-legal-reasoning.txt",
         "desc": "Step 6.8 — Legal Reasoning (RL-RAP)",
     },
-    "LA-S7": {
-        "file": "LA-S7-answer-qa.txt",
-        "desc": "Step 7 — Answer Generator (Mode 1 Q&A)",
+    "LA-S7-template": {
+        "file": "LA-S7-answer-template.txt",
+        "desc": "Step 7 — Answer Generator (Shared Template)",
     },
-    "LA-S7-simple": {
-        "file": "LA-S7-simple.txt",
-        "desc": "Step 7 — Answer Generator (Simple mode)",
+    "LA-S7-mode-simple": {
+        "file": "LA-S7-mode-simple.txt",
+        "desc": "Step 7 — Mode: Simple Q&A",
     },
-    "LA-S7-M2": {
-        "file": "LA-S7-M2-answer-memo.txt",
-        "desc": "Step 7 — Answer Generator (Mode 2 Memo)",
+    "LA-S7-mode-qa": {
+        "file": "LA-S7-mode-qa.txt",
+        "desc": "Step 7 — Mode: Full Q&A",
     },
-    "LA-S7-M3": {
-        "file": "LA-S7-M3-answer-comparison.txt",
-        "desc": "Step 7 — Answer Generator (Mode 3 Comparison)",
+    "LA-S7-mode-memo": {
+        "file": "LA-S7-mode-memo.txt",
+        "desc": "Step 7 — Mode: Legal Memo",
     },
-    "LA-S7-M4": {
-        "file": "LA-S7-M4-answer-compliance.txt",
-        "desc": "Step 7 — Answer Generator (Mode 4 Compliance)",
+    "LA-S7-mode-comparison": {
+        "file": "LA-S7-mode-comparison.txt",
+        "desc": "Step 7 — Mode: Version Comparison",
     },
-    "LA-S7-M5": {
-        "file": "LA-S7-M5-answer-checklist.txt",
-        "desc": "Step 7 — Answer Generator (Mode 5 Checklist)",
+    "LA-S7-mode-compliance": {
+        "file": "LA-S7-mode-compliance.txt",
+        "desc": "Step 7 — Mode: Compliance Check",
+    },
+    "LA-S7-mode-checklist": {
+        "file": "LA-S7-mode-checklist.txt",
+        "desc": "Step 7 — Mode: Legal Checklist",
     },
     "LA-CONFLICT": {
         "file": "LA-CONFLICT-conflict-resolver.txt",
