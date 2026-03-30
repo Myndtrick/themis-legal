@@ -315,28 +315,65 @@ def _parse_step6_8_output(raw: str) -> dict | None:
         return None
 
 
-def _derive_confidence(issues: list[dict]) -> str:
-    """Derive overall confidence from per-issue certainty levels."""
-    if not issues:
-        return "LOW"
-    levels = [i.get("certainty_level", "UNCERTAIN") for i in issues]
-    if any(l == "UNCERTAIN" for l in levels):
-        return "LOW"
-    if any(l == "CONDITIONAL" for l in levels):
-        return "MEDIUM"
-    return "HIGH"
+def _derive_final_confidence(
+    claude_confidence: str,
+    rl_rap_issues: list[dict],
+    has_articles: bool,
+    primary_from_db: bool,
+    missing_primary: bool,
+    has_stale_versions: bool,
+    citation_validation: dict,
+) -> tuple[str, str]:
+    """Derive final confidence from all pipeline signals. Returns (confidence, reason)."""
 
+    # Rule 1: No articles
+    if not has_articles:
+        return "LOW", "No relevant articles found"
 
-def _cap_confidence(state: dict) -> None:
-    """Cap Step 7's confidence to not exceed Step 6.8's derived confidence."""
-    derived = state.get("derived_confidence")
-    if not derived:
-        return
+    # Rule 2: Majority citations unverified
+    total_db = citation_validation.get("total_db", 0)
+    downgraded = citation_validation.get("downgraded", 0)
+    if total_db > 0 and downgraded > total_db / 2:
+        return "LOW", "Most citations could not be verified against provided articles"
+
+    # Rule 3: UNCERTAIN issues
+    if rl_rap_issues:
+        levels = [i.get("certainty_level", "UNCERTAIN") for i in rl_rap_issues]
+        if any(l == "UNCERTAIN" for l in levels):
+            return "LOW", "Legal analysis has uncertain conditions"
+
+    # Start with Claude's assessment, then cap downward
     CONF_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
-    derived_rank = CONF_ORDER.get(derived, 0)
-    actual_rank = CONF_ORDER.get(state.get("confidence", "HIGH"), 2)
-    if actual_rank > derived_rank:
-        state["confidence"] = derived
+    confidence = claude_confidence
+    reason = "Based on model assessment"
+
+    # Rule 4: CONDITIONAL caps at MEDIUM
+    if rl_rap_issues:
+        levels = [i.get("certainty_level", "UNCERTAIN") for i in rl_rap_issues]
+        if any(l == "CONDITIONAL" for l in levels):
+            if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+                confidence = "MEDIUM"
+                reason = "Legal analysis has conditional conclusions"
+
+    # Rule 5: Primary not from DB
+    if not primary_from_db:
+        if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+            confidence = "MEDIUM"
+            reason = "Primary law source not from verified database"
+
+    # Rule 6: Missing primary laws
+    if missing_primary:
+        if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+            confidence = "MEDIUM"
+            reason = "Primary law not in library"
+
+    # Rule 7: Stale versions
+    if has_stale_versions:
+        if CONF_ORDER.get(confidence, 2) > CONF_ORDER["MEDIUM"]:
+            confidence = "MEDIUM"
+            reason = "Law version may be outdated"
+
+    return confidence, reason
 
 
 def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
@@ -360,7 +397,13 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
 
     if parsed:
         state["rl_rap_output"] = parsed
-        state["derived_confidence"] = _derive_confidence(parsed.get("issues", []))
+        # Store raw certainty levels for logging (final confidence derived after Step 7.5)
+        levels = {i["issue_id"]: i["certainty_level"] for i in parsed.get("issues", [])}
+        state["derived_confidence"] = (
+            "LOW" if any(l == "UNCERTAIN" for l in levels.values())
+            else "MEDIUM" if any(l == "CONDITIONAL" for l in levels.values())
+            else "HIGH"
+        )
 
         operative = []
         for issue in parsed.get("issues", []):
@@ -616,8 +659,33 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
         state = _step7_5_citation_validation(state, db)
         yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
 
-    # Cap confidence (runs on both paths, no-ops if derived_confidence is None)
-    _cap_confidence(state)
+    # Derive final confidence from all signals
+    retrieved = state.get("retrieved_articles", [])
+    candidate_laws = state.get("candidate_laws", [])
+    primary_from_db = all(
+        l.get("source") == "DB" or l.get("db_law_id")
+        for l in candidate_laws
+        if l.get("role") == "PRIMARY"
+    )
+    missing_primary = any(
+        c.get("tier") == "tier1_primary" and not c.get("db_law_id")
+        for c in candidate_laws
+    )
+    stale_laws_in_use = [
+        c for c in candidate_laws
+        if c.get("version_status") == "stale" and c.get("role") == "PRIMARY"
+    ]
+    has_stale = bool(state.get("stale_versions") or stale_laws_in_use)
+
+    state["confidence"], state["confidence_reason"] = _derive_final_confidence(
+        claude_confidence=state.get("claude_confidence", "MEDIUM"),
+        rl_rap_issues=(state.get("rl_rap_output") or {}).get("issues", []),
+        has_articles=bool(retrieved),
+        primary_from_db=primary_from_db,
+        missing_primary=missing_primary,
+        has_stale_versions=has_stale,
+        citation_validation=state.get("citation_validation", {"downgraded": 0, "total_db": 0}),
+    )
 
     return state
 
@@ -2161,37 +2229,23 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         total_tokens_in, total_tokens_out, total_duration, state.get("model", ""),
     )
 
-    # Use confidence from Claude's structured response if available
-    if structured and structured.get("confidence"):
-        state["confidence"] = structured["confidence"]
-    elif not retrieved:
-        state["confidence"] = "LOW"
-        state["flags"].append("No articles retrieved from Legal Library")
-    elif any(l.get("role") == "PRIMARY" and l.get("source") != "DB"
-             for l in state.get("candidate_laws", [])):
-        state["confidence"] = "MEDIUM"
-    else:
-        state["confidence"] = "HIGH"
+    # Store Claude's raw confidence — final confidence derived after Step 7.5.
+    state["claude_confidence"] = (structured.get("confidence") if structured else None) or "MEDIUM"
 
-    # Check for missing primary laws
+    # Track partial coverage for downstream use
     missing_primary = [
         c for c in state.get("candidate_laws", [])
         if c.get("tier") == "tier1_primary" and not c.get("db_law_id")
     ]
     if missing_primary:
-        if state["confidence"] == "HIGH":
-            state["confidence"] = "MEDIUM"
         state["is_partial"] = True
 
-    # Cap confidence for stale versions (user continued without updating)
-    # stale_versions comes from resume decisions; version_status comes from KnownVersion
+    # Track stale versions for flags (confidence handled by _derive_final_confidence)
     stale_laws_in_use = [
         c for c in state.get("candidate_laws", [])
         if c.get("version_status") == "stale" and c.get("role") == "PRIMARY"
     ]
     if state.get("stale_versions") or stale_laws_in_use:
-        if state["confidence"] == "HIGH":
-            state["confidence"] = "MEDIUM"
         stale_names = state.get("stale_versions", []) or [
             f"{c['law_number']}/{c['law_year']}" for c in stale_laws_in_use
         ]
@@ -2348,18 +2402,17 @@ def _step7_5_citation_validation(state: dict, db: Session) -> dict:
                 "article": art_ref_clean,
             })
 
-    confidence_downgraded = False
+    total_db = sum(1 for s in sources if s.get("label") in ("DB", "Unverified"))
+    confidence_downgraded = total_db > 0 and downgraded > total_db / 2
+
     if downgraded > 0:
         logger.info(f"Citation validation: downgraded {downgraded} citations to Unverified")
 
-        # If majority are unverified, downgrade confidence
-        total_db = sum(1 for s in sources if s.get("label") in ("DB", "Unverified"))
-        if total_db > 0 and downgraded > total_db / 2:
-            state["confidence"] = "LOW"
-            state["flags"].append(
-                "Majority of citations could not be verified against provided articles"
-            )
-            confidence_downgraded = True
+    # Store validation results for _derive_final_confidence
+    state["citation_validation"] = {
+        "downgraded": downgraded,
+        "total_db": total_db,
+    }
 
     duration = time.time() - t0
     log_step(
