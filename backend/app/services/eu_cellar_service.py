@@ -522,15 +522,25 @@ def _store_eu_version(db, law, ver_celex, date_str, content, language, is_curren
 
 
 def _store_eu_article(db, version, art_data, parent_el, order_counter):
-    """Store an EU article with proper article_number and label fields."""
+    """Store an EU article matching the Romanian law display pattern.
+
+    The frontend expects:
+    - article_number: just the number (e.g., "1") — frontend adds "Art." prefix
+    - label: same as article_number (the frontend extracts the title from the first unlabeled paragraph)
+    - First paragraph: unlabeled, short text = article title (e.g., "Obiect și obiective")
+    - Subsequent paragraphs: labeled with "(1)", "(2)", text WITHOUT the label prefix
+    - Subparagraphs: labeled with "(a)", "(b)", text WITHOUT the label prefix
+    """
     full_text = art_data.get("full_text", "")
     is_abrogated = bool(re.search(r"^\s*\(?\s*[Aa]brogat", full_text[:200]))
+    art_num = art_data.get("label", "")
+    article_title = art_data.get("article_title", "")
 
     article = Article(
         law_version_id=version.id,
         structural_element_id=parent_el.id if parent_el else None,
-        article_number=art_data.get("label", ""),  # "Art. 1"
-        label=art_data.get("article_title") or art_data.get("label", ""),
+        article_number=art_num,
+        label=art_num,  # frontend extracts display title from first paragraph
         full_text=full_text,
         order_index=order_counter[0],
         is_abrogated=is_abrogated,
@@ -539,25 +549,64 @@ def _store_eu_article(db, version, art_data, parent_el, order_counter):
     db.flush()
     order_counter[0] += 1
 
-    for p_idx, para in enumerate(art_data.get("paragraphs", [])):
+    p_idx = 0
+
+    # Store article title as unlabeled first paragraph (matches Romanian law pattern)
+    if article_title:
+        title_para = Paragraph(
+            article_id=article.id,
+            paragraph_number="",
+            label="",
+            text=article_title,
+            order_index=p_idx,
+        )
+        db.add(title_para)
+        db.flush()
+        p_idx += 1
+
+    for para in art_data.get("paragraphs", []):
+        para_label = para.get("label", "")
+        para_text = para.get("text", "")
+        # Strip the label prefix from text to avoid duplication
+        # e.g., "(1)   Prezentul regulament..." → "Prezentul regulament..."
+        clean_text = _strip_label_prefix(para_text, para_label)
+
         paragraph = Paragraph(
             article_id=article.id,
-            paragraph_number=para.get("label", "").strip("()") or str(p_idx + 1),
-            label=para.get("label", ""),
-            text=para.get("text", ""),
+            paragraph_number=para_label.strip("()") or str(p_idx + 1),
+            label=para_label,
+            text=clean_text,
             order_index=p_idx,
         )
         db.add(paragraph)
         db.flush()
+        p_idx += 1
 
         for s_idx, sub in enumerate(para.get("subparagraphs", [])):
+            sub_label = sub.get("label", "")
+            sub_text = _strip_label_prefix(sub.get("text", ""), sub_label)
             subparagraph = Subparagraph(
                 paragraph_id=paragraph.id,
-                label=sub.get("label", ""),
-                text=sub.get("text", ""),
+                label=sub_label,
+                text=sub_text,
                 order_index=s_idx,
             )
             db.add(subparagraph)
+
+
+def _strip_label_prefix(text: str, label: str) -> str:
+    """Strip the label prefix from text to avoid display duplication.
+
+    e.g., text="(1)   Prezentul regulament...", label="(1)"
+    → returns "Prezentul regulament..."
+    """
+    if not label or not text:
+        return text
+    # Try stripping the exact label followed by optional whitespace
+    stripped = text.lstrip()
+    if stripped.startswith(label):
+        stripped = stripped[len(label):].lstrip()
+    return stripped
 
 
 def _store_preamble_article(db, version, preamble):
