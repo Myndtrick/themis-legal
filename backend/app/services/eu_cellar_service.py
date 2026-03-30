@@ -407,6 +407,9 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
     version = _store_eu_version(db, law, used_celex, meta["date"], content, lang, is_current=True)
     versions_imported = 1
 
+    # Preserve preamble from base version — consolidated versions never include it
+    base_preamble = content.get("preamble", {})
+
     if import_history:
         consol_versions = fetch_consolidated_versions(celex)
         for cv in consol_versions:
@@ -425,6 +428,10 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
                 if not has_real_content:
                     logger.info(f"Skipping consolidated version {cv['celex']} — no paragraph content")
                     continue
+                # Inject base preamble if consolidated version lacks one
+                cv_preamble = cv_content.get("preamble", {})
+                if not cv_preamble.get("citations") and not cv_preamble.get("recitals") and base_preamble:
+                    cv_content["preamble"] = base_preamble
                 _store_eu_version(db, law, cv["celex"], cv["date"], cv_content, cv_lang, is_current=False)
                 versions_imported += 1
             except Exception as e:
@@ -476,6 +483,9 @@ def _store_eu_version(db, law, ver_celex, date_str, content, language, is_curren
     preamble = content.get("preamble", {})
     if preamble.get("citations") or preamble.get("recitals"):
         _store_preamble_article(db, version, preamble)
+    else:
+        # Consolidated versions lack preambles — copy from another version of same law
+        _copy_preamble_from_sibling(db, law, version)
 
     # Store footnotes as special article
     footnotes = content.get("footnotes", [])
@@ -645,6 +655,44 @@ def _strip_label_prefix(text: str, label: str) -> str:
     if stripped.startswith(label):
         stripped = stripped[len(label):].lstrip()
     return stripped
+
+
+def _copy_preamble_from_sibling(db, law, target_version):
+    """Copy preamble article+paragraphs from another version of the same law.
+
+    Consolidated EUR-Lex versions omit the preamble, but it should always be shown.
+    """
+    # Find a sibling version that has a Preambul article
+    sibling_article = (
+        db.query(Article)
+        .join(LawVersion, Article.law_version_id == LawVersion.id)
+        .filter(LawVersion.law_id == law.id, LawVersion.id != target_version.id)
+        .filter(Article.article_number == "Preambul")
+        .first()
+    )
+    if not sibling_article:
+        return
+
+    article = Article(
+        law_version_id=target_version.id,
+        structural_element_id=None,
+        article_number="Preambul",
+        label="Preambul",
+        full_text=sibling_article.full_text,
+        order_index=-1,
+    )
+    db.add(article)
+    db.flush()
+
+    for p in sibling_article.paragraphs:
+        paragraph = Paragraph(
+            article_id=article.id,
+            paragraph_number=p.paragraph_number,
+            label=p.label,
+            text=p.text,
+            order_index=p.order_index,
+        )
+        db.add(paragraph)
 
 
 def _store_preamble_article(db, version, preamble):
