@@ -5,10 +5,12 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
+from collections import defaultdict
+
+from sqlalchemy.orm import Session, subqueryload
 
 from app.database import get_db
-from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, StructuralElement
+from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, Paragraph, StructuralElement
 from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
@@ -604,33 +606,44 @@ def get_law_version(law_id: int, version_id: int, db: Session = Depends(get_db))
     articles = (
         db.query(Article)
         .filter(Article.law_version_id == version_id)
-        .options(joinedload(Article.paragraphs), joinedload(Article.amendment_notes))
+        .options(
+            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs),
+            subqueryload(Article.amendment_notes),
+        )
         .order_by(Article.order_index)
         .all()
     )
 
+    # Pre-index articles and elements for O(1) lookups
+    articles_by_element = defaultdict(list)
+    orphan_articles = []
+    for a in articles:
+        if a.structural_element_id is None:
+            orphan_articles.append(a)
+        else:
+            articles_by_element[a.structural_element_id].append(a)
+
+    children_by_parent = defaultdict(list)
+    for el in elements:
+        children_by_parent[el.parent_id].append(el)
+
     def build_element_tree(parent_id=None):
         result = []
-        for el in elements:
-            if el.parent_id == parent_id:
-                el_articles = [a for a in articles if a.structural_element_id == el.id]
-                children = build_element_tree(el.id)
-                # Skip empty structural elements (no articles, no non-empty children)
-                if not el_articles and not children:
-                    continue
-                result.append({
-                    "id": el.id,
-                    "type": el.element_type,
-                    "number": el.number,
-                    "title": el.title,
-                    "description": el.description,
-                    "children": children,
-                    "articles": [serialize_article(a, law) for a in el_articles],
-                })
+        for el in children_by_parent.get(parent_id, []):
+            el_articles = articles_by_element.get(el.id, [])
+            children = build_element_tree(el.id)
+            if not el_articles and not children:
+                continue
+            result.append({
+                "id": el.id,
+                "type": el.element_type,
+                "number": el.number,
+                "title": el.title,
+                "description": el.description,
+                "children": children,
+                "articles": [serialize_article(a, law) for a in el_articles],
+            })
         return result
-
-    # Articles not attached to any structural element
-    orphan_articles = [a for a in articles if a.structural_element_id is None]
 
     # Annexes
     annexes = (

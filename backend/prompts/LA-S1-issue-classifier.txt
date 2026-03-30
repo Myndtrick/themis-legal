@@ -39,6 +39,18 @@ CLASSIFICATION RULES:
      - "PRIMARY" = directly applicable law (lex specialis for this question)
      - "SECONDARY" = applies subsidiarily or fills gaps
    - A question can have MULTIPLE PRIMARY laws (e.g., corporate + insolvency)
+   - CRITICAL — err on the side of OVER-inclusion: It is far better to list a law that turns
+     out to be marginally relevant than to omit one that the analysis later needs. For every
+     legal issue you identify, ask yourself: "What foundational or adjacent law governs the
+     actors, relationships, obligations, or sanctions involved?" and include it.
+     Examples of commonly missed connections:
+       • Corporate scenario → Legea 31/1990 (company law defines actor duties/liability)
+       • Any potential criminal conduct → Codul Penal (286/2009)
+       • Contractual obligations → Codul Civil (287/2009)
+       • Employment aspects → Codul Muncii (53/2003)
+       • Tax/fiscal implications → Codul Fiscal (227/2015)
+       • Procedural questions → the relevant procedure code
+     These are examples, not an exhaustive list. Apply the same reasoning to ANY legal domain.
    - Include the law's official number, year, and Romanian title
    - Include a brief reason explaining why this law applies
    - If the Legal Library list is provided, use it as reference but do NOT restrict your identification to it

@@ -459,10 +459,13 @@ def _check_missing_articles(rl_rap_output: dict) -> list[str]:
 
 
 def _fetch_missing_articles(missing_refs: list[str], state: dict, db: Session) -> list[dict]:
-    """Attempt to fetch missing articles from DB. Returns list of new article dicts."""
-    from app.models.law import Article
-    import re
+    """Attempt to fetch missing articles from DB. Returns list of new article dicts.
 
+    If a referenced law wasn't in the original pipeline (not in selected_versions),
+    this function will look it up directly in the DB and use the best available version.
+    """
+
+    today = state.get("today", datetime.date.today().isoformat())
     fetched = []
     for ref in missing_refs:
         art_match = re.search(r"art\.?\s*(\d+(?:\^\d+)?)", ref)
@@ -482,8 +485,47 @@ def _fetch_missing_articles(missing_refs: list[str], state: dict, db: Session) -
 
         selected = state.get("selected_versions", {})
         version_info = selected.get(law_key)
+
+        # If the law wasn't in the pipeline, try to find it directly in the DB
         if not version_info:
-            continue
+            db_law = (
+                db.query(Law)
+                .filter(Law.law_number == law_number, Law.law_year == int(law_year))
+                .first()
+            )
+            if not db_law:
+                continue
+
+            # Find the best version: current, or newest before today
+            version = (
+                db.query(LawVersion)
+                .filter(
+                    LawVersion.law_id == db_law.id,
+                    LawVersion.date_in_force <= today,
+                )
+                .order_by(LawVersion.date_in_force.desc())
+                .first()
+            )
+            if not version:
+                # Fallback: any version at all
+                version = (
+                    db.query(LawVersion)
+                    .filter(LawVersion.law_id == db_law.id)
+                    .order_by(LawVersion.date_in_force.desc())
+                    .first()
+                )
+            if not version:
+                continue
+
+            version_info = {
+                "law_version_id": version.id,
+                "law_id": db_law.id,
+                "law_title": db_law.title or "",
+                "date_in_force": str(version.date_in_force) if version.date_in_force else None,
+            }
+            # Register this version in the pipeline state so subsequent lookups find it
+            selected[law_key] = version_info
+            state.setdefault("unique_versions", {}).setdefault(law_key, set()).add(version.id)
 
         law_version_id = version_info.get("law_version_id")
         if not law_version_id:
@@ -512,6 +554,55 @@ def _fetch_missing_articles(missing_refs: list[str], state: dict, db: Session) -
             })
 
     return fetched
+
+
+def _flag_missing_laws_from_answer(state: dict, db: Session) -> None:
+    """Parse missing_info from Step 7 structured output to detect laws not in the pipeline.
+
+    Adds actionable flags so the user knows which laws were needed but not retrieved.
+    """
+    structured = state.get("answer_structured")
+    if not structured:
+        return
+
+    missing_info = structured.get("missing_info")
+    if not missing_info:
+        return
+
+    # Extract law references like "31/1990", "286/2009", etc.
+    law_refs = re.findall(r"(\d+)/(\d{4})", missing_info)
+    if not law_refs:
+        return
+
+    candidate_keys = {
+        f"{c['law_number']}/{c['law_year']}"
+        for c in state.get("candidate_laws", [])
+    }
+
+    for law_number, law_year in law_refs:
+        law_key = f"{law_number}/{law_year}"
+        if law_key in candidate_keys:
+            # Law was in the pipeline — already handled by other checks
+            continue
+
+        # This law was mentioned in missing_info but never entered the pipeline
+        db_law = (
+            db.query(Law)
+            .filter(Law.law_number == law_number, Law.law_year == int(law_year))
+            .first()
+        )
+        if db_law:
+            state["flags"].append(
+                f"Analiza a identificat necesitatea Legii {law_key} ({db_law.title or ''}) "
+                f"care există în bibliotecă dar nu a fost inclusă în pipeline. "
+                f"Repuneți întrebarea pentru a include această lege."
+            )
+        else:
+            state["flags"].append(
+                f"Analiza a identificat necesitatea Legii {law_key} "
+                f"care nu este disponibilă în bibliotecă. "
+                f"Importați legea și repuneți întrebarea."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +749,9 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
         t0 = time.time()
         state = _step7_5_citation_validation(state, db)
         yield _step_event(85, "citation_validation", "done", duration=time.time() - t0)
+
+    # Check if Step 7 identified laws that weren't in the pipeline
+    _flag_missing_laws_from_answer(state, db)
 
     # Derive final confidence from all signals
     retrieved = state.get("retrieved_articles", [])
@@ -1380,13 +1474,13 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
             "reasoning": _build_reasoning_panel(state),
         }
 
-    # Check if any PRIMARY law needs import, has wrong version, or is stale
-    primary_laws = [c for c in candidate_laws if c["role"] == "PRIMARY"]
+    # Check if any law (PRIMARY or SECONDARY) needs import, has wrong version, or is stale
+    all_laws = candidate_laws
     needs_pause = any(
         law.get("availability") in ("missing", "wrong_version")
         or law.get("version_status") == "stale"
         or law.get("currency_status") == "stale"
-        for law in primary_laws
+        for law in all_laws
     )
 
     if needs_pause:
@@ -1421,10 +1515,10 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
             laws_preview.append(preview)
 
         # Build user-friendly message
-        missing = [l for l in primary_laws if l.get("availability") == "missing"]
-        wrong_ver = [l for l in primary_laws if l.get("availability") == "wrong_version"]
+        missing = [l for l in all_laws if l.get("availability") == "missing"]
+        wrong_ver = [l for l in all_laws if l.get("availability") == "wrong_version"]
         stale = [
-            l for l in primary_laws
+            l for l in all_laws
             if l.get("version_status") == "stale" or l.get("currency_status") == "stale"
         ]
         parts = []
@@ -1451,16 +1545,8 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
             "laws": laws_preview,
         }
 
-    # Flag missing SECONDARY laws but don't pause
-    secondary_missing = [
-        c for c in candidate_laws
-        if c["role"] == "SECONDARY" and c.get("availability") in ("missing", "wrong_version")
-    ]
-    for law in secondary_missing:
-        state["flags"].append(
-            f"SECONDARY law {law['law_number']}/{law['law_year']} ({law.get('title', '')}) "
-            f"not available — answer may be incomplete"
-        )
+    # Note: SECONDARY laws with missing/wrong_version/stale status are now
+    # handled by the pause logic above (same as PRIMARY laws).
 
     return None
 
@@ -1675,43 +1761,49 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
     }
 
     for tier_key, n_results in tier_limits.items():
-        # Collect version IDs for this tier's laws (all versions needed across issues)
-        version_ids = []
-        for law in state.get("law_mapping", {}).get(tier_key, []):
+        # Search PER LAW to guarantee each law gets coverage.
+        # Without this, a single dominant law (e.g., insolvency) can take all
+        # retrieval slots, leaving other PRIMARY laws with zero articles.
+        tier_laws = state.get("law_mapping", {}).get(tier_key, [])
+        laws_with_versions = []
+        for law in tier_laws:
             key = f"{law['law_number']}/{law['law_year']}"
-            vids = state.get("unique_versions", {}).get(key, [])
-            if vids:
-                version_ids.extend(vids)
-            else:
-                # Fallback to selected_versions for backward compat
+            vids = list(state.get("unique_versions", {}).get(key, []))
+            if not vids:
                 v = state.get("selected_versions", {}).get(key)
                 if v:
-                    version_ids.append(v["law_version_id"])
+                    vids = [v["law_version_id"]]
+            if vids:
+                laws_with_versions.append((key, vids))
 
-        if not version_ids:
+        if not laws_with_versions:
             continue
 
-        # BM25 search
-        bm25_results = search_bm25(db, state["question"], version_ids, limit=n_results)
-        bm25_count += len(bm25_results)
+        # Distribute retrieval budget across laws in this tier
+        per_law_limit = max(5, n_results // len(laws_with_versions))
 
-        # Semantic search (ChromaDB)
-        semantic_results = query_articles(
-            state["question"], law_version_ids=version_ids, n_results=n_results
-        )
-        semantic_count += len(semantic_results)
+        for law_key, version_ids in laws_with_versions:
+            # BM25 search for this law
+            bm25_results = search_bm25(db, state["question"], version_ids, limit=per_law_limit)
+            bm25_count += len(bm25_results)
 
-        # Merge and deduplicate
-        for art in bm25_results + semantic_results:
-            doc_type = art.get("doc_type", "article")
-            aid = f"{doc_type}:{art['article_id']}"
-            if aid not in seen_ids:
-                seen_ids.add(aid)
-                art["tier"] = tier_key
-                art["role"] = TIER_TO_ROLE.get(tier_key, "SECONDARY")
-                all_articles.append(art)
-            else:
-                duplicates_removed += 1
+            # Semantic search for this law
+            semantic_results = query_articles(
+                state["question"], law_version_ids=version_ids, n_results=per_law_limit
+            )
+            semantic_count += len(semantic_results)
+
+            # Merge and deduplicate
+            for art in bm25_results + semantic_results:
+                doc_type = art.get("doc_type", "article")
+                aid = f"{doc_type}:{art['article_id']}"
+                if aid not in seen_ids:
+                    seen_ids.add(aid)
+                    art["tier"] = tier_key
+                    art["role"] = TIER_TO_ROLE.get(tier_key, "SECONDARY")
+                    all_articles.append(art)
+                else:
+                    duplicates_removed += 1
 
     # Entity-aware targeted retrieval
     entity_count = 0
