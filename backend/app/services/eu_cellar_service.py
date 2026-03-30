@@ -444,6 +444,11 @@ def _store_eu_version(db, law, ver_celex, date_str, content, language, is_curren
     if preamble.get("citations") or preamble.get("recitals"):
         _store_preamble_article(db, version, preamble)
 
+    # Store footnotes as special article
+    footnotes = content.get("footnotes", [])
+    if footnotes:
+        _store_footnotes_article(db, version, footnotes)
+
     # Walk hierarchy from books_data
     for book_data in content.get("books_data", []):
         for title_data in book_data.get("titles", []):
@@ -638,6 +643,34 @@ def _store_preamble_article(db, version, preamble):
             paragraph_number=para.get("label", "").strip("()") or str(p_idx + 1),
             label=para.get("label", ""),
             text=para.get("text", ""),
+            order_index=p_idx,
+        )
+        db.add(paragraph)
+
+
+def _store_footnotes_article(db, version, footnotes):
+    """Store footnotes as a special article with order_index=9999 (at the end)."""
+    full_parts = ["Note de subsol"]
+    for fn in footnotes:
+        full_parts.append(fn.get("text", ""))
+
+    article = Article(
+        law_version_id=version.id,
+        structural_element_id=None,
+        article_number="Note de subsol",
+        label="Note de subsol",
+        full_text="\n".join(full_parts),
+        order_index=9999,
+    )
+    db.add(article)
+    db.flush()
+
+    for p_idx, fn in enumerate(footnotes):
+        paragraph = Paragraph(
+            article_id=article.id,
+            paragraph_number=fn.get("number", str(p_idx + 1)),
+            label=f"({fn['number']})" if fn.get("number") else "",
+            text=fn.get("text", ""),
             order_index=p_idx,
         )
         db.add(paragraph)

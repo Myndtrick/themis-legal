@@ -119,12 +119,15 @@ def parse_eu_xhtml(html: str) -> dict:
     for anx_div in container.find_all("div", id=re.compile(r"^anx_")):
         annexes.append(_parse_annex(anx_div))
 
+    footnotes = _extract_footnotes(container)
+
     return {
         "title": title,
         "preamble": preamble,
         "books_data": books_data,
         "articles": articles,
         "annexes": annexes,
+        "footnotes": footnotes,
     }
 
 
@@ -135,6 +138,7 @@ def _empty_result() -> dict:
         "books_data": [],
         "articles": {},
         "annexes": [],
+        "footnotes": [],
     }
 
 
@@ -144,7 +148,7 @@ def _extract_title(container: Tag) -> str:
     if not title_div:
         return ""
     parts = []
-    for p in title_div.find_all("p", class_="oj-doc-ti"):
+    for p in title_div.find_all("p", class_=["oj-doc-ti", "title-doc-first"]):
         text = p.get_text(strip=True)
         if text:
             parts.append(text)
@@ -182,6 +186,44 @@ def _extract_preamble(container: Tag) -> dict:
         recitals.append({"number": number, "text": text})
 
     return {"citations": citations, "recitals": recitals}
+
+
+def _extract_footnotes(container: Tag) -> list[dict]:
+    """Extract footnotes from oj-note / note paragraphs.
+
+    Footnotes appear at the end of the document (often inside div#fnp_1)
+    as <p class="oj-note"> or <p class="note"> elements, each containing
+    a reference anchor <a id="ntr..."> and the footnote text.
+    """
+    footnotes = []
+
+    # Modern format: oj-note
+    for p in container.find_all("p", class_="oj-note"):
+        text = p.get_text(strip=True)
+        if not text:
+            continue
+        # Extract footnote number from anchor
+        anchor = p.find("a", id=re.compile(r"^ntr"))
+        number = ""
+        if anchor:
+            num_span = anchor.find("span")
+            number = num_span.get_text(strip=True) if num_span else anchor.get_text(strip=True)
+        footnotes.append({"number": number, "text": text})
+
+    # Legacy format: note (without oj- prefix)
+    if not footnotes:
+        for p in container.find_all("p", class_="note"):
+            text = p.get_text(strip=True)
+            if not text:
+                continue
+            anchor = p.find("a", id=re.compile(r"^ntr"))
+            number = ""
+            if anchor:
+                num_span = anchor.find("span")
+                number = num_span.get_text(strip=True) if num_span else anchor.get_text(strip=True)
+            footnotes.append({"number": number, "text": text})
+
+    return footnotes
 
 
 def _find_direct_children(parent: Tag, id_pattern: str) -> list[Tag]:
@@ -310,7 +352,7 @@ def _parse_section_div(sct_div: Tag, articles: dict) -> dict:
 
 
 def _extract_section_title(div: Tag) -> str | None:
-    """Extract title from eli-title > oj-ti-section-2 or oj-sti-art."""
+    """Extract title from eli-title > oj-ti-section-2 or title-division-2."""
     title_div = div.find("div", class_="eli-title", recursive=False)
     if not title_div:
         # Also check direct children
@@ -320,9 +362,15 @@ def _extract_section_title(div: Tag) -> str | None:
                 break
 
     if title_div:
-        p = title_div.find("p", class_="oj-ti-section-2")
-        if p:
-            return p.get_text(strip=True)
+        for cls in ("oj-ti-section-2", "title-division-2"):
+            p = title_div.find("p", class_=cls)
+            if p:
+                return p.get_text(strip=True)
+
+    # Consolidated format: title-division-2 as direct child of the structural div
+    p = div.find("p", class_="title-division-2", recursive=False)
+    if p:
+        return p.get_text(strip=True)
     return None
 
 
@@ -335,11 +383,13 @@ def _parse_article(art_div: Tag) -> dict | None:
 
     art_num = art_num_match.group(1)
 
-    # Article title from oj-sti-art
+    # Article title from oj-sti-art or stitle-article-norm (consolidated format)
     article_title = ""
-    sti_p = art_div.find("p", class_="oj-sti-art")
-    if sti_p:
-        article_title = sti_p.get_text(strip=True)
+    for cls in ("oj-sti-art", "stitle-article-norm"):
+        sti_p = art_div.find("p", class_=cls)
+        if sti_p:
+            article_title = sti_p.get_text(strip=True)
+            break
 
     # Parse paragraphs from div#NNN.MMM children
     paragraphs = _extract_paragraphs(art_div)
@@ -360,8 +410,10 @@ def _parse_article(art_div: Tag) -> dict | None:
 def _extract_paragraphs(art_div: Tag) -> list[dict]:
     """Extract paragraphs from div#NNN.MMM containers within an article.
 
-    Falls back to collecting direct <p> text and direct <table> sub-clauses
-    for articles without NNN.MMM divs (e.g., Art. 4 Definiții in GDPR).
+    Handles three formats:
+    - Modern (base acts): div#NNN.MMM paragraph containers with p.oj-normal
+    - Consolidated: div.norm paragraph containers with span.no-parag labels
+    - Fallback: direct p.oj-normal / p.norm text and table/grid sub-clauses
     """
     paragraphs = []
 
@@ -378,23 +430,39 @@ def _extract_paragraphs(art_div: Tag) -> list[dict]:
             para = _parse_paragraph(para_div)
             if para:
                 paragraphs.append(para)
-    else:
-        # Fallback: collect direct <p class="oj-normal"> and direct <table> sub-clauses
-        # This handles articles like Art. 4 (Definiții) that have tables directly in the article div
-        text_parts = []
-        for child in art_div.children:
-            if isinstance(child, Tag) and child.name == "p" and "oj-normal" in (child.get("class") or []):
+        return paragraphs
+
+    # Consolidated format: div.norm children as paragraph containers
+    norm_divs = []
+    for child in art_div.children:
+        if isinstance(child, Tag) and child.name == "div" and "norm" in (child.get("class") or []):
+            norm_divs.append(child)
+
+    if norm_divs:
+        for norm_div in norm_divs:
+            para = _parse_consolidated_paragraph(norm_div)
+            if para:
+                paragraphs.append(para)
+        return paragraphs
+
+    # Fallback: collect direct <p class="oj-normal"> or <p class="norm"> and sub-clauses
+    text_parts = []
+    for child in art_div.children:
+        if isinstance(child, Tag) and child.name == "p":
+            cls = child.get("class") or []
+            if "oj-normal" in cls or "norm" in cls:
                 text_parts.append(child.get_text(strip=True))
 
-        intro_text = " ".join(text_parts).strip()
-        subparagraphs = _extract_table_subclauses(art_div)
+    intro_text = " ".join(text_parts).strip()
+    subparagraphs = _extract_table_subclauses(art_div)
+    subparagraphs.extend(_extract_grid_subclauses(art_div))
 
-        if intro_text or subparagraphs:
-            paragraphs.append({
-                "label": "",
-                "text": intro_text,
-                "subparagraphs": subparagraphs,
-            })
+    if intro_text or subparagraphs:
+        paragraphs.append({
+            "label": "",
+            "text": intro_text,
+            "subparagraphs": subparagraphs,
+        })
 
     return paragraphs
 
@@ -429,6 +497,106 @@ def _parse_paragraph(para_div: Tag) -> dict | None:
         "text": main_text,
         "subparagraphs": subparagraphs,
     }
+
+
+def _parse_consolidated_paragraph(norm_div: Tag) -> dict | None:
+    """Parse a consolidated-format paragraph (div.norm).
+
+    Structure:
+      <div class="norm">
+        <span class="no-parag">(1)  </span>
+        <div class="norm inline-element">
+          <p class="norm inline-element">Main text...</p>
+          <div class="grid-container grid-list">...sub-clauses...</div>
+        </div>
+      </div>
+    """
+    # Extract paragraph label from span.no-parag
+    label = ""
+    label_span = norm_div.find("span", class_="no-parag", recursive=False)
+    if label_span:
+        label_text = label_span.get_text(strip=True)
+        label_match = _PARA_LABEL_RE.match(label_text)
+        if label_match:
+            label = f"({label_match.group(1)})"
+
+    # Collect text from all <p> descendants (norm, norm inline-element, etc.)
+    text_parts = []
+    for p in norm_div.find_all("p"):
+        cls = p.get("class") or []
+        # Skip article labels and titles
+        if "title-article-norm" in cls or "stitle-article-norm" in cls:
+            continue
+        text = p.get_text(strip=True)
+        if text:
+            text_parts.append(text)
+
+    main_text = " ".join(text_parts).strip()
+
+    # Extract sub-clauses from grid lists
+    subparagraphs = _extract_grid_subclauses(norm_div)
+
+    if not main_text and not subparagraphs:
+        return None
+
+    return {
+        "label": label,
+        "text": main_text,
+        "subparagraphs": subparagraphs,
+    }
+
+
+def _extract_grid_subclauses(container: Tag) -> list[dict]:
+    """Extract (a), (b), (c) sub-clauses from div.grid-container.grid-list.
+
+    Structure:
+      <div class="grid-container grid-list">
+        <div class="list grid-list-column-1"><span>(a) </span></div>
+        <div class="grid-list-column-2"><p class="norm">text...</p></div>
+      </div>
+    """
+    subparagraphs = []
+
+    for grid_div in container.find_all("div", class_="grid-container"):
+        if "grid-list" not in (grid_div.get("class") or []):
+            continue
+
+        label_div = grid_div.find("div", class_="grid-list-column-1")
+        content_div = grid_div.find("div", class_="grid-list-column-2")
+        if not label_div or not content_div:
+            continue
+
+        label_text = label_div.get_text(strip=True)
+
+        # Get text from content div (excluding nested grid sub-clauses)
+        content_parts = []
+        for p in content_div.find_all("p", recursive=False):
+            t = p.get_text(strip=True)
+            if t:
+                content_parts.append(t)
+        # Also check for inline-element divs containing text
+        for div in content_div.find_all("div", class_="inline-element", recursive=False):
+            for p in div.find_all("p", recursive=False):
+                t = p.get_text(strip=True)
+                if t:
+                    content_parts.append(t)
+
+        content_text = " ".join(content_parts).strip()
+
+        # Check for nested sub-sub-clauses
+        nested_subs = _extract_grid_subclauses(content_div)
+        if nested_subs:
+            nested_text = "\n".join(f"{s['label']} {s['text']}" for s in nested_subs)
+            full_text = f"{label_text} {content_text}\n{nested_text}" if content_text else f"{label_text}\n{nested_text}"
+        else:
+            full_text = f"{label_text} {content_text}"
+
+        subparagraphs.append({
+            "label": label_text,
+            "text": full_text,
+        })
+
+    return subparagraphs
 
 
 def _extract_table_subclauses(container: Tag) -> list[dict]:
@@ -722,10 +890,23 @@ def _parse_legacy_format(soup: BeautifulSoup) -> dict:
             "articles": list(articles.keys()), "titles": [],
         }] if articles else []
 
+    # Extract footnotes (legacy format uses class="note")
+    footnotes = []
+    for p in body.find_all("p", class_="note"):
+        text = p.get_text(strip=True)
+        if text:
+            anchor = p.find("a", id=re.compile(r"^ntr"))
+            number = ""
+            if anchor:
+                num_span = anchor.find("span")
+                number = num_span.get_text(strip=True) if num_span else anchor.get_text(strip=True)
+            footnotes.append({"number": number, "text": text})
+
     return {
         "title": title,
         "preamble": {"citations": [], "recitals": []},
         "books_data": books_data,
         "articles": articles,
         "annexes": [],
+        "footnotes": footnotes,
     }
