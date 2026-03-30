@@ -145,6 +145,14 @@ def _build_step6_8_context(state: dict) -> str:
             for f in facts["missing"]:
                 parts.append(f"  {f['fact_id']}: {f['description']} (relevance: {f.get('relevance', '')})")
 
+    # Primary target and issue priorities
+    primary_target = state.get("primary_target")
+    if primary_target:
+        parts.append("\nPRIMARY TARGET:")
+        parts.append(f"  Actor: {primary_target.get('actor', 'unknown')}")
+        parts.append(f"  Concern: {primary_target.get('concern', 'unknown')}")
+        parts.append(f"  Primary issue: {primary_target.get('issue_id', 'unknown')}")
+
     # Per-issue article sets
     issue_articles = state.get("issue_articles", {})
     issue_versions = state.get("issue_versions", {})
@@ -152,7 +160,8 @@ def _build_step6_8_context(state: dict) -> str:
 
     for issue in legal_issues:
         iid = issue["issue_id"]
-        parts.append(f"\n{iid}: {issue.get('description', '')}")
+        priority_tag = f" [{issue.get('priority', '')}]" if issue.get("priority") else ""
+        parts.append(f"\n{iid}{priority_tag}: {issue.get('description', '')}")
         parts.append(f"  Relevant date: {issue.get('relevant_date', 'unknown')} ({issue.get('temporal_rule', '')})")
 
         for law_key in issue.get("applicable_laws", []):
