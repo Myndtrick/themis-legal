@@ -735,6 +735,56 @@ def _fetch_governing_norm(issue: dict, state: dict, db: Session) -> list[dict]:
     return []
 
 
+def _post_6_9_governing_norm_gate(state: dict) -> dict | None:
+    """Check if primary issue still lacks its governing norm after conditional retrieval.
+
+    Returns a gate event dict if hard pause is needed (law not in library),
+    or None if no pause needed (either norm found, or soft warning set).
+    """
+    primary_target = state.get("primary_target")
+    if not primary_target or not primary_target.get("issue_id"):
+        return None
+
+    primary_issue_id = primary_target["issue_id"]
+    rl_rap = state.get("rl_rap_output", {})
+
+    for issue in rl_rap.get("issues", []):
+        if issue.get("issue_id") != primary_issue_id:
+            continue
+
+        gns = issue.get("governing_norm_status", {})
+        if gns.get("status") != "MISSING":
+            return None
+
+        law_key = _extract_law_key(gns.get("missing_norm_ref", ""))
+        law_in_library = law_key and law_key in state.get("selected_versions", {})
+
+        if not law_in_library:
+            # Hard pause — offer import
+            return {
+                "type": "gate",
+                "gate": "governing_norm_missing",
+                "issue": issue.get("issue_label", issue.get("issue_id")),
+                "expected_norm": gns.get("expected_norm_description"),
+                "missing_ref": gns.get("missing_norm_ref"),
+                "message": (
+                    f"The core legal provision for the primary issue "
+                    f"({issue.get('issue_label', issue.get('issue_id'))}) was not found. "
+                    f"Expected: {gns.get('expected_norm_description', 'unknown')}. "
+                    f"Import the relevant law to proceed with a complete analysis."
+                ),
+            }
+        else:
+            # Soft warning — continue with disclosure
+            state["flags"].append(
+                f"GOVERNING_NORM_MISSING: {gns.get('expected_norm_description', 'governing norm not found')}"
+            )
+            state["governing_norm_incomplete"] = True
+            return None
+
+    return None
+
+
 def _flag_missing_laws_from_answer(state: dict, db: Session) -> None:
     """Parse missing_info from Step 7 structured output to detect laws not in the pipeline.
 
