@@ -637,6 +637,104 @@ def _fetch_missing_articles(missing_refs: list[str], state: dict, db: Session) -
     return fetched
 
 
+def _extract_law_key(ref: str | None) -> str:
+    """Extract law key (e.g., '85/2014') from an article reference string."""
+    if not ref:
+        return ""
+    match = re.search(r"(\d+)/(\d{4})", ref)
+    return f"{match.group(1)}/{match.group(2)}" if match else ""
+
+
+def _semantic_search_for_norm(
+    description: str,
+    law_key: str,
+    state: dict,
+    db: Session,
+) -> list[dict]:
+    """Semantic search for a governing norm using ChromaDB. Returns list of article dicts."""
+    if not description:
+        return []
+
+    # Find the law_version_id(s) for this law
+    version_ids = []
+    unique_versions = state.get("unique_versions", {})
+    if law_key and law_key in unique_versions:
+        version_ids = list(unique_versions[law_key])
+
+    if not version_ids:
+        # Try selected_versions
+        sv = state.get("selected_versions", {}).get(law_key, {})
+        vid = sv.get("law_version_id")
+        if vid:
+            version_ids = [vid]
+
+    if not version_ids:
+        return []
+
+    results = query_articles(
+        query_text=description,
+        law_version_ids=version_ids,
+        n_results=5,
+    )
+
+    # Convert ChromaDB results to pipeline article format
+    fetched = []
+    for r in results:
+        article_id = r.get("article_id")
+        if not article_id:
+            continue
+        article = db.query(Article).filter(Article.id == article_id).first()
+        if not article:
+            continue
+
+        sv = state.get("selected_versions", {}).get(law_key, {})
+        fetched.append({
+            "article_id": article.id,
+            "article_number": article.article_number,
+            "law_number": law_key.split("/")[0] if "/" in law_key else "",
+            "law_year": law_key.split("/")[1] if "/" in law_key else "",
+            "law_version_id": article.law_version_id,
+            "law_title": sv.get("law_title", ""),
+            "date_in_force": sv.get("date_in_force", ""),
+            "text": article.full_text or "",
+            "source": "governing_norm_search",
+            "tier": "reasoning_request",
+            "role": "PRIMARY",
+            "is_abrogated": article.is_abrogated or False,
+            "doc_type": "article",
+        })
+
+    return fetched
+
+
+def _fetch_governing_norm(issue: dict, state: dict, db: Session) -> list[dict]:
+    """Attempt to fetch missing governing norm for an issue.
+
+    Strategy 1: exact reference fetch (reuses _fetch_missing_articles).
+    Strategy 2: semantic search using expected_norm_description (ChromaDB).
+    """
+    gns = issue.get("governing_norm_status", {})
+    if gns.get("status") != "MISSING":
+        return []
+
+    # Strategy 1: exact reference
+    ref = gns.get("missing_norm_ref")
+    if ref:
+        fetched = _fetch_missing_articles([ref], state, db)
+        if fetched:
+            return fetched
+
+    # Strategy 2: semantic search using expected_norm_description
+    description = gns.get("expected_norm_description")
+    if description:
+        law_key = _extract_law_key(ref)
+        fetched = _semantic_search_for_norm(description, law_key, state, db)
+        if fetched:
+            return fetched
+
+    return []
+
+
 def _flag_missing_laws_from_answer(state: dict, db: Session) -> None:
     """Parse missing_info from Step 7 structured output to detect laws not in the pipeline.
 
