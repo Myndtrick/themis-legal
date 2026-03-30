@@ -593,6 +593,7 @@ def get_library_data(db: Session) -> dict:
         if cat:
             suggested.append({
                 "id": m.id, "title": m.title, "law_number": m.law_number,
+                "celex_number": m.celex_number,
                 "category_id": m.category_id, "category_slug": cat.slug,
                 "group_slug": cat.group.slug,
             })
