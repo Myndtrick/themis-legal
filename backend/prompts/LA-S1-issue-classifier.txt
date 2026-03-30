@@ -68,10 +68,25 @@ CLASSIFICATION RULES:
    - Output a single entry in "legal_issues" with relevant_date = today or mentioned date
    - Output "events" as an empty array unless a date is explicitly mentioned
 
-8. Complexity Assessment:
-   - "SIMPLE": Single factual question about a current rule, definition, threshold, or procedure. No scenario, no multiple parties, no temporal dimension.
-   - "STANDARD": Specific situation with 1-2 issues, potentially requiring temporal or exception analysis.
-   - "COMPLEX": Multi-issue scenario with multiple parties, dates, conflicting laws, or comprehensive analysis needed.
+8. Complexity Assessment — use the decision rubric:
+
+   COMPLEXITY DECISION RUBRIC — count how many signals are present:
+     Signal A: Multiple distinct legal issues (not sub-points of one issue)
+     Signal B: Multiple parties with different legal positions
+     Signal C: Temporal dimension (past events, future deadlines, law version changes)
+     Signal D: Potential conflicts between laws or articles
+     Signal E: Scenario with stated/assumed facts requiring condition analysis
+
+     0 signals -> "SIMPLE"
+     1-2 signals -> "STANDARD"
+     3+ signals -> "COMPLEX"
+
+     Override: If the question is literally "what is X" or "what does Art. Y say" -> always "SIMPLE" regardless of signals.
+
+   Examples:
+     "Care este capitalul social minim pentru un SRL?" -> 0 signals -> SIMPLE
+     "Un administrator a acordat un imprumut societatii fara aprobarea AGA. Este valid?" -> Signal B (administrator vs company) + Signal E (scenario with facts) -> STANDARD
+     "O societate cu 3 asociati, 2 rezidenti si 1 nerezident, vrea sa fuzioneze cu o firma din UE. Ce obligatii fiscale si corporative au?" -> Signal A (fiscal + corporate) + Signal B (3 parties) + Signal D (domestic vs EU law) -> COMPLEX
 
 RESPONSE FORMAT — You must respond with valid JSON only, no other text:
 
