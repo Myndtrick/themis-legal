@@ -125,9 +125,15 @@ export default function LibraryPage() {
 
   async function handleAssign(categoryId: number) {
     if (!assigningLawId) return;
-    await api.laws.assignCategory(assigningLawId, categoryId);
-    setAssigningLawId(null);
-    fetchData();
+    try {
+      await api.laws.assignCategory(assigningLawId, categoryId);
+      setAssigningLawId(null);
+      fetchData();
+    } catch (err) {
+      console.error("Failed to assign category:", err);
+      setError(err instanceof Error ? err.message : "Failed to assign category");
+      setAssigningLawId(null);
+    }
   }
 
   // Optimistic import: immediately move suggestion to pending, run import in background
