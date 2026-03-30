@@ -30,6 +30,14 @@ def run_update_check():
     )
 
 
+def run_eu_update_check():
+    """Scheduled job: discover new consolidated versions for all EU laws."""
+    from app.services.eu_version_discovery import run_eu_weekly_discovery
+    logger.info("Running scheduled EU version discovery...")
+    results = run_eu_weekly_discovery()
+    logger.info(f"EU discovery complete: {results}")
+
+
 def _add_column_if_missing(db: Session, table: str, column: str, col_type: str, default: str | None = None):
     """Add a column to a table if it doesn't exist. Safe for repeated runs."""
     from sqlalchemy import text, inspect as sa_inspect
@@ -104,6 +112,15 @@ async def lifespan(app: FastAPI):
         hour=3,
         minute=0,
         id="daily_law_update",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_eu_update_check,
+        "cron",
+        day_of_week="sun",
+        hour=4,
+        minute=0,
+        id="weekly_eu_discovery",
         replace_existing=True,
     )
     scheduler.start()
