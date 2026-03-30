@@ -19,6 +19,7 @@ interface SearchResult {
   description: string;
   already_imported: boolean;
   local_law_id: number | null;
+  source?: "ro" | "eu";
 }
 
 interface FilterOption {
@@ -39,6 +40,13 @@ const DEFAULT_ACT_TYPES: FilterOption[] = [
   { label: "NORMĂ", value: "11" },
   { label: "REGULAMENT", value: "12" },
   { label: "DIRECTIVĂ", value: "113" },
+];
+
+const EU_DOC_TYPES: FilterOption[] = [
+  { value: "directive", label: "Directive" },
+  { value: "regulation", label: "Regulation" },
+  { value: "eu_decision", label: "Decision" },
+  { value: "treaty", label: "Treaty" },
 ];
 
 const DOC_TYPE_COLORS: Record<string, string> = {
@@ -71,6 +79,7 @@ interface CombinedSearchProps {
 
 export default function CombinedSearch({ groups, suggestedLaws, onImportComplete }: CombinedSearchProps) {
   const router = useRouter();
+  const [source, setSource] = useState<"all" | "ro" | "eu">("all");
   const [keyword, setKeyword] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [showResults, setShowResults] = useState(false);
@@ -183,11 +192,13 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     });
   }
 
-  const filteredActTypes = docTypeSearch
-    ? actTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
-    : actTypes;
+  const visibleDocTypes = source === "eu" ? EU_DOC_TYPES : source === "ro" ? actTypes : [...actTypes, ...EU_DOC_TYPES];
 
-  const selectedDocTypeLabels = actTypes.filter((t) => selectedDocTypes.has(t.value));
+  const filteredActTypes = docTypeSearch
+    ? visibleDocTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
+    : visibleDocTypes;
+
+  const selectedDocTypeLabels = visibleDocTypes.filter((t) => selectedDocTypes.has(t.value));
 
   // Local search as you type
   const doLocalSearch = useCallback(async (q: string) => {
@@ -219,21 +230,49 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     setSearchError(null);
     setShowResults(true);
 
-    const params = new URLSearchParams();
-    if (keyword) params.set("keyword", keyword);
-    if (selectedDocTypes.size > 0) params.set("doc_type", Array.from(selectedDocTypes).join(","));
-    if (lawNumber) params.set("number", lawNumber);
-    if (year) params.set("year", year);
-    if (emitent) params.set("emitent", emitent);
-    if (dateFrom) params.set("date_from", dateFrom);
-    if (dateTo) params.set("date_to", dateTo);
-    params.set("include_repealed", "only_in_force");
-
     try {
+      // EU-only search
+      if (source === "eu") {
+        const euResults = await api.laws.euSearch({
+          keyword: keyword || undefined,
+          doc_type: selectedDocTypes.size === 1 ? [...selectedDocTypes][0] : undefined,
+          year: year || undefined,
+          number: lawNumber || undefined,
+        });
+        setExternalResults(euResults.map(r => ({
+          ver_id: r.celex,
+          title: r.title,
+          doc_type: r.doc_type,
+          number: r.celex,
+          date: r.date,
+          date_iso: r.date,
+          issuer: "European Union",
+          description: r.title,
+          already_imported: r.already_imported,
+          local_law_id: null,
+          source: "eu" as const,
+        })));
+        setExternalTotal(euResults.length);
+        setSearching(false);
+        return;
+      }
+
+      // Romanian / All search
+      const params = new URLSearchParams();
+      if (keyword) params.set("keyword", keyword);
+      if (selectedDocTypes.size > 0) params.set("doc_type", Array.from(selectedDocTypes).join(","));
+      if (lawNumber) params.set("number", lawNumber);
+      if (year) params.set("year", year);
+      if (emitent) params.set("emitent", emitent);
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
+      params.set("include_repealed", "only_in_force");
+      if (source === "ro") params.set("source", "ro");
+
       const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`);
       if (!res.ok) throw new Error(`Search failed (${res.status})`);
       const data = await res.json();
-      setExternalResults(data.results);
+      setExternalResults(data.results.map((r: SearchResult) => ({ ...r, source: "ro" as const })));
       setExternalTotal(data.total);
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : "Search failed");
@@ -248,6 +287,27 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     setPendingImportId(null);
     setImportingIds((prev) => new Set(prev).add(verId));
     setImportErrors((prev) => { const next = { ...prev }; delete next[verId]; return next; });
+
+    // EU import path
+    const result = externalResults.find(r => r.ver_id === verId);
+    if (result?.source === "eu") {
+      try {
+        const res = await api.laws.euImport(verId, importHistory);
+        setImportedIds((prev) => new Set(prev).add(verId));
+        setImportedLawForCategory({
+          lawId: res.law_id,
+          title: result.title,
+          prefillCategoryId: null, // EU laws auto-categorize on backend
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Import failed";
+        setImportErrors((prev) => ({ ...prev, [verId]: msg }));
+      } finally {
+        setImportingIds((prev) => { const next = new Set(prev); next.delete(verId); return next; });
+      }
+      return;
+    }
+
     try {
       // History imports can take minutes — use a 10-minute timeout
       const controller = new AbortController();
@@ -363,6 +423,24 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   return (
     <div ref={dropdownRef} className="relative mb-5">
+      {/* Source toggle */}
+      <div className="flex gap-1 mb-2 p-1 bg-neutral-100 rounded-lg w-fit">
+        {(["all", "ro", "eu"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => { setSource(s); setExternalResults([]); setSelectedDocTypes(new Set()); }}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              source === s
+                ? "bg-white shadow-sm font-medium text-gray-900"
+                : "text-neutral-500 hover:text-neutral-700"
+            }`}
+          >
+            {s === "all" ? "All" : s === "ro" ? "Romanian" : "EU"}
+          </button>
+        ))}
+      </div>
+
       <form onSubmit={handleSearch} className="flex gap-2">
         <input
           type="text"
@@ -537,9 +615,11 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
           {/* External results */}
           {externalResults.length > 0 && (
             <>
-              <div className="px-4 py-2 bg-amber-50 border-b border-gray-200">
-                <span className="text-[11px] font-bold text-amber-700 tracking-wider">FROM LEGISLATIE.JUST.RO</span>
-                <span className="text-[11px] text-amber-600 ml-2">{externalTotal} result{externalTotal !== 1 ? "s" : ""}</span>
+              <div className={`px-4 py-2 border-b border-gray-200 ${source === "eu" ? "bg-blue-50" : "bg-amber-50"}`}>
+                <span className={`text-[11px] font-bold tracking-wider ${source === "eu" ? "text-blue-700" : "text-amber-700"}`}>
+                  {source === "eu" ? "FROM EUR-LEX (EU)" : "FROM LEGISLATIE.JUST.RO"}
+                </span>
+                <span className={`text-[11px] ml-2 ${source === "eu" ? "text-blue-600" : "text-amber-600"}`}>{externalTotal} result{externalTotal !== 1 ? "s" : ""}</span>
               </div>
               {externalResults.map((r) => {
                 const colorClass = DOC_TYPE_COLORS[r.doc_type] || "bg-gray-100 text-gray-600";
@@ -550,10 +630,15 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                   <div key={r.ver_id} className="px-4 py-2.5 border-b border-gray-100 flex justify-between items-center">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5">
+                        {r.source === "eu" ? (
+                          <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700">EU</span>
+                        ) : (
+                          <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700">RO</span>
+                        )}
                         <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold ${colorClass}`}>
                           {r.doc_type || "DOC"}
                         </span>
-                        <span className="text-sm font-semibold">nr. {r.number} din {r.date}</span>
+                        <span className="text-sm font-semibold">{r.source === "eu" ? r.date : `nr. ${r.number} din ${r.date}`}</span>
                       </div>
                       <p className="text-xs text-gray-500 truncate">{r.description || r.title}</p>
                     </div>
@@ -609,7 +694,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
           {/* Loading indicator */}
           {searching && (
             <div className="px-4 py-3 text-center text-xs text-gray-400">
-              Searching legislatie.just.ro...
+              {source === "eu" ? "Searching EUR-Lex..." : "Searching legislatie.just.ro..."}
             </div>
           )}
         </div>
