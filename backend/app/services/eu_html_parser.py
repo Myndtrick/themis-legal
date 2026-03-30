@@ -7,9 +7,9 @@ logger = logging.getLogger(__name__)
 
 _PARA_NUM_RE = re.compile(r"^(\d+)\.\s+")
 _SUBPARA_RE = re.compile(r"^\(([a-z])\)\s*")
-_ARTICLE_NUM_RE = re.compile(r"Article\s+(\d+[a-z]?)", re.IGNORECASE)
-_CHAPTER_NUM_RE = re.compile(r"CHAPTER\s+([IVXLCDM]+)", re.IGNORECASE)
-_ANNEX_RE = re.compile(r"ANNEX\s*([IVXLCDM]*)", re.IGNORECASE)
+_ARTICLE_NUM_RE = re.compile(r"(?:Article|Articolul|Artikel|Articolo|Artículo)\s+(\d+[a-z]?)", re.IGNORECASE)
+_CHAPTER_NUM_RE = re.compile(r"(?:CHAPTER|CAPITOLUL|CHAPITRE|KAPITEL)\s+([IVXLCDM]+)", re.IGNORECASE)
+_ANNEX_RE = re.compile(r"(?:ANNEX|ANEXA|ANNEXE|ANHANG)\s*([IVXLCDM]*)", re.IGNORECASE)
 
 
 def parse_eu_xhtml(html: str) -> dict:
@@ -30,6 +30,7 @@ def _extract_title(soup: BeautifulSoup) -> str:
 
 
 def _extract_body(soup: BeautifulSoup) -> tuple[list, list, list]:
+    """Walk all oj-ti-section-1 and oj-ti-art elements in document order."""
     structure = []
     articles = []
     annexes = []
@@ -37,49 +38,62 @@ def _extract_body(soup: BeautifulSoup) -> tuple[list, list, list]:
 
     doc = soup.find("div", id="document1")
     if not doc:
+        doc = soup.find("div", class_="eli-container")
+    if not doc:
         return structure, articles, annexes
 
-    for element in doc.children:
-        if not isinstance(element, Tag):
-            continue
+    # Collect all chapter headings and article titles in document order
+    markers = doc.find_all("p", class_=["oj-ti-section-1", "oj-ti-art"])
 
-        chapter_title_p = element.find("p", class_="oj-ti-section-1")
-        if chapter_title_p and not element.find("p", class_="oj-ti-art"):
-            chapter_text = chapter_title_p.get_text(strip=True)
-            annex_match = _ANNEX_RE.match(chapter_text)
+    for marker in markers:
+        text = marker.get_text(strip=True)
+        classes = marker.get("class", [])
+
+        # Chapter / section heading
+        if "oj-ti-section-1" in classes:
+            annex_match = _ANNEX_RE.match(text)
             if annex_match:
-                annex_text_parts = []
-                for p in element.find_all("p", class_="oj-normal"):
-                    annex_text_parts.append(p.get_text(strip=True))
+                # Collect annex text from the parent div
+                parent = marker.find_parent("div", class_="eli-subdivision") or marker.parent
+                annex_text_parts = [p.get_text(strip=True) for p in parent.find_all("p", class_="oj-normal")]
                 annexes.append({
-                    "title": chapter_text,
+                    "title": text,
                     "source_id": f"annex_{annex_match.group(1) or '1'}",
                     "full_text": "\n".join(annex_text_parts),
                 })
                 continue
 
-            chapter_num_match = _CHAPTER_NUM_RE.match(chapter_text)
-            subtitle_p = element.find("p", class_="oj-sti-section-1")
+            chapter_num_match = _CHAPTER_NUM_RE.match(text)
+            # Look for subtitle sibling
+            subtitle = marker.find_next_sibling("p", class_="oj-sti-section-1")
+            if not subtitle:
+                # Try within same parent
+                parent = marker.parent
+                if parent:
+                    subtitle = parent.find("p", class_="oj-sti-section-1")
             current_chapter = {
                 "type": "chapter",
-                "number": chapter_num_match.group(1) if chapter_num_match else chapter_text,
-                "title": subtitle_p.get_text(strip=True) if subtitle_p else "",
+                "number": chapter_num_match.group(1) if chapter_num_match else text,
+                "title": subtitle.get_text(strip=True) if subtitle else "",
                 "article_ids": [],
             }
             structure.append(current_chapter)
             continue
 
-        art_title_p = element.find("p", class_="oj-ti-art")
-        if art_title_p:
-            art_text = art_title_p.get_text(strip=True)
-            art_match = _ARTICLE_NUM_RE.match(art_text)
+        # Article title
+        if "oj-ti-art" in classes:
+            art_match = _ARTICLE_NUM_RE.match(text)
             if not art_match:
                 continue
             art_num = art_match.group(1)
-            subtitle_p = element.find("p", class_="oj-sti-art")
+
+            # Find the containing div for this article's content
+            art_div = marker.find_parent("div", class_="eli-subdivision") or marker.parent
+            subtitle_p = art_div.find("p", class_="oj-sti-art") if art_div else None
             label = subtitle_p.get_text(strip=True) if subtitle_p else ""
-            paragraphs = _extract_paragraphs(element)
-            full_text = _build_full_text(art_text, label, paragraphs)
+            paragraphs = _extract_paragraphs(art_div) if art_div else []
+            full_text = _build_full_text(text, label, paragraphs)
+
             article = {
                 "number": art_num,
                 "label": label,
@@ -90,22 +104,6 @@ def _extract_body(soup: BeautifulSoup) -> tuple[list, list, list]:
             articles.append(article)
             if current_chapter:
                 current_chapter["article_ids"].append(art_num)
-
-    for div in doc.find_all("div", class_="eli-subdivision"):
-        div_id = div.get("id", "")
-        if div_id.startswith("anx_"):
-            title_p = div.find("p", class_="oj-ti-section-1")
-            if title_p and _ANNEX_RE.match(title_p.get_text(strip=True)):
-                annex_title = title_p.get_text(strip=True)
-                if any(a["title"] == annex_title for a in annexes):
-                    continue
-                text_parts = [p.get_text(strip=True) for p in div.find_all("p", class_="oj-normal")]
-                annex_match = _ANNEX_RE.match(annex_title)
-                annexes.append({
-                    "title": annex_title,
-                    "source_id": f"annex_{annex_match.group(1) if annex_match else '1'}",
-                    "full_text": "\n".join(text_parts),
-                })
 
     return structure, articles, annexes
 
