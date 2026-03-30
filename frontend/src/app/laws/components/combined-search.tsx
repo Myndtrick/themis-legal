@@ -294,11 +294,8 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       try {
         const res = await api.laws.euImport(verId, importHistory);
         setImportedIds((prev) => new Set(prev).add(verId));
-        setImportedLawForCategory({
-          lawId: res.law_id,
-          title: result.title,
-          prefillCategoryId: null, // EU laws auto-categorize on backend
-        });
+        // EU laws are auto-categorized on the backend — skip category modal
+        onImportComplete();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Import failed";
         setImportErrors((prev) => ({ ...prev, [verId]: msg }));
