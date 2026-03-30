@@ -558,14 +558,17 @@ def get_library_data(db: Session) -> dict:
 
     # 4. Suggestions — use pre-loaded categories, no per-mapping queries
     all_mappings = db.query(LawMapping).all()
-    imported_numbers = {law.law_number for law in laws}
-    imported_titles = {law.title.lower() for law in laws}
+    imported_keys = {(law.law_number, law.law_year) for law in laws}
+    # Track seen (law_number, law_year) to deduplicate mappings
+    seen_keys: set[tuple[str | None, int | None]] = set()
     suggested = []
     for m in all_mappings:
-        if m.law_number and m.law_number in imported_numbers:
+        key = (m.law_number, m.law_year)
+        # Skip if this law is already imported (by number + year)
+        if m.law_number and key in imported_keys:
             continue
-        m_lower = m.title.lower()
-        if any(t in m_lower or m_lower in t for t in imported_titles):
+        # Skip duplicate mappings (same law_number + year already in suggestions)
+        if m.law_number and key in seen_keys:
             continue
         cat = all_categories.get(m.category_id)
         if cat:
@@ -574,6 +577,8 @@ def get_library_data(db: Session) -> dict:
                 "category_id": m.category_id, "category_slug": cat.slug,
                 "group_slug": cat.group.slug,
             })
+            if m.law_number:
+                seen_keys.add(key)
 
     return {
         "groups": groups_out, "laws": laws_out,
@@ -586,19 +591,22 @@ def get_library_data(db: Session) -> dict:
 
 
 def get_unimported_suggestions(db: Session) -> list[LawMapping]:
-    """Return LawMapping entries that haven't been imported yet."""
+    """Return LawMapping entries that haven't been imported yet (deduplicated)."""
     laws = db.query(Law).all()
-    imported_numbers = {law.law_number for law in laws}
-    imported_titles = {law.title.lower() for law in laws}
+    imported_keys = {(law.law_number, law.law_year) for law in laws}
 
     all_mappings = db.query(LawMapping).all()
+    seen_keys: set[tuple[str | None, int | None]] = set()
     unimported = []
     for m in all_mappings:
-        if m.law_number and m.law_number in imported_numbers:
+        key = (m.law_number, m.law_year)
+        if m.law_number and key in imported_keys:
             continue
-        if any(t in m.title.lower() or m.title.lower() in t for t in imported_titles):
+        if m.law_number and key in seen_keys:
             continue
         unimported.append(m)
+        if m.law_number:
+            seen_keys.add(key)
     return unimported
 
 
