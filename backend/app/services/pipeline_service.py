@@ -872,10 +872,10 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             "articles_found": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 9: Rerank to top 3
+        # Step 9: Rerank to top 10
         yield _step_event(9, "article_selection", "running")
         t0 = time.time()
-        state = _step6_select_articles(state, db, top_k_override=3)
+        state = _step6_select_articles(state, db, top_k_override=10)
         yield _step_event(9, "article_selection", "done", {
             "top_articles": len(state.get("retrieved_articles", [])),
         }, time.time() - t0)
@@ -2459,6 +2459,9 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
 
     if not retrieved:
         events.append(_step_event(10, "relevance_check", "done", {"skipped": True}, 0))
+        log_step(db, state["run_id"], "relevance_check", 10, "done", 0,
+                 output_summary="Skipped — no articles to check",
+                 output_data={"skipped": True})
         return events, None
 
     # Use the top reranker score as a relevance proxy
@@ -2474,14 +2477,25 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
     gate_will_warn = 0.2 <= relevance_score < 0.4  # ~top_score < 1
 
     duration = time.time() - t0
-    events.append(_step_event(10, "relevance_check", "done", {
+    relevance_output = {
         "relevance_score": round(relevance_score, 3),
         "top_reranker_score": round(top_score, 3),
         "avg_reranker_score": round(avg_score, 3),
         "gate_triggered": gate_will_trigger,
         "gate_warning": gate_will_warn,
         "method": "reranker_scores",
-    }, duration))
+    }
+    events.append(_step_event(10, "relevance_check", "done", relevance_output, duration))
+
+    log_step(
+        db, state["run_id"], "relevance_check", 10, "done", duration,
+        output_summary=f"Relevance score: {relevance_score:.2f}" + (
+            " — gate triggered" if gate_will_trigger else
+            " — warning" if gate_will_warn else " — OK"
+        ),
+        output_data=relevance_output,
+        warnings=["Low article relevance"] if gate_will_warn else None,
+    )
 
     if gate_will_warn:
         state["flags"].append(
