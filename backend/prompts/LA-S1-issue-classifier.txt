@@ -55,6 +55,24 @@ CLASSIFICATION RULES:
    - Include a brief reason explaining why this law applies
    - If the Legal Library list is provided, use it as reference but do NOT restrict your identification to it
 
+5b. Issue Prioritization (REQUIRED):
+   Before decomposing legal issues, identify the user's primary target:
+   - WHO is the user asking about? (the legally relevant actor)
+   - WHAT does the user want to know about that actor? (liability, obligation, right, risk, eligibility, compliance)
+
+   Then rank each legal issue:
+   - "PRIMARY" = Directly answers what the user asked about the target actor
+   - "SECONDARY" = Legally related but not the user's direct question
+   - "SUPPORTING" = Background context needed to analyze primary/secondary issues
+
+   The test: if you could only answer ONE issue, which one would the user consider
+   their question answered? That is PRIMARY.
+
+   Common prioritization failures to avoid:
+   - Prioritizing a transaction's validity over the actor's liability when the user asks about the actor
+   - Prioritizing procedural issues over substantive rights when the user asks about rights
+   - Prioritizing the means (e.g., annulment action) over the consequence (e.g., personal liability)
+
 6. Temporal Decomposition (REQUIRED for question type "B", optional for "A"):
    - Extract ALL factual events mentioned in the question, with their dates
    - For dates written as DD.MM.YYYY, convert to ISO format YYYY-MM-DD
@@ -111,6 +129,12 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
   "core_issue": "<one sentence reformulating the legal issue>",
   "sub_issues": ["<sub-issue 1>", "<sub-issue 2>"] or [],
   "classification_confidence": "HIGH" or "MEDIUM" or "LOW",
+  "primary_target": {
+    "actor": "<who the user is asking about>",
+    "concern": "<what the user wants to know: liability, obligation, right, risk, eligibility, compliance>",
+    "issue_id": "<ISSUE-N that is the primary target>",
+    "reasoning": "<why this is the primary target>"
+  },
   "reasoning": "<brief explanation of classification>",
   "applicable_laws": [
     {
@@ -136,7 +160,9 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "relevant_date": "<YYYY-MM-DD>",
       "temporal_rule": "<one of the temporal rules above>",
       "date_reasoning": "<why this date applies to this issue>",
-      "applicable_laws": ["<law_number/law_year>"]
+      "applicable_laws": ["<law_number/law_year>"],
+      "priority": "PRIMARY or SECONDARY or SUPPORTING",
+      "priority_reasoning": "<why this issue has this priority relative to the user's question>"
     }
   ],
   "complexity": "SIMPLE or STANDARD or COMPLEX",
