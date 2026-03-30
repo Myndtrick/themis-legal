@@ -76,6 +76,8 @@ export interface LibraryLaw {
   category_group_slug: string | null;
   category_confidence: string | null;
   unimported_version_count: number;
+  source?: string;
+  language?: string;
   current_version: {
     id: number;
     state: string;
@@ -276,6 +278,21 @@ export interface AdvancedSearchResult {
 export interface AdvancedSearchResponse {
   results: AdvancedSearchResult[];
   total: number;
+}
+
+export interface EUSearchResult {
+  celex: string;
+  title: string;
+  date: string;
+  doc_type: string;
+  in_force: boolean;
+  cellar_uri: string;
+  already_imported: boolean;
+  source: "eu";
+}
+
+export interface EUFilterOptions {
+  doc_types: { value: string; label: string }[];
 }
 
 export interface EmitentsResponse {
@@ -523,6 +540,27 @@ export const api = {
         body: JSON.stringify({ mapping_id: mappingId, import_history: importHistory }),
         signal,
       }),
+    euSearch: (params: {
+      keyword?: string; doc_type?: string; year?: string;
+      number?: string; in_force_only?: boolean;
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params.keyword) searchParams.set("keyword", params.keyword);
+      if (params.doc_type) searchParams.set("doc_type", params.doc_type);
+      if (params.year) searchParams.set("year", params.year);
+      if (params.number) searchParams.set("number", params.number);
+      if (params.in_force_only) searchParams.set("in_force_only", "true");
+      return apiFetch<EUSearchResult[]>(`/api/laws/eu/search?${searchParams}`);
+    },
+    euImport: (celexNumber: string, importHistory: boolean) =>
+      apiFetch<{ law_id: number; title: string; versions_imported: number }>(
+        "/api/laws/eu/import",
+        {
+          method: "POST",
+          body: JSON.stringify({ celex_number: celexNumber, import_history: importHistory }),
+        }
+      ),
+    euFilterOptions: () => apiFetch<EUFilterOptions>("/api/laws/eu/filter-options"),
   },
   notifications: {
     list: (unreadOnly = false) =>
