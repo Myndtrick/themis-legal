@@ -382,9 +382,15 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
             try:
                 time.sleep(rate_limit_delay)
                 cv_content, cv_lang = fetch_eu_content(cv["cellar_uri"], cv["celex"])
-                # Skip versions with empty content (CELLAR returns empty XHTML for some)
-                if not cv_content.get("articles"):
-                    logger.info(f"Skipping consolidated version {cv['celex']} — no article content")
+                # Skip versions with empty/shallow content (CELLAR returns empty XHTML for some)
+                # Check that articles actually have paragraphs, not just titles
+                arts = cv_content.get("articles", {})
+                has_real_content = any(
+                    len(a.get("paragraphs", [])) > 0 and any(p.get("text", "").strip() for p in a.get("paragraphs", []))
+                    for a in arts.values()
+                ) if arts else False
+                if not has_real_content:
+                    logger.info(f"Skipping consolidated version {cv['celex']} — no paragraph content")
                     continue
                 _store_eu_version(db, law, cv["celex"], cv["date"], cv_content, cv_lang, is_current=False)
                 versions_imported += 1
