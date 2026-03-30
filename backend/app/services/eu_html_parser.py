@@ -124,6 +124,32 @@ def parse_eu_xhtml(html: str) -> dict:
     for anx_div in container.find_all("div", id=re.compile(r"^anx_")):
         annexes.append(_parse_annex(anx_div))
 
+    # Extract annexes from additional eli-container divs (modern format)
+    # Some regulations (e.g., AI Act) have each annex in its own eli-container
+    if not annexes:
+        all_containers = soup.find_all("div", class_="eli-container")
+        for extra_container in all_containers[1:]:  # skip the first (main content)
+            annex_title_p = extra_container.find("p", class_="oj-doc-ti")
+            if annex_title_p:
+                annex_title = annex_title_p.get_text(strip=True)
+                if re.match(r"ANEX[AĂE]", annex_title, re.IGNORECASE):
+                    # Collect all text from this container
+                    text_parts = []
+                    for p in extra_container.find_all("p"):
+                        cls = p.get("class") or []
+                        # Skip the title itself
+                        if "oj-doc-ti" in cls:
+                            continue
+                        text = p.get_text(strip=True)
+                        if text:
+                            text_parts.append(text)
+                    annex_id = re.sub(r"[^A-Za-z0-9]", "_", annex_title.lower())
+                    annexes.append({
+                        "annex_id": annex_id,
+                        "title": annex_title,
+                        "text": "\n".join(text_parts),
+                    })
+
     # Also extract annexes from consolidated format (title-annex-1 / separator-annex)
     if not annexes:
         annexes = _extract_annexes_consolidated(container)
