@@ -267,38 +267,38 @@ def fetch_eu_content(cellar_uri: str, celex: str, language: str = "ron", use_cac
 
 
 def fetch_eu_metadata(celex: str) -> dict | None:
-    """Fetch metadata for a single EU act via SPARQL by CELEX number."""
-    sparql = f"""PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+    """Fetch metadata for a single EU act via SPARQL. Tries Romanian title first, falls back to English."""
+    for lang in ("RON", "ENG"):
+        sparql = f"""PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 SELECT ?work ?title ?date ?inForce WHERE {{
   ?work cdm:resource_legal_id_celex ?celex .
   FILTER(STR(?celex) = "{celex}")
   ?expr cdm:expression_belongs_to_work ?work .
-  ?expr cdm:expression_uses_language <{LANGUAGE_BASE}/ENG> .
+  ?expr cdm:expression_uses_language <{LANGUAGE_BASE}/{lang}> .
   ?expr cdm:expression_title ?title .
   OPTIONAL {{ ?work cdm:work_date_document ?date }}
   OPTIONAL {{ ?work cdm:resource_legal_in-force ?inForce }}
 }} LIMIT 1"""
 
-    try:
-        resp = requests.post(SPARQL_ENDPOINT, data={"query": sparql}, headers=SPARQL_HEADERS, timeout=30)
-        resp.raise_for_status()
-        bindings = resp.json().get("results", {}).get("bindings", [])
-        if not bindings:
-            return None
-        b = bindings[0]
-        in_force_val = b.get("inForce", {}).get("value", "")
-        return {
-            "celex": celex,
-            "cellar_uri": b.get("work", {}).get("value", ""),
-            "title": b.get("title", {}).get("value", ""),
-            "date": b.get("date", {}).get("value", ""),
-            "in_force": in_force_val.lower() == "true" if in_force_val else True,
-            "doc_type": celex_to_document_type(celex),
-        }
-    except Exception as e:
-        logger.error(f"Failed to fetch metadata for {celex}: {e}")
-        return None
+        try:
+            resp = requests.post(SPARQL_ENDPOINT, data={"query": sparql}, headers=SPARQL_HEADERS, timeout=30)
+            resp.raise_for_status()
+            bindings = resp.json().get("results", {}).get("bindings", [])
+            if bindings:
+                b = bindings[0]
+                in_force_val = b.get("inForce", {}).get("value", "")
+                return {
+                    "celex": celex,
+                    "cellar_uri": b.get("work", {}).get("value", ""),
+                    "title": b.get("title", {}).get("value", ""),
+                    "date": b.get("date", {}).get("value", ""),
+                    "in_force": in_force_val.lower() == "true" if in_force_val else True,
+                    "doc_type": celex_to_document_type(celex),
+                }
+        except Exception as e:
+            logger.warning(f"Metadata fetch failed (lang={lang}, celex={celex}): {e}")
+    return None
 
 
 def fetch_consolidated_versions(celex: str) -> list[dict]:
