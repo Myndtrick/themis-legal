@@ -88,6 +88,7 @@ export interface SuggestedLaw {
   id: number;
   title: string;
   law_number: string | null;
+  celex_number: string | null;
   category_id: number;
   category_slug: string;
   group_slug: string;
@@ -552,12 +553,13 @@ export const api = {
       if (params.in_force_only) searchParams.set("in_force_only", "true");
       return apiFetch<EUSearchResult[]>(`/api/laws/eu/search?${searchParams}`);
     },
-    euImport: (celexNumber: string, importHistory: boolean) =>
+    euImport: (celexNumber: string, importHistory: boolean, signal?: AbortSignal) =>
       apiFetch<{ law_id: number; title: string; versions_imported: number }>(
         "/api/laws/eu/import",
         {
           method: "POST",
           body: JSON.stringify({ celex_number: celexNumber, import_history: importHistory }),
+          signal,
         }
       ),
     euFilterOptions: () => apiFetch<EUFilterOptions>("/api/laws/eu/filter-options"),

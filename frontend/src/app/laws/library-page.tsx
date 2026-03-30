@@ -163,8 +163,11 @@ export default function LibraryPage() {
     const timeoutMs = importHistory ? 600_000 : 120_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    api.laws
-      .importSuggestion(suggestion.id, importHistory, controller.signal)
+    const importPromise = suggestion.celex_number
+      ? api.laws.euImport(suggestion.celex_number, importHistory, controller.signal)
+      : api.laws.importSuggestion(suggestion.id, importHistory, controller.signal);
+
+    importPromise
       .then(() => {
         clearTimeout(timer);
         setPendingImports((prev) => {
