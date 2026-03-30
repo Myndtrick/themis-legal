@@ -516,7 +516,10 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
             prompt_id="LA-S6.8",
             prompt_version=prompt_ver,
             output_summary=f"Analyzed {len(parsed['issues'])} issues",
-            output_data={"certainty_levels": {i["issue_id"]: i["certainty_level"] for i in parsed["issues"]}},
+            output_data={
+                "certainty_levels": {i["issue_id"]: i["certainty_level"] for i in parsed["issues"]},
+                "rl_rap": parsed,
+            },
             confidence=state["derived_confidence"],
         )
     else:
@@ -941,10 +944,38 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
         yield _step_event(11, "article_partitioning", "running")
         t0 = time.time()
         state = _step6_7_partition_articles(state, db)
-        yield _step_event(11, "article_partitioning", "done", {
+        partition_duration = time.time() - t0
+        partition_data = {
             "issues_with_articles": sum(1 for v in state.get("issue_articles", {}).values() if v),
-            "shared_context": len(state.get("shared_context", [])),
-        }, time.time() - t0)
+            "shared_context_count": len(state.get("shared_context", [])),
+            "issue_breakdown": {
+                iid: [
+                    {
+                        "article_number": a.get("article_number"),
+                        "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                        "score": round(a.get("reranker_score", 0), 2) if a.get("reranker_score") is not None else None,
+                    }
+                    for a in arts
+                ]
+                for iid, arts in state.get("issue_articles", {}).items()
+            },
+            "shared_context": [
+                {
+                    "article_number": a.get("article_number"),
+                    "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                }
+                for a in state.get("shared_context", [])
+            ],
+        }
+        log_step(
+            db, state["run_id"], "article_partitioning", 11, "done", partition_duration,
+            output_summary=f"Partitioned articles across {partition_data['issues_with_articles']} issues, {partition_data['shared_context_count']} shared",
+            output_data=partition_data,
+        )
+        yield _step_event(11, "article_partitioning", "done", {
+            "issues_with_articles": partition_data["issues_with_articles"],
+            "shared_context": partition_data["shared_context_count"],
+        }, partition_duration)
 
         # Step 12: Legal Reasoning (RL-RAP)
         yield _step_event(12, "legal_reasoning", "running")
@@ -993,10 +1024,34 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
                     if missing:
                         state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
 
+                cond_duration = time.time() - t0
+                cond_data = {
+                    "requested_refs": missing,
+                    "governing_norms_searched": [
+                        i["issue_id"] for i in state["rl_rap_output"].get("issues", [])
+                        if i.get("governing_norm_status", {}).get("status") == "MISSING"
+                    ],
+                    "fetched_articles": [
+                        {
+                            "article_number": a.get("article_number"),
+                            "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                            "source": a.get("source", ""),
+                        }
+                        for a in all_fetched
+                    ],
+                    "fetched_count": len(all_fetched),
+                    "requested_count": len(missing) + len(governing_norm_fetched),
+                    "re_ran_reasoning": bool(all_fetched),
+                }
+                log_step(
+                    db, state["run_id"], "conditional_retrieval", 13, "done", cond_duration,
+                    output_summary=f"Requested {len(missing)} missing + {len(governing_norm_fetched)} governing norms, fetched {len(all_fetched)}",
+                    output_data=cond_data,
+                )
                 yield _step_event(13, "conditional_retrieval", "done", {
-                    "requested": len(missing) + len(governing_norm_fetched),
-                    "fetched": len(all_fetched),
-                }, time.time() - t0)
+                    "requested": cond_data["requested_count"],
+                    "fetched": cond_data["fetched_count"],
+                }, cond_duration)
 
             # Post-6.9 Governing Norm Gate
             gate_result = _post_6_9_governing_norm_gate(state)
@@ -1140,6 +1195,17 @@ def run_pipeline(
                     for c in state.get("candidate_laws", [])
                 },
                 "stale_count": n_stale,
+                "law_details": [
+                    {
+                        "law_key": f"{c['law_number']}/{c['law_year']}",
+                        "title": c.get("title", ""),
+                        "currency_status": c.get("currency_status", "not_checked"),
+                        "db_latest_date": c.get("available_version_date") or c.get("db_latest_date"),
+                        "official_latest_date": c.get("official_latest_date"),
+                        "role": c.get("role", ""),
+                    }
+                    for c in state.get("candidate_laws", [])
+                ],
             },
         )
         yield _step_event(4, "version_currency_check", "done", {
@@ -2315,6 +2381,15 @@ def _step5_graph_expansion(state: dict, db: Session) -> dict:
             "forward_matches": exception_details.get("forward_count", 0),
             "reverse_matches": exception_details.get("reverse_count", 0),
             "expansion_triggers": neighbor_details.get("expansion_triggers", []),
+            "added_articles": [
+                {
+                    "article_number": a.get("article_number"),
+                    "law": f"{a.get('law_number')}/{a.get('law_year')}",
+                    "source": a.get("source"),
+                }
+                for a in state.get("retrieved_articles_raw", [])
+                if a.get("article_id") not in raw_ids
+            ],
         },
     )
     return state
@@ -2677,6 +2752,8 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         answer_output_data["articles_not_cited"] = len(retrieved) - len(cited_articles)
         if structured.get("confidence_reasoning"):
             answer_output_data["confidence_reasoning"] = structured["confidence_reasoning"]
+        if structured.get("caveats"):
+            answer_output_data["caveats"] = structured["caveats"]
 
     log_step(
         db, state["run_id"], "answer_generation", 14, "done",

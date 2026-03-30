@@ -72,6 +72,16 @@ function renderOutputData(step: StepLogData) {
       return <AnswerDetail data={d} />;
     case "citation_validation":
       return <CitationDetail data={d} />;
+    case "date_extraction":
+      return <DateExtractionDetail data={d} />;
+    case "version_currency_check":
+      return <VersionCurrencyDetail data={d} />;
+    case "article_partitioning":
+      return <PartitioningDetail data={d} />;
+    case "legal_reasoning":
+      return <LegalReasoningDetail data={d} />;
+    case "conditional_retrieval":
+      return <ConditionalRetrievalDetail data={d} />;
     default:
       return <GenericDetail data={d} />;
   }
@@ -79,6 +89,10 @@ function renderOutputData(step: StepLogData) {
 
 /* --- Step 1: Classification --- */
 function ClassificationDetail({ data }: { data: Record<string, unknown> }) {
+  const legalIssues = (data.legal_issues ?? []) as Array<Record<string, unknown>>;
+  const facts = data.facts as Record<string, unknown> | undefined;
+  const primaryTarget = data.primary_target as Record<string, unknown> | undefined;
+
   return (
     <div className="space-y-1.5">
       <Row label="Legal topic" value={data.legal_topic as string} />
@@ -86,9 +100,92 @@ function ClassificationDetail({ data }: { data: Record<string, unknown> }) {
       <Row label="Question type" value={data.question_type as string} />
       <Row label="Output mode" value={data.output_mode as string} />
       <Row label="Core issue" value={data.core_issue as string} />
+      <Row label="Complexity" value={data.complexity as string} />
       {Array.isArray(data.entity_types) && data.entity_types.length > 0 && (
         <Row label="Entity types" value={data.entity_types.join(", ")} />
       )}
+
+      {/* Primary Target */}
+      {primaryTarget && (
+        <div className="mt-2 p-2 bg-indigo-50 rounded text-indigo-800">
+          <div className="font-medium mb-1">Primary Target</div>
+          <div className="ml-2">
+            <Row label="Actor" value={primaryTarget.actor as string} />
+            <Row label="Concern" value={primaryTarget.concern as string} />
+            <Row label="Focus issue" value={primaryTarget.issue_id as string} />
+          </div>
+        </div>
+      )}
+
+      {/* Issue Decomposition */}
+      {legalIssues.length > 0 && (
+        <div className="mt-2">
+          <div className="font-medium text-gray-500 mb-1">Issue Decomposition</div>
+          {legalIssues.map((issue, i) => {
+            const laws = (issue.applicable_laws ?? []) as string[];
+            return (
+              <div key={i} className="ml-2 mb-2 p-2 bg-gray-100 rounded">
+                <div className="font-medium">
+                  {issue.issue_id as string}: {issue.description as string}
+                </div>
+                {laws.length > 0 && (
+                  <div className="text-gray-500 mt-0.5">
+                    Laws: {laws.join(", ")}
+                  </div>
+                )}
+                {issue.relevant_date ? (
+                  <div className="text-gray-500">
+                    Date: {String(issue.relevant_date)}
+                    {issue.temporal_rule ? (
+                      <span className="italic"> ({String(issue.temporal_rule)})</span>
+                    ) : null}
+                  </div>
+                ) : null}
+                <Row label="Priority" value={issue.priority as string} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Facts */}
+      {facts && (
+        <div className="mt-2">
+          <div className="font-medium text-gray-500 mb-1">Facts Extracted</div>
+          {Array.isArray(facts.stated) && (facts.stated as Array<Record<string, unknown>>).length > 0 && (
+            <div className="ml-2 mb-1">
+              <span className="font-medium text-green-700">Stated:</span>
+              {(facts.stated as Array<Record<string, unknown>>).map((f, i) => (
+                <div key={i} className="ml-2">
+                  {f.fact_id as string}: {f.description as string}
+                  {f.date ? <span className="text-gray-400"> ({String(f.date)})</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+          {Array.isArray(facts.assumed) && (facts.assumed as Array<Record<string, unknown>>).length > 0 && (
+            <div className="ml-2 mb-1">
+              <span className="font-medium text-yellow-700">Assumed:</span>
+              {(facts.assumed as Array<Record<string, unknown>>).map((f, i) => (
+                <div key={i} className="ml-2">
+                  {f.fact_id as string}: {f.description as string}
+                </div>
+              ))}
+            </div>
+          )}
+          {Array.isArray(facts.missing) && (facts.missing as Array<Record<string, unknown>>).length > 0 && (
+            <div className="ml-2 mb-1">
+              <span className="font-medium text-red-700">Missing:</span>
+              {(facts.missing as Array<Record<string, unknown>>).map((f, i) => (
+                <div key={i} className="ml-2">
+                  {f.fact_id as string}: {f.description as string}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {Array.isArray(data.sub_issues) && data.sub_issues.length > 0 && (
         <div>
           <span className="font-medium text-gray-500">Sub-issues: </span>
@@ -201,23 +298,62 @@ function VersionSelectionDetail({ data }: { data: Record<string, unknown> }) {
     string,
     Record<string, unknown>
   >;
+  const issueVersions = (data.issue_versions ?? {}) as Record<
+    string,
+    Record<string, unknown>
+  >;
   const notes = (data.notes ?? []) as string[];
   const amendments = (data.amendment_flags ?? []) as string[];
+
+  // If issue_versions is available, prefer showing that (richer per-issue view)
+  const hasIssueVersions = Object.keys(issueVersions).length > 0;
 
   return (
     <div className="space-y-1">
       <Row label="Primary date" value={data.primary_date as string} />
-      {Object.entries(versions).map(([key, v]) => (
-        <div key={key} className="ml-1 flex gap-2 items-center">
-          <span className="font-medium">{key}:</span>
-          <span>version {(v.date_in_force as string) ?? "unknown"}</span>
-          <span
-            className={`text-xs px-1 rounded ${v.is_current ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}
-          >
-            {v.is_current ? "current" : "historical"}
-          </span>
+      <Row label="Unique versions" value={data.unique_version_count != null ? String(data.unique_version_count) : undefined} />
+
+      {hasIssueVersions ? (
+        <div className="mt-1">
+          <div className="font-medium text-gray-500 mb-1">Per-issue version selection:</div>
+          {Object.entries(issueVersions).map(([key, v]) => (
+            <div key={key} className="ml-2 mb-1 p-1.5 bg-gray-100 rounded">
+              <div className="flex gap-2 items-center flex-wrap">
+                <span className="font-medium">{key}</span>
+                <span>version {(v.date_in_force as string) ?? "unknown"}</span>
+                <span
+                  className={`text-xs px-1 rounded ${v.is_current ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}
+                >
+                  {v.is_current ? "current" : "historical"}
+                </span>
+              </div>
+              {v.temporal_rule ? (
+                <div className="text-gray-500 ml-2 italic">
+                  Temporal rule: {String(v.temporal_rule)}
+                </div>
+              ) : null}
+              {v.date_reasoning ? (
+                <div className="text-gray-500 ml-2">
+                  {String(v.date_reasoning)}
+                </div>
+              ) : null}
+            </div>
+          ))}
         </div>
-      ))}
+      ) : (
+        Object.entries(versions).map(([key, v]) => (
+          <div key={key} className="ml-1 flex gap-2 items-center">
+            <span className="font-medium">{key}:</span>
+            <span>version {(v.date_in_force as string) ?? "unknown"}</span>
+            <span
+              className={`text-xs px-1 rounded ${v.is_current ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}
+            >
+              {v.is_current ? "current" : "historical"}
+            </span>
+          </div>
+        ))
+      )}
+
       {amendments.length > 0 && (
         <div className="mt-1 p-2 bg-yellow-50 rounded text-yellow-800">
           {amendments.map((a, i) => (
@@ -291,9 +427,12 @@ function RetrievalDetail({ data }: { data: Record<string, unknown> }) {
 
 /* --- Step 5: Graph Expansion --- */
 function GraphExpansionDetail({ data }: { data: Record<string, unknown> }) {
+  const addedArticles = (data.added_articles ?? []) as Array<Record<string, unknown>>;
+  const triggers = (data.expansion_triggers ?? []) as Array<Record<string, unknown>>;
+
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <Stat label="Before" value={data.articles_before} />
         <Stat label="After" value={data.articles_after} />
       </div>
@@ -302,6 +441,31 @@ function GraphExpansionDetail({ data }: { data: Record<string, unknown> }) {
         <Stat label="Cross-refs" value={data.crossrefs_added} />
         <Stat label="Exceptions" value={data.exceptions_added} />
       </div>
+      {addedArticles.length > 0 && (
+        <div className="mt-1">
+          <div className="font-medium text-gray-500 mb-0.5">Added articles:</div>
+          {addedArticles.map((a, i) => (
+            <div key={i} className="ml-2 flex gap-2 text-gray-600">
+              <span>Art. {a.article_number as string}</span>
+              <span className="text-gray-400">{a.law as string}</span>
+              <span className="text-xs px-1 rounded bg-gray-100 text-gray-500">
+                {a.source as string}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {triggers.length > 0 && (
+        <div className="mt-1">
+          <div className="font-medium text-gray-500 mb-0.5">Expansion triggers:</div>
+          {triggers.map((t, i) => (
+            <div key={i} className="ml-2 text-gray-500">
+              Art. {t.source_article as string} &rarr; Art. {t.target_article as string}
+              {t.type ? <span className="text-xs ml-1">({String(t.type)})</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -456,6 +620,16 @@ function AnswerDetail({ data }: { data: Record<string, unknown> }) {
           {String(data.confidence_reasoning)}
         </div>
       ) : null}
+      {Array.isArray(data.caveats) && (data.caveats as string[]).length > 0 && (
+        <div className="mt-1 p-2 bg-yellow-50 rounded text-yellow-800">
+          <div className="font-medium mb-0.5">Caveats:</div>
+          <ul className="list-disc list-inside ml-1">
+            {(data.caveats as string[]).map((c, i) => (
+              <li key={i}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {sources.length > 0 && (
         <div className="mt-2">
           <div className="font-medium text-gray-500 mb-1">
@@ -519,6 +693,366 @@ function CitationDetail({ data }: { data: Record<string, unknown> }) {
               Art. {c.article as string} from {c.law as string}: {c.original_label as string} → {c.new_label as string}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Step 2: Date Extraction --- */
+function DateExtractionDetail({ data }: { data: Record<string, unknown> }) {
+  const datesFound = (data.dates_found ?? []) as Array<Record<string, unknown>>;
+  return (
+    <div className="space-y-1.5">
+      <Row label="Date type" value={data.date_type as string} />
+      <Row label="Primary date" value={data.primary_date as string} />
+      {datesFound.length > 0 && (
+        <div>
+          <span className="font-medium text-gray-500">Dates found:</span>
+          {datesFound.map((d, i) => (
+            <div key={i} className="ml-2">
+              {d.date as string}
+              {d.original_text ? (
+                <span className="text-gray-400"> &mdash; &quot;{String(d.original_text)}&quot;</span>
+              ) : null}
+              {d.type ? (
+                <span className="text-xs ml-1 px-1 rounded bg-gray-100 text-gray-600">
+                  {String(d.type)}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Step 4: Version Currency Check --- */
+function VersionCurrencyDetail({ data }: { data: Record<string, unknown> }) {
+  const lawDetails = (data.law_details ?? []) as Array<Record<string, unknown>>;
+  return (
+    <div className="space-y-1.5">
+      <Row label="Stale count" value={String(data.stale_count ?? 0)} />
+      {lawDetails.length > 0 && (
+        <div className="mt-1">
+          <div className="font-medium text-gray-500 mb-1">Per-law currency:</div>
+          {lawDetails.map((law, i) => {
+            const status = law.currency_status as string;
+            const isStale = status === "stale";
+            const isCurrent = status === "current";
+            return (
+              <div key={i} className="ml-2 mb-1.5 p-2 bg-gray-100 rounded">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{law.law_key as string}</span>
+                  {law.title ? <span className="text-gray-400 truncate">{String(law.title)}</span> : null}
+                  <span className={`text-xs px-1 rounded ${
+                    isCurrent ? "bg-green-100 text-green-700" :
+                    isStale ? "bg-red-100 text-red-700" :
+                    "bg-gray-200 text-gray-600"
+                  }`}>
+                    {status}
+                  </span>
+                  {law.role ? (
+                    <span className="text-xs px-1 rounded bg-blue-100 text-blue-700">
+                      {String(law.role)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="ml-2 text-gray-500">
+                  {law.db_latest_date ? <div>DB version: {String(law.db_latest_date)}</div> : null}
+                  {law.official_latest_date ? <div>Official latest: {String(law.official_latest_date)}</div> : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Step 11: Article Partitioning --- */
+function PartitioningDetail({ data }: { data: Record<string, unknown> }) {
+  const breakdown = (data.issue_breakdown ?? {}) as Record<string, Array<Record<string, unknown>>>;
+  const shared = (data.shared_context ?? []) as Array<Record<string, unknown>>;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-2">
+        <Stat label="Issues with articles" value={data.issues_with_articles} />
+        <Stat label="Shared context" value={data.shared_context_count} />
+      </div>
+      {Object.entries(breakdown).map(([issueId, articles]) => (
+        <div key={issueId} className="mt-1">
+          <div className="font-medium text-gray-700">
+            {issueId}: {articles.length} article{articles.length !== 1 ? "s" : ""}
+          </div>
+          {articles.map((a, i) => (
+            <div key={i} className="ml-3 flex gap-2 text-gray-600">
+              <span>Art. {a.article_number as string}</span>
+              <span className="text-gray-400">{a.law as string}</span>
+              {a.score != null && (
+                <span className="font-mono text-gray-400">score: {String(a.score)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+      {shared.length > 0 && (
+        <div className="mt-1">
+          <div className="font-medium text-gray-500">
+            Shared context ({shared.length}):
+          </div>
+          {shared.map((a, i) => (
+            <div key={i} className="ml-3 text-gray-400">
+              Art. {a.article_number as string} &mdash; {a.law as string}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Step 12: Legal Reasoning (RL-RAP) --- */
+function LegalReasoningDetail({ data }: { data: Record<string, unknown> }) {
+  const rlRap = data.rl_rap as Record<string, unknown> | undefined;
+  const certaintyLevels = (data.certainty_levels ?? {}) as Record<string, string>;
+
+  if (!rlRap) {
+    return (
+      <div className="space-y-1.5">
+        <div className="font-medium text-gray-500 mb-1">Certainty Levels</div>
+        {Object.entries(certaintyLevels).map(([id, level]) => (
+          <div key={id} className="ml-2">
+            <span className="font-medium">{id}:</span>{" "}
+            <CertaintyBadge level={level} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const issues = (rlRap.issues ?? []) as Array<Record<string, unknown>>;
+
+  return (
+    <div className="space-y-3">
+      {issues.map((issue, idx) => (
+        <div key={idx} className="border border-gray-200 rounded-lg overflow-hidden">
+          {/* Issue header */}
+          <div className="bg-gray-100 px-3 py-2 flex items-center gap-2">
+            <span className="font-medium">{issue.issue_id as string}</span>
+            <span className="text-gray-500 flex-1">{issue.description as string}</span>
+            <CertaintyBadge level={issue.certainty_level as string} />
+          </div>
+
+          <div className="px-3 py-2 space-y-2">
+            {/* Operative Articles */}
+            {Array.isArray(issue.operative_articles) && (issue.operative_articles as Array<Record<string, unknown>>).length > 0 ? (
+              <div>
+                <div className="font-medium text-gray-500 mb-0.5">Operative Articles</div>
+                {(issue.operative_articles as Array<Record<string, unknown>>).map((oa, i) => (
+                  <div key={i} className="ml-2 flex gap-2 items-center">
+                    <span>{oa.article_ref as string}</span>
+                    <span className={`text-xs px-1 rounded ${
+                      oa.priority === "PRIMARY" ? "bg-blue-100 text-blue-700" :
+                      oa.priority === "SECONDARY" ? "bg-gray-100 text-gray-600" :
+                      "bg-gray-50 text-gray-500"
+                    }`}>
+                      {oa.priority as string}
+                    </span>
+                    {oa.norm_type ? (
+                      <span className="text-xs text-gray-400">{String(oa.norm_type)}</span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Condition Table */}
+            {Array.isArray(issue.condition_table) && (issue.condition_table as Array<Record<string, unknown>>).length > 0 ? (
+              <div>
+                <div className="font-medium text-gray-500 mb-0.5">Condition Table</div>
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-gray-400">
+                      <th className="pr-2 w-10">ID</th>
+                      <th className="pr-2">Condition</th>
+                      <th className="pr-2 w-28">Status</th>
+                      <th className="pr-2">Evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(issue.condition_table as Array<Record<string, unknown>>).map((c, i) => (
+                      <tr key={i} className="border-t border-gray-100">
+                        <td className="pr-2 text-gray-400">{c.condition_id as string}</td>
+                        <td className="pr-2">{c.condition_text as string}</td>
+                        <td className="pr-2">
+                          <ConditionStatusBadge status={c.status as string} />
+                        </td>
+                        <td className="pr-2 text-gray-500">
+                          {(c.evidence as string) || (c.missing_fact as string) || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            {/* Subsumption Summary */}
+            {issue.subsumption_summary ? (() => {
+              const sub = issue.subsumption_summary as Record<string, unknown>;
+              return (
+                <div className="p-2 bg-gray-50 rounded">
+                  <div className="font-medium text-gray-500 mb-0.5">Subsumption</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <Stat label="Total" value={sub.total_conditions} />
+                    <Stat label="Satisfied" value={sub.satisfied} />
+                    <Stat label="Not satisfied" value={sub.not_satisfied} />
+                    <Stat label="Unknown" value={sub.unknown} />
+                  </div>
+                  <div className="mt-1">
+                    <Row label="Norm applicable" value={sub.norm_applicable as string} />
+                    {Array.isArray(sub.blocking_unknowns) && (sub.blocking_unknowns as string[]).length > 0 && (
+                      <div className="text-yellow-700">
+                        Blocking unknowns: {(sub.blocking_unknowns as string[]).join(", ")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })() : null}
+
+            {/* Exceptions Checked */}
+            {Array.isArray(issue.exceptions_checked) && (issue.exceptions_checked as Array<Record<string, unknown>>).length > 0 ? (
+              <div>
+                <div className="font-medium text-gray-500 mb-0.5">Exceptions Checked</div>
+                {(issue.exceptions_checked as Array<Record<string, unknown>>).map((ex, i) => (
+                  <div key={i} className="ml-2 mb-1 p-1.5 bg-yellow-50 rounded">
+                    <div className="font-medium">{ex.exception_ref as string}</div>
+                    <div className="text-gray-500">
+                      {ex.type as string} &mdash; {ex.condition_status_summary as string}
+                    </div>
+                    {ex.impact ? <div className="text-gray-600 italic">{String(ex.impact)}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Temporal Applicability */}
+            {issue.temporal_applicability ? (() => {
+              const ta = issue.temporal_applicability as Record<string, unknown>;
+              return (
+                <div className="flex gap-3 items-center flex-wrap">
+                  <span className="font-medium text-gray-500">Temporal:</span>
+                  {ta.relevant_event_date ? <span>Event: {String(ta.relevant_event_date)}</span> : null}
+                  <span className={ta.version_matches ? "text-green-700" : "text-red-700"}>
+                    Version {ta.version_matches ? "matches" : "MISMATCH"}
+                  </span>
+                  {Array.isArray(ta.temporal_risks) && (ta.temporal_risks as string[]).length > 0 ? (
+                    <span className="text-yellow-700">
+                      Risks: {(ta.temporal_risks as string[]).join(", ")}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })() : null}
+
+            {/* Conclusion */}
+            {issue.conclusion ? (
+              <div className="p-2 bg-blue-50 rounded text-blue-800">
+                <span className="font-medium">Conclusion: </span>
+                {String(issue.conclusion)}
+              </div>
+            ) : null}
+
+            {/* Uncertainty Sources */}
+            {Array.isArray(issue.uncertainty_sources) && (issue.uncertainty_sources as Array<Record<string, unknown>>).length > 0 ? (
+              <div>
+                <div className="font-medium text-gray-500 mb-0.5">Uncertainty Sources</div>
+                {(issue.uncertainty_sources as Array<Record<string, unknown>>).map((u, i) => (
+                  <div key={i} className="ml-2 mb-1 text-yellow-800 bg-yellow-50 p-1.5 rounded">
+                    <span className="font-medium">{u.type as string}: </span>
+                    {u.detail as string}
+                    {u.impact ? <div className="text-yellow-700 italic">Impact: {String(u.impact)}</div> : null}
+                    {u.resolvable_by ? (
+                      <span className="text-xs ml-1 px-1 rounded bg-yellow-100">
+                        {String(u.resolvable_by)}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CertaintyBadge({ level }: { level: string }) {
+  const cls =
+    level === "HIGH" || level === "CERTAIN" ? "bg-green-100 text-green-700" :
+    level === "CONDITIONAL" || level === "MEDIUM" ? "bg-yellow-100 text-yellow-700" :
+    level === "LOW" || level === "UNCERTAIN" ? "bg-red-100 text-red-700" :
+    "bg-gray-100 text-gray-600";
+  return <span className={`text-xs px-1.5 py-0.5 rounded ${cls}`}>{level}</span>;
+}
+
+function ConditionStatusBadge({ status }: { status: string }) {
+  if (status === "SATISFIED") return <span className="text-green-700">SATISFIED</span>;
+  if (status === "NOT_SATISFIED") return <span className="text-red-700">NOT SATISFIED</span>;
+  if (status === "UNKNOWN") return <span className="text-yellow-700">UNKNOWN</span>;
+  return <span className="text-gray-500">{status}</span>;
+}
+
+/* --- Step 13: Conditional Retrieval --- */
+function ConditionalRetrievalDetail({ data }: { data: Record<string, unknown> }) {
+  const requestedRefs = (data.requested_refs ?? []) as string[];
+  const governingNorms = (data.governing_norms_searched ?? []) as string[];
+  const fetched = (data.fetched_articles ?? []) as Array<Record<string, unknown>>;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Requested" value={data.requested_count} />
+        <Stat label="Fetched" value={data.fetched_count} />
+        <Stat label="Re-ran reasoning" value={data.re_ran_reasoning ? "Yes" : "No"} />
+      </div>
+      {requestedRefs.length > 0 && (
+        <div>
+          <div className="font-medium text-gray-500">Missing articles requested:</div>
+          {requestedRefs.map((ref, i) => (
+            <div key={i} className="ml-2 text-gray-600">{ref}</div>
+          ))}
+        </div>
+      )}
+      {governingNorms.length > 0 && (
+        <div>
+          <div className="font-medium text-gray-500">Governing norm search for:</div>
+          {governingNorms.map((id, i) => (
+            <div key={i} className="ml-2 text-gray-600">{id}</div>
+          ))}
+        </div>
+      )}
+      {fetched.length > 0 && (
+        <div>
+          <div className="font-medium text-gray-500">Fetched articles:</div>
+          {fetched.map((a, i) => (
+            <div key={i} className="ml-2 flex gap-2">
+              <span>Art. {a.article_number as string}</span>
+              <span className="text-gray-400">{a.law as string}</span>
+              {a.source ? <span className="text-xs px-1 rounded bg-gray-100 text-gray-500">{String(a.source)}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {fetched.length === 0 && requestedRefs.length > 0 && (
+        <div className="p-2 bg-yellow-50 rounded text-yellow-800">
+          No articles found for the requested references
         </div>
       )}
     </div>
