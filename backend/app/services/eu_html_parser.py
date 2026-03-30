@@ -39,6 +39,11 @@ def parse_eu_xhtml(html: str) -> dict:
         # Try legacy format
         if soup.find("p", class_="ti-art"):
             return _parse_legacy_format(soup)
+        # Try consolidated format (title-article-norm / title-annex-1)
+        if soup.find("p", class_="title-annex-1"):
+            result = _empty_result()
+            result["annexes"] = _extract_annexes_consolidated(soup)
+            return result
         return _empty_result()
 
     title = _extract_title(container)
@@ -115,9 +120,13 @@ def parse_eu_xhtml(html: str) -> dict:
                 "titles": [],
             }]
 
-    # Extract annexes
+    # Extract annexes (div#anx_ pattern)
     for anx_div in container.find_all("div", id=re.compile(r"^anx_")):
         annexes.append(_parse_annex(anx_div))
+
+    # Also extract annexes from consolidated format (title-annex-1 / separator-annex)
+    if not annexes:
+        annexes = _extract_annexes_consolidated(container)
 
     footnotes = _extract_footnotes(container)
 
@@ -520,16 +529,32 @@ def _parse_consolidated_paragraph(norm_div: Tag) -> dict | None:
         if label_match:
             label = f"({label_match.group(1)})"
 
-    # Collect text from all <p> descendants (norm, norm inline-element, etc.)
+    # Collect text — some consolidated versions wrap text in <p>, others put it
+    # directly inside <div class="norm inline-element"> with no <p> wrapper.
     text_parts = []
     for p in norm_div.find_all("p"):
         cls = p.get("class") or []
-        # Skip article labels and titles
         if "title-article-norm" in cls or "stitle-article-norm" in cls:
             continue
         text = p.get_text(strip=True)
         if text:
             text_parts.append(text)
+
+    if not text_parts:
+        # Fallback: get text from inline-element divs directly
+        for child in norm_div.children:
+            if isinstance(child, Tag) and child.name == "div" and "inline-element" in (child.get("class") or []):
+                text = child.get_text(strip=True)
+                if text:
+                    text_parts.append(text)
+        # Also try direct text content of the norm div (excluding label spans)
+        if not text_parts:
+            text = norm_div.get_text(strip=True)
+            # Remove the label prefix if present
+            if label and text.startswith(label):
+                text = text[len(label):].strip()
+            if text:
+                text_parts.append(text)
 
     main_text = " ".join(text_parts).strip()
 
@@ -672,6 +697,65 @@ def _parse_annex(anx_div: Tag) -> dict:
         "title": title_text,
         "text": "\n".join(text_parts),
     }
+
+
+def _extract_annexes_consolidated(container: Tag) -> list[dict]:
+    """Extract annexes from consolidated EUR-Lex format.
+
+    Consolidated versions use:
+    - <hr class="separator-annex"/> before each annex
+    - <p class="title-annex-1">ANEXA I</p> for the annex heading
+    - <p class="title-annex-2">Subtitle...</p> for the annex subtitle
+    - Body content as <p>, <table> etc. until the next separator-annex
+    """
+    annexes = []
+    annex_headings = container.find_all("p", class_="title-annex-1")
+
+    for heading in annex_headings:
+        title = heading.get_text(strip=True)
+        # Skip table-of-contents entries (e.g., "LISTA ANEXELOR")
+        if not re.match(r"ANEX[AĂE]\s+[IVXLCDM\d]+", title, re.IGNORECASE):
+            continue
+
+        # Get subtitle
+        subtitle = ""
+        next_el = heading.find_next_sibling()
+        if next_el and isinstance(next_el, Tag) and "title-annex-2" in (next_el.get("class") or []):
+            subtitle = next_el.get_text(strip=True)
+
+        # Collect body text until next separator-annex or next title-annex-1
+        text_parts = []
+        sibling = heading
+        started = False
+        while True:
+            sibling = sibling.find_next_sibling()
+            if not sibling or not isinstance(sibling, Tag):
+                break
+            # Stop at next annex separator or heading
+            if sibling.name == "hr" and "separator-annex" in (sibling.get("class") or []):
+                break
+            if "title-annex-1" in (sibling.get("class") or []):
+                break
+            # Skip the subtitle (already captured)
+            if not started and "title-annex-2" in (sibling.get("class") or []):
+                started = True
+                continue
+            started = True
+            # Collect text from paragraphs and tables
+            text = sibling.get_text(strip=True)
+            if text:
+                text_parts.append(text)
+
+        full_title = f"{title} — {subtitle}" if subtitle else title
+        annex_id = re.sub(r"[^A-Za-z0-9]", "_", title.lower())
+
+        annexes.append({
+            "annex_id": annex_id,
+            "title": full_title,
+            "text": "\n".join(text_parts),
+        })
+
+    return annexes
 
 
 # --- Legacy format parser (pre-2012 EUR-Lex, no eli-container) ---
@@ -902,11 +986,14 @@ def _parse_legacy_format(soup: BeautifulSoup) -> dict:
                 number = num_span.get_text(strip=True) if num_span else anchor.get_text(strip=True)
             footnotes.append({"number": number, "text": text})
 
+    # Extract annexes (consolidated format with title-annex-1, or legacy TOC)
+    annexes = _extract_annexes_consolidated(body)
+
     return {
         "title": title,
         "preamble": {"citations": [], "recitals": []},
         "books_data": books_data,
         "articles": articles,
-        "annexes": [],
+        "annexes": annexes,
         "footnotes": footnotes,
     }

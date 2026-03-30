@@ -266,6 +266,33 @@ def fetch_eu_content(cellar_uri: str, celex: str, language: str = "ron", use_cac
     raise RuntimeError(f"Could not fetch content for {celex} in any language")
 
 
+def _fetch_eu_issuers(work_uri: str) -> list[str]:
+    """Fetch author/issuer labels for an EU act via SPARQL.
+
+    Queries cdm:work_created_by_agent and returns the preferred labels
+    (Romanian first, English fallback).
+    """
+    sparql = f"""PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+
+SELECT DISTINCT ?label WHERE {{
+  <{work_uri}> cdm:work_created_by_agent ?agent .
+  ?agent skos:prefLabel ?label .
+  FILTER(LANG(?label) = "ro")
+}}"""
+    for lang_filter in ('FILTER(LANG(?label) = "ro")', 'FILTER(LANG(?label) = "en")'):
+        query = sparql.replace('FILTER(LANG(?label) = "ro")', lang_filter)
+        try:
+            resp = requests.post(SPARQL_ENDPOINT, data={"query": query}, headers=SPARQL_HEADERS, timeout=15)
+            resp.raise_for_status()
+            bindings = resp.json().get("results", {}).get("bindings", [])
+            if bindings:
+                return [b["label"]["value"] for b in bindings if b.get("label", {}).get("value")]
+        except Exception as e:
+            logger.warning(f"Issuer fetch failed for {work_uri}: {e}")
+    return []
+
+
 def fetch_eu_metadata(celex: str) -> dict | None:
     """Fetch metadata for a single EU act via SPARQL. Tries Romanian title first, falls back to English."""
     for lang in ("RON", "ENG"):
@@ -288,13 +315,16 @@ SELECT ?work ?title ?date ?inForce WHERE {{
             if bindings:
                 b = bindings[0]
                 in_force_val = b.get("inForce", {}).get("value", "")
+                work_uri = b.get("work", {}).get("value", "")
+                issuers = _fetch_eu_issuers(work_uri) if work_uri else []
                 return {
                     "celex": celex,
-                    "cellar_uri": b.get("work", {}).get("value", ""),
+                    "cellar_uri": work_uri,
                     "title": b.get("title", {}).get("value", ""),
                     "date": b.get("date", {}).get("value", ""),
                     "in_force": in_force_val.lower() == "true" if in_force_val else True,
                     "doc_type": celex_to_document_type(celex),
+                    "issuers": issuers,
                 }
         except Exception as e:
             logger.warning(f"Metadata fetch failed (lang={lang}, celex={celex}): {e}")
@@ -354,6 +384,7 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
     law_year = int(parsed["year"]) if parsed else 0
 
     eli_url = _build_eli_url(doc_type, parsed)
+    issuers = meta.get("issuers", [])
     law = Law(
         title=meta["title"],
         law_number=law_number,
@@ -366,12 +397,14 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
         status="in_force" if meta["in_force"] else "unknown",
         category_id=category.id if category else None,
         category_confidence="auto" if category else None,
+        issuer=", ".join(issuers) or None,
     )
     db.add(law)
     db.flush()
 
-    content, lang = fetch_eu_content(meta["cellar_uri"], celex)
-    version = _store_eu_version(db, law, celex, meta["date"], content, lang, is_current=True)
+    # Try the newest consolidated version first (includes annexes), fall back to base
+    content, lang, used_celex = _fetch_best_content(celex, meta["cellar_uri"], rate_limit_delay)
+    version = _store_eu_version(db, law, used_celex, meta["date"], content, lang, is_current=True)
     versions_imported = 1
 
     if import_history:
@@ -696,6 +729,38 @@ def _update_current_version_with_content(db, law):
         best = versions[0]
     for v in versions:
         v.is_current = (v.id == best.id) if best else False
+
+
+def _fetch_best_content(celex: str, base_cellar_uri: str, rate_limit_delay: float) -> tuple[dict, str, str]:
+    """Fetch base content + try to extract annexes from consolidated version.
+
+    Consolidated versions sometimes include annexes that the base version doesn't.
+    We try a few consolidated versions (newest first) looking for annex content.
+
+    Returns (content, language, celex_used).
+    """
+    # Always start with the base version (reliable article parsing)
+    content, lang = fetch_eu_content(base_cellar_uri, celex)
+
+    # If base has no annexes, try to get them from consolidated versions
+    if not content.get("annexes"):
+        consol_versions = fetch_consolidated_versions(celex)
+        for cv in consol_versions[:5]:  # Try up to 5 versions
+            try:
+                if rate_limit_delay:
+                    time.sleep(rate_limit_delay)
+                cv_content, _ = fetch_eu_content(cv["cellar_uri"], cv["celex"])
+                cv_annexes = cv_content.get("annexes", [])
+                # Only use if we got real annex content (not just empty stubs)
+                real_annexes = [a for a in cv_annexes if len(a.get("text", "")) > 100]
+                if real_annexes:
+                    logger.info(f"Got {len(real_annexes)} annexes from consolidated version {cv['celex']}")
+                    content["annexes"] = real_annexes
+                    break
+            except Exception as e:
+                logger.warning(f"Consolidated annex fetch failed for {cv['celex']}: {e}")
+
+    return content, lang, celex
 
 
 def _build_eli_url(doc_type, parsed):
