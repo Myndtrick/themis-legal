@@ -261,8 +261,10 @@ def fetch_eu_content(cellar_uri: str, celex: str, language: str = "ron", use_cac
 def fetch_eu_metadata(celex: str) -> dict | None:
     """Fetch metadata for a single EU act via SPARQL by CELEX number."""
     sparql = f"""PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 SELECT ?work ?title ?date ?inForce WHERE {{
-  ?work cdm:resource_legal_id_celex "{celex}" .
+  ?work cdm:resource_legal_id_celex ?celex .
+  FILTER(STR(?celex) = "{celex}")
   ?expr cdm:expression_belongs_to_work ?work .
   ?expr cdm:expression_uses_language <{LANGUAGE_BASE}/ENG> .
   ?expr cdm:expression_title ?title .
@@ -301,7 +303,7 @@ def fetch_consolidated_versions(celex: str) -> list[dict]:
     sparql = f"""PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
 SELECT ?work ?celex ?date WHERE {{
   ?work cdm:resource_legal_id_celex ?celex .
-  FILTER(STRSTARTS(?celex, "{base_pattern}"))
+  FILTER(STRSTARTS(STR(?celex), "{base_pattern}"))
   OPTIONAL {{ ?work cdm:work_date_document ?date }}
 }} ORDER BY DESC(?date)"""
 
