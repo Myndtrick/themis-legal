@@ -536,34 +536,11 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             "articles_found": len(state.get("retrieved_articles_raw", [])),
         }, time.time() - t0)
 
-        # Step 4.5: Pre-Expansion Relevance Filter
-        yield _step_event(45, "pre_expansion_filter", "running")
+        # Step 5: Graph Expansion (neighbors + cross-refs + exceptions)
+        yield _step_event(5, "graph_expansion", "running")
         t0 = time.time()
-        before_filter = len(state.get("retrieved_articles_raw", []))
-        state = _step4_5_pre_expansion_filter(state)
-        yield _step_event(45, "pre_expansion_filter", "done", {
-            "before": before_filter,
-            "after": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
-
-        # Step 5: Article Expansion
-        yield _step_event(5, "expansion", "running")
-        t0 = time.time()
-        before_expansion = len(state.get("retrieved_articles_raw", []))
-        state = _step5_expand(state, db)
-        yield _step_event(5, "expansion", "done", {
-            "articles_before": before_expansion,
-            "articles_after_expansion": len(state.get("retrieved_articles_raw", [])),
-        }, time.time() - t0)
-
-        # Step 5.5: Exception Retrieval
-        yield _step_event(55, "exception_retrieval", "running")
-        t0 = time.time()
-        before_exceptions = len(state.get("retrieved_articles_raw", []))
-        state = _step5_5_exception_retrieval(state, db)
-        yield _step_event(55, "exception_retrieval", "done", {
-            "exceptions_added": len(state.get("retrieved_articles_raw", [])) - before_exceptions,
-        }, time.time() - t0)
+        state = _step5_graph_expansion(state, db)
+        yield _step_event(5, "graph_expansion", "done", duration=time.time() - t0)
 
         # Step 6: Reranking (dynamic top_k)
         yield _step_event(6, "article_selection", "running")
@@ -1765,48 +1742,54 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
     return state
 
 
-def _step4_5_pre_expansion_filter(state: dict) -> dict:
-    """Drop bottom-tier articles before expansion to reduce noise."""
+MAX_EXPANSION_INPUT = 30
+
+
+def _cap_for_expansion(state: dict) -> dict:
+    """Cap articles before expansion to prevent graph explosion."""
     articles = state.get("retrieved_articles_raw", [])
-    if len(articles) <= 10:
+    if len(articles) <= MAX_EXPANSION_INPUT:
         return state
-
-    # Compute BM25 median per tier
-    tier_bm25_scores = {}
-    for art in articles:
-        if "bm25_rank" in art:
-            tier = art.get("tier", "unknown")
-            tier_bm25_scores.setdefault(tier, []).append(art["bm25_rank"])
-
-    tier_bm25_medians = {}
-    for tier, scores in tier_bm25_scores.items():
-        sorted_scores = sorted(scores)
-        mid = len(sorted_scores) // 2
-        tier_bm25_medians[tier] = sorted_scores[mid]
-
-    kept = []
-    for art in articles:
-        if art.get("source", "").startswith("entity:"):
-            kept.append(art)
-            continue
-
-        bm25_ok = False
-        if "bm25_rank" in art:
-            tier = art.get("tier", "unknown")
-            median = tier_bm25_medians.get(tier)
-            if median is not None and art["bm25_rank"] <= median:
-                bm25_ok = True
-
-        semantic_ok = False
-        if "distance" in art:
-            if art["distance"] < 0.7:
-                semantic_ok = True
-
-        if bm25_ok or semantic_ok:
-            kept.append(art)
-
-    state["retrieved_articles_raw"] = kept
+    articles.sort(key=lambda a: a.get("distance", 1.0))
+    state["retrieved_articles_raw"] = articles[:MAX_EXPANSION_INPUT]
     return state
+
+
+def _append_new_articles(state: dict, db: Session, new_ids: list[int], source: str) -> int:
+    """Fetch articles by ID, build enriched dicts, append to state. Returns count added."""
+    from app.models.law import Article as ArticleModel
+
+    existing_ids = {a["article_id"] for a in state.get("retrieved_articles_raw", [])}
+    unique_ids = [aid for aid in new_ids if aid not in existing_ids]
+
+    if not unique_ids:
+        return 0
+
+    added = 0
+    for art in db.query(ArticleModel).filter(ArticleModel.id.in_(unique_ids)).all():
+        law = art.law_version.law
+        version = art.law_version
+        text_parts = [art.full_text]
+        for note in art.amendment_notes:
+            if note.text and note.text.strip():
+                text_parts.append(f"[Amendment: {note.text.strip()}]")
+
+        state["retrieved_articles_raw"].append({
+            "article_id": art.id,
+            "article_number": art.article_number,
+            "law_version_id": version.id,
+            "law_number": law.law_number,
+            "law_year": str(law.law_year),
+            "law_title": law.title[:200],
+            "date_in_force": str(version.date_in_force) if version.date_in_force else "",
+            "text": "\n".join(text_parts),
+            "source": source,
+            "tier": source,
+            "role": _derive_role(law.law_number, str(law.law_year), state),
+        })
+        added += 1
+
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -1822,121 +1805,49 @@ def _derive_role(law_number: str, law_year: str, state: dict) -> str:
     return "SECONDARY"
 
 
-def _step5_expand(state: dict, db: Session) -> dict:
-    """Expand with neighbors and cross-references."""
-    from app.services.article_expander import expand_articles
-    from app.models.law import Article as ArticleModel
+def _step5_graph_expansion(state: dict, db: Session) -> dict:
+    """Unified graph expansion: neighbors, cross-references, and exceptions."""
+    from app.services.article_expander import expand_articles, expand_with_exceptions
 
     t0 = time.time()
+
+    # Cap input to prevent explosion
+    state = _cap_for_expansion(state)
+
+    # Phase 1: neighbors + cross-references
     raw_ids = [a["article_id"] for a in state.get("retrieved_articles_raw", [])]
-    expanded_ids, expansion_details = expand_articles(
+    neighbor_ids, neighbor_details = expand_articles(
         db, raw_ids,
         selected_versions=state.get("selected_versions", {}),
         primary_date=state.get("primary_date"),
     )
+    added_neighbors = _append_new_articles(state, db, neighbor_ids, source="expansion")
 
-    existing_ids = {a["article_id"] for a in state["retrieved_articles_raw"]}
-    new_ids = [aid for aid in expanded_ids if aid not in existing_ids]
+    # Phase 2: exception/exclusion articles
+    raw = state.get("retrieved_articles_raw", [])
+    if raw:
+        exception_ids, exception_details = expand_with_exceptions(db, raw)
+        added_exceptions = _append_new_articles(state, db, exception_ids, source="exception")
+    else:
+        exception_details = {"forward_count": 0, "reverse_count": 0, "forward_matches": [], "reverse_matches": []}
+        added_exceptions = 0
 
-    added = 0
-    if new_ids:
-        for art in db.query(ArticleModel).filter(ArticleModel.id.in_(new_ids)).all():
-            law = art.law_version.law
-            version = art.law_version
-            text_parts = [art.full_text]
-            for note in art.amendment_notes:
-                if note.text and note.text.strip():
-                    text_parts.append(f"[Amendment: {note.text.strip()}]")
-
-            state["retrieved_articles_raw"].append({
-                "article_id": art.id,
-                "article_number": art.article_number,
-                "law_version_id": version.id,
-                "law_number": law.law_number,
-                "law_year": str(law.law_year),
-                "law_title": law.title[:200],
-                "date_in_force": str(version.date_in_force) if version.date_in_force else "",
-                "text": "\n".join(text_parts),
-                "source": "expansion",
-                "tier": "expansion",
-                "role": _derive_role(law.law_number, str(law.law_year), state),
-            })
-            added += 1
+    if added_neighbors or added_exceptions:
+        logger.info(f"Graph expansion: +{added_neighbors} neighbors/crossrefs, +{added_exceptions} exceptions")
 
     duration = time.time() - t0
     log_step(
-        db, state["run_id"], "expansion", 5, "done", duration,
-        output_summary=f"Expanded: {len(raw_ids)} -> {len(raw_ids) + added} articles (+{added} from neighbors/cross-refs)",
+        db, state["run_id"], "graph_expansion", 5, "done", duration,
+        output_summary=f"Graph expansion: +{added_neighbors} neighbors/crossrefs, +{added_exceptions} exceptions",
         output_data={
             "articles_before": len(raw_ids),
-            "articles_after": len(raw_ids) + added,
-            "added": added,
-            "neighbors_added": expansion_details.get("neighbors_added", 0),
-            "crossrefs_added": expansion_details.get("crossrefs_added", 0),
-            "expansion_triggers": expansion_details.get("expansion_triggers", []),
-        },
-    )
-    return state
-
-
-# ---------------------------------------------------------------------------
-# Step 5.5: Exception Retrieval
-# ---------------------------------------------------------------------------
-
-
-def _step5_5_exception_retrieval(state: dict, db: Session) -> dict:
-    """Expand retrieved articles with exception/exclusion articles."""
-    from app.services.article_expander import expand_with_exceptions
-    from app.models.law import Article as ArticleModel
-
-    t0 = time.time()
-    raw = state.get("retrieved_articles_raw", [])
-
-    if not raw:
-        return state
-
-    exception_ids, exception_details = expand_with_exceptions(db, raw)
-    existing_ids = {a["article_id"] for a in raw}
-    new_ids = [aid for aid in exception_ids if aid not in existing_ids]
-
-    added = 0
-    if new_ids:
-        for art in db.query(ArticleModel).filter(ArticleModel.id.in_(new_ids)).all():
-            law = art.law_version.law
-            version = art.law_version
-            text_parts = [art.full_text]
-            for note in art.amendment_notes:
-                if note.text and note.text.strip():
-                    text_parts.append(f"[Amendment: {note.text.strip()}]")
-
-            state["retrieved_articles_raw"].append({
-                "article_id": art.id,
-                "article_number": art.article_number,
-                "law_version_id": version.id,
-                "law_number": law.law_number,
-                "law_year": str(law.law_year),
-                "law_title": law.title[:200],
-                "date_in_force": str(version.date_in_force) if version.date_in_force else "",
-                "text": "\n".join(text_parts),
-                "source": "exception",
-                "tier": "exception",
-                "role": _derive_role(law.law_number, str(law.law_year), state),
-            })
-            added += 1
-
-    if added:
-        logger.info(f"Exception retrieval added {added} articles")
-
-    duration = time.time() - t0
-    log_step(
-        db, state["run_id"], "exception_retrieval", 55, "done", duration,
-        output_summary=f"Exception retrieval: +{added} articles (forward: {exception_details['forward_count']}, reverse: {exception_details['reverse_count']})",
-        output_data={
-            "added": added,
-            "forward_matches": exception_details.get("forward_matches", []),
-            "reverse_matches": exception_details.get("reverse_matches", []),
-            "forward_count": exception_details.get("forward_count", 0),
-            "reverse_count": exception_details.get("reverse_count", 0),
+            "articles_after": len(state.get("retrieved_articles_raw", [])),
+            "neighbors_added": neighbor_details.get("neighbors_added", 0),
+            "crossrefs_added": neighbor_details.get("crossrefs_added", 0),
+            "exceptions_added": added_exceptions,
+            "forward_matches": exception_details.get("forward_count", 0),
+            "reverse_matches": exception_details.get("reverse_count", 0),
+            "expansion_triggers": neighbor_details.get("expansion_triggers", []),
         },
     )
     return state

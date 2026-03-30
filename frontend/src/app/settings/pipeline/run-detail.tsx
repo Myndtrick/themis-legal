@@ -22,8 +22,7 @@ const STEP_CONFIG: Record<
   25: { label: "Early Relevance Gate", displayNum: "2.5", order: 3 },
   3: { label: "Version Selection", displayNum: "3", order: 4 },
   4: { label: "Hybrid Retrieval", displayNum: "4", order: 5 },
-  5: { label: "Article Expansion", displayNum: "5", order: 6 },
-  55: { label: "Exception Retrieval", displayNum: "5.5", order: 7 },
+  5: { label: "Graph Expansion", displayNum: "5", order: 6 },
   6: { label: "Article Selection", displayNum: "6", order: 8 },
   7: { label: "Relevance Check", displayNum: "6.5", order: 9 },
   8: { label: "Answer Generation", displayNum: "7", order: 10 },
@@ -59,10 +58,8 @@ function renderOutputData(step: StepLogData) {
       return <VersionSelectionDetail data={d} />;
     case "hybrid_retrieval":
       return <RetrievalDetail data={d} />;
-    case "expansion":
-      return <ExpansionDetail data={d} />;
-    case "exception_retrieval":
-      return <ExceptionDetail data={d} />;
+    case "graph_expansion":
+      return <GraphExpansionDetail data={d} />;
     case "article_selection":
       return <SelectionDetail data={d} />;
     case "relevance_check":
@@ -288,72 +285,19 @@ function RetrievalDetail({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-/* --- Step 5: Expansion --- */
-function ExpansionDetail({ data }: { data: Record<string, unknown> }) {
-  const triggers = (data.expansion_triggers ?? []) as Array<
-    Record<string, unknown>
-  >;
+/* --- Step 5: Graph Expansion --- */
+function GraphExpansionDetail({ data }: { data: Record<string, unknown> }) {
   return (
     <div className="space-y-1.5">
       <div className="grid grid-cols-3 gap-2">
         <Stat label="Before" value={data.articles_before} />
         <Stat label="After" value={data.articles_after} />
-        <Stat label="Added" value={data.added} />
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <Stat label="Neighbors" value={data.neighbors_added} />
         <Stat label="Cross-refs" value={data.crossrefs_added} />
+        <Stat label="Exceptions" value={data.exceptions_added} />
       </div>
-      {triggers.length > 0 && (
-        <div className="mt-2">
-          <div className="font-medium text-gray-500 mb-1">
-            Expansion triggers:
-          </div>
-          {triggers.map((t, i) => (
-            <div key={i} className="ml-2">
-              Art. {t.source_article as string} ({t.source_law as string}) →{" "}
-              +{t.added_count as number} ({t.type as string})
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* --- Step 5.5: Exception Retrieval --- */
-function ExceptionDetail({ data }: { data: Record<string, unknown> }) {
-  const forward = (data.forward_matches ?? []) as Array<Record<string, unknown>>;
-  const reverse = (data.reverse_matches ?? []) as Array<Record<string, unknown>>;
-  return (
-    <div className="space-y-1.5">
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="Added" value={data.added} />
-        <Stat label="Forward" value={data.forward_count} />
-        <Stat label="Reverse" value={data.reverse_count} />
-      </div>
-      {forward.length > 0 && (
-        <div>
-          <div className="font-medium text-gray-500">Forward matches:</div>
-          {forward.map((m, i) => (
-            <div key={i} className="ml-2">
-              Art. {m.found_article as string} references Art.{" "}
-              {m.references_article as string} in exception context
-            </div>
-          ))}
-        </div>
-      )}
-      {reverse.length > 0 && (
-        <div>
-          <div className="font-medium text-gray-500">Reverse matches:</div>
-          {reverse.map((m, i) => (
-            <div key={i} className="ml-2">
-              Art. {m.source_article as string} has exception language → Art.{" "}
-              {m.referenced_article as string}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
