@@ -21,6 +21,10 @@ class DocumentType(str, enum.Enum):
     NORM = "norm"
     DECISION = "decision"
     OTHER = "other"
+    # EU-specific document types
+    DIRECTIVE = "directive"
+    EU_DECISION = "eu_decision"
+    TREATY = "treaty"
 
 
 class DocumentState(str, enum.Enum):
@@ -72,6 +76,10 @@ class Law(Base):
     last_checked_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime, nullable=True, default=None
     )
+    # EU integration fields
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
+    celex_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cellar_uri: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     category: Mapped["Category | None"] = relationship(back_populates="laws")
     versions: Mapped[list["LawVersion"]] = relationship(
@@ -97,6 +105,7 @@ class LawVersion(Base):
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     diff_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
 
     law: Mapped["Law"] = relationship(back_populates="versions")
     structural_elements: Mapped[list["StructuralElement"]] = relationship(
@@ -122,6 +131,7 @@ class KnownVersion(Base):
     discovered_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.datetime.utcnow
     )
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
 
     law: Mapped["Law"] = relationship(back_populates="known_versions")
 
