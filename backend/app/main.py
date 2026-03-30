@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy.orm import Session
+
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category  # noqa: F401 — register models
 from app.routers import assistant as assistant_router
@@ -28,6 +30,18 @@ def run_update_check():
     )
 
 
+def _add_column_if_missing(db: Session, table: str, column: str, col_type: str, default: str | None = None):
+    """Add a column to a table if it doesn't exist. Safe for repeated runs."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(engine)
+    existing = [c["name"] for c in inspector.get_columns(table)]
+    if column not in existing:
+        default_clause = f" DEFAULT {default}" if default is not None else ""
+        db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}{default_clause}"))
+        db.commit()
+        logger.info(f"Added column {table}.{column}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create data directories and database tables on startup
@@ -41,6 +55,14 @@ async def lifespan(app: FastAPI):
 
     db = SessionLocal()
     try:
+        # Additive migration: EU integration columns
+        _add_column_if_missing(db, "laws", "source", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "laws", "celex_number", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "laws", "cellar_uri", "VARCHAR(200)", None)
+        _add_column_if_missing(db, "law_versions", "language", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "known_versions", "language", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
+
         seed_defaults(db)
         sync_prompts_from_files(db)
         from app.services.category_service import seed_categories, backfill_law_mapping_fields
