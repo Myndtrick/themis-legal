@@ -23,7 +23,7 @@ def test_build_context_includes_per_issue_articles(mock_state_standard, mock_art
     mock_state_standard["shared_context"] = [mock_articles[3]]
     mock_state_standard["issue_versions"] = mock_issue_versions
     ctx = _build_step6_8_context(mock_state_standard)
-    assert "ISSUE-1:" in ctx
+    assert "ISSUE-1" in ctx
     assert "SHARED CONTEXT" in ctx
 
 

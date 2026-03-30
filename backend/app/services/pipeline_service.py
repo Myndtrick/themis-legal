@@ -941,15 +941,31 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             "derived_confidence": state.get("derived_confidence"),
         })
 
-        # Conditional Retrieval Pass
+        # Conditional Retrieval Pass (existing missing articles + governing norm fetch)
         if state.get("rl_rap_output"):
             missing = _check_missing_articles(state["rl_rap_output"])
-            if missing:
+            governing_norm_fetched = []
+
+            # Fetch governing norms for issues with MISSING status
+            for issue in state["rl_rap_output"].get("issues", []):
+                gn_articles = _fetch_governing_norm(issue, state, db)
+                if gn_articles:
+                    governing_norm_fetched.extend(gn_articles)
+
+            needs_retrieval = bool(missing) or bool(governing_norm_fetched)
+
+            if needs_retrieval:
                 yield _step_event(69, "conditional_retrieval", "running")
                 t0 = time.time()
-                fetched = _fetch_missing_articles(missing, state, db)
-                if fetched:
-                    for art in fetched:
+
+                # Fetch standard missing articles
+                fetched = _fetch_missing_articles(missing, state, db) if missing else []
+
+                # Combine with governing norm articles
+                all_fetched = fetched + governing_norm_fetched
+
+                if all_fetched:
+                    for art in all_fetched:
                         added = False
                         for iid, arts in state.get("issue_articles", {}).items():
                             iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
@@ -958,13 +974,25 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
                                 added = True
                         if not added:
                             state.setdefault("shared_context", []).append(art)
+                    # Re-run reasoning with expanded article set
                     state = _step6_8_legal_reasoning(state, db)
                 else:
-                    state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
+                    if missing:
+                        state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
+
                 yield _step_event(69, "conditional_retrieval", "done", {
-                    "requested": len(missing),
-                    "fetched": len(fetched) if fetched else 0,
+                    "requested": len(missing) + len(governing_norm_fetched),
+                    "fetched": len(all_fetched),
                 }, time.time() - t0)
+
+            # Post-6.9 Governing Norm Gate
+            gate_result = _post_6_9_governing_norm_gate(state)
+            if gate_result:
+                complete_run(db, run_id, "clarification", None, state.get("flags"))
+                db.commit()
+                yield gate_result
+                state["_gate_triggered"] = True
+                return state
 
         # Step 7: Answer Generation
         yield _step_event(8, "answer_generation", "running")
