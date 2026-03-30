@@ -28,8 +28,9 @@ _RECITAL_NUM_RE = re.compile(r"^\((\d+)\)")
 def parse_eu_xhtml(html: str) -> dict:
     """Parse EUR-Lex XHTML and return structured document data.
 
-    Handles two EUR-Lex formats:
+    Handles three EUR-Lex formats:
     - Modern (post-2012): eli-container with eli-subdivision divs, oj-* CSS classes
+    - Consolidated flat: no eli-container, title-article-norm / norm / title-division-* classes
     - Legacy (pre-2012): flat <p> tags with ti-art, normal, ti-section-1 classes (no oj- prefix)
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -39,7 +40,10 @@ def parse_eu_xhtml(html: str) -> dict:
         # Try legacy format
         if soup.find("p", class_="ti-art"):
             return _parse_legacy_format(soup)
-        # Try consolidated format (title-article-norm / title-annex-1)
+        # Try consolidated flat format (title-article-norm articles)
+        if soup.find("p", class_="title-article-norm"):
+            return _parse_consolidated_flat_format(soup)
+        # Try consolidated annex-only format
         if soup.find("p", class_="title-annex-1"):
             result = _empty_result()
             result["annexes"] = _extract_annexes_consolidated(soup)
@@ -105,11 +109,14 @@ def parse_eu_xhtml(html: str) -> dict:
     else:
         # Articles directly under enc_1 (flat structure)
         art_ids = []
-        for art_div in enc.find_all("div", id=re.compile(r"^art_")):
-            art = _parse_article(art_div)
-            if art:
-                articles[art["article_id"]] = art
-                art_ids.append(art["article_id"])
+        for child in enc.children:
+            if isinstance(child, Tag) and child.name == "div":
+                child_id = child.get("id", "")
+                if child_id.startswith("art_"):
+                    art = _parse_article(child)
+                    if art:
+                        articles[art["article_id"]] = art
+                        art_ids.append(art["article_id"])
 
         if art_ids:
             books_data = [{
@@ -316,10 +323,10 @@ def _parse_title_div(tis_div: Tag, articles: dict) -> dict:
 def _parse_chapter_div(cpt_div: Tag, articles: dict) -> dict:
     """Parse a Chapter-level div (cpt_I, tis_II.cpt_I, etc.)."""
     cpt_id = cpt_div.get("id", "")
-    # Extract chapter roman numeral from id
-    # e.g. cpt_I -> I, tis_II.cpt_I -> I, cpt_III -> III
+    # Extract chapter identifier from id
+    # e.g. cpt_I -> I, tis_II.cpt_I -> I, cpt_III -> III, tis_I.cpt_1 -> 1
     chapter_id = ""
-    cpt_match = re.search(r"cpt_([IVXLCDM]+)", cpt_id)
+    cpt_match = re.search(r"cpt_([IVXLCDM\d]+)", cpt_id)
     if cpt_match:
         chapter_id = cpt_match.group(1)
 
@@ -369,20 +376,44 @@ def _parse_section_div(sct_div: Tag, articles: dict) -> dict:
 
     title_text = _extract_section_title(sct_div)
 
-    # Collect articles in this section
+    # Collect articles in this section (direct children and inside subsections)
     art_ids = []
-    for art_div in sct_div.find_all("div", id=re.compile(r"^art_")):
-        art = _parse_article(art_div)
-        if art:
-            articles[art["article_id"]] = art
-            art_ids.append(art["article_id"])
+    subsections = []
+    for child in sct_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if child_id.startswith("art_"):
+                art = _parse_article(child)
+                if art:
+                    articles[art["article_id"]] = art
+                    art_ids.append(art["article_id"])
+            elif ".sbs_" in child_id or child_id.startswith("sbs_"):
+                # Subsection — collect articles from it
+                sbs_title = _extract_section_title(child)
+                sbs_art_ids = []
+                for sbs_child in child.children:
+                    if isinstance(sbs_child, Tag) and sbs_child.name == "div":
+                        sbs_child_id = sbs_child.get("id", "")
+                        if sbs_child_id.startswith("art_"):
+                            art = _parse_article(sbs_child)
+                            if art:
+                                articles[art["article_id"]] = art
+                                sbs_art_ids.append(art["article_id"])
+                art_ids.extend(sbs_art_ids)
+                subsections.append({
+                    "section_id": child_id,
+                    "title": sbs_title,
+                    "description": None,
+                    "articles": sbs_art_ids,
+                    "subsections": [],
+                })
 
     return {
         "section_id": section_id,
         "title": title_text,
         "description": None,
         "articles": art_ids,
-        "subsections": [],
+        "subsections": subsections,
     }
 
 
@@ -782,6 +813,325 @@ def _extract_annexes_consolidated(container: Tag) -> list[dict]:
         })
 
     return annexes
+
+
+# --- Consolidated flat format parser (no eli-container, title-article-norm) ---
+
+_CONSOL_ART_RE = re.compile(
+    r"(?:Article|Articolul|Artikel|Articolo|Artículo)\s+(\d+[a-z]*)", re.IGNORECASE
+)
+
+
+def _parse_consolidated_flat_format(soup: BeautifulSoup) -> dict:
+    """Parse consolidated EUR-Lex format without eli-container.
+
+    This format uses flat sibling elements under <body>:
+    - <p class="title-division-1"> for structural headers (CAPITOLUL I, TITLUL II)
+    - <p class="title-division-2"> for structural subtitles
+    - <p class="title-article-norm"> for article markers (Articolul 1)
+    - <p class="stitle-article-norm"> for article subtitles
+    - <p class="norm"> or <div class="norm"> for paragraph content
+    - <div class="grid-container grid-list"> for sub-clauses (newer format)
+    - bare <div> wrapping <p class="norm"> for sub-clauses (older format)
+    """
+    body = soup.find("body") or soup
+
+    # Extract title
+    title_parts = []
+    for p in body.find_all("p", class_="title-doc-first"):
+        t = p.get_text(strip=True)
+        if t:
+            title_parts.append(t)
+    title = " ".join(title_parts)
+
+    articles = {}
+    current_title = None
+    current_chapter = None
+    current_section = None
+    structure_stack = []  # [(type, data)]
+
+    # Build a filtered list of Tag elements only (skip whitespace text nodes)
+    elements = [child for child in body.children if isinstance(child, Tag)]
+    i = 0
+    while i < len(elements):
+        el = elements[i]
+        cls = el.get("class") or []
+
+        # Stop at annex separator — everything after belongs to annexes
+        if el.name == "hr" and "separator-annex" in cls:
+            break
+        if "title-annex-1" in cls:
+            break
+
+        # Structural division: CAPITOLUL, TITLUL, Secțiunea
+        if el.name == "p" and "title-division-1" in cls:
+            text = el.get_text(strip=True)
+            # Get subtitle from next sibling
+            section_title = ""
+            if i + 1 < len(elements) and "title-division-2" in (elements[i + 1].get("class") or []):
+                section_title = elements[i + 1].get_text(strip=True)
+                i += 1
+
+            title_match = _LEGACY_TITLE_RE.match(text)
+            chapter_match = _LEGACY_CHAPTER_RE.match(text)
+            section_match = _LEGACY_SECTION_RE.match(text)
+
+            if title_match:
+                current_title = {
+                    "title_id": title_match.group(1),
+                    "title": section_title,
+                    "chapters": [],
+                    "articles": [],
+                }
+                structure_stack.append(("title", current_title))
+                current_chapter = None
+                current_section = None
+            elif chapter_match:
+                current_chapter = {
+                    "chapter_id": chapter_match.group(1),
+                    "title": section_title,
+                    "description": None,
+                    "sections": [],
+                    "articles": [],
+                }
+                if current_title:
+                    current_title["chapters"].append(current_chapter)
+                else:
+                    structure_stack.append(("chapter", current_chapter))
+                current_section = None
+            elif section_match:
+                current_section = {
+                    "section_id": section_match.group(1),
+                    "title": section_title,
+                    "description": None,
+                    "articles": [],
+                    "subsections": [],
+                }
+                if current_chapter:
+                    current_chapter["sections"].append(current_section)
+
+            i += 1
+            continue
+
+        # Skip title-division-2 (already consumed above)
+        if el.name == "p" and "title-division-2" in cls:
+            i += 1
+            continue
+
+        # Article heading
+        if el.name == "p" and "title-article-norm" in cls:
+            text = el.get_text(strip=True)
+            art_match = _CONSOL_ART_RE.match(text)
+            if art_match:
+                art_num = art_match.group(1)
+
+                # Get subtitle (next Tag element, skip whitespace)
+                article_title = ""
+                if i + 1 < len(elements) and "stitle-article-norm" in (elements[i + 1].get("class") or []):
+                    article_title = elements[i + 1].get_text(strip=True)
+                    i += 1
+
+                # Collect paragraphs until next article or structural heading
+                paragraphs = []
+                current_para_text = ""
+                current_para_label = ""
+                current_subs = []
+
+                j = i + 1
+                while j < len(elements):
+                    next_el = elements[j]
+                    next_cls = next_el.get("class") or []
+
+                    # Stop at next article, structural marker, or annex area
+                    if "title-article-norm" in next_cls or "title-division-1" in next_cls:
+                        break
+                    if next_el.name == "hr" and "separator-annex" in next_cls:
+                        break
+                    if "title-annex-1" in next_cls:
+                        break
+
+                    # Skip amendment markers
+                    if "modref" in next_cls or "arrow" in next_cls:
+                        j += 1
+                        continue
+                    # Skip subtitle (already consumed)
+                    if "stitle-article-norm" in next_cls:
+                        j += 1
+                        continue
+
+                    # Paragraph content: <p class="norm"> or <div class="norm">
+                    if ("norm" in next_cls and "inline-element" not in next_cls
+                            and "grid-container" not in next_cls
+                            and "grid-list-column-1" not in next_cls
+                            and "grid-list-column-2" not in next_cls
+                            and "list" not in next_cls):
+                        para_text = _get_direct_text(next_el)
+                        if not para_text:
+                            j += 1
+                            continue
+
+                        para_match = _PARA_LABEL_RE.match(para_text)
+                        if para_match:
+                            # Save previous paragraph
+                            if current_para_text or current_subs:
+                                paragraphs.append({
+                                    "label": current_para_label,
+                                    "text": current_para_text,
+                                    "subparagraphs": current_subs,
+                                })
+                            current_para_label = f"({para_match.group(1)})"
+                            current_para_text = para_text
+                            current_subs = []
+                        else:
+                            if not current_para_text:
+                                current_para_text = para_text
+                                current_para_label = ""
+                            else:
+                                current_para_text += " " + para_text
+
+                        # Collect sub-clauses from grid-list children (newer format)
+                        if next_el.name == "div":
+                            grid_subs = _extract_grid_subclauses(next_el)
+                            current_subs.extend(grid_subs)
+
+                    # Sub-clauses: grid-container at top level
+                    elif next_el.name == "div" and "grid-container" in next_cls and "grid-list" in next_cls:
+                        sub = _parse_grid_subclause(next_el)
+                        if sub:
+                            current_subs.append(sub)
+
+                    # Sub-clauses: bare <div> wrapping <p class="norm"> (older format)
+                    elif next_el.name == "div" and not next_cls:
+                        inner_p = next_el.find("p", class_="norm")
+                        if inner_p:
+                            sub_text = inner_p.get_text(strip=True)
+                            sub_match = _SUBPARA_LABEL_RE.match(sub_text)
+                            sub_label = sub_match.group(0) if sub_match else ""
+                            current_subs.append({"label": sub_label, "text": sub_text})
+
+                    j += 1
+
+                # Save last paragraph
+                if current_para_text or current_subs:
+                    paragraphs.append({
+                        "label": current_para_label,
+                        "text": current_para_text,
+                        "subparagraphs": current_subs,
+                    })
+
+                full_text = _build_full_text(art_num, article_title, paragraphs)
+                articles[art_num] = {
+                    "article_id": art_num,
+                    "label": art_num,
+                    "article_title": article_title,
+                    "full_text": full_text,
+                    "paragraphs": paragraphs,
+                    "notes": [],
+                }
+
+                # Add to current structural element
+                target = current_section or current_chapter or current_title
+                if target:
+                    target["articles"].append(art_num)
+
+            i += 1
+            continue
+
+        i += 1
+
+    # Build books_data
+    titles_list = []
+    chapters_list = []
+    for stype, sdata in structure_stack:
+        if stype == "title":
+            titles_list.append(sdata)
+        elif stype == "chapter":
+            chapters_list.append(sdata)
+
+    if titles_list:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": [], "titles": titles_list,
+        }]
+    elif chapters_list:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": [],
+            "titles": [{"title_id": "default", "title": None, "chapters": chapters_list, "articles": []}],
+        }]
+    else:
+        books_data = [{
+            "book_id": "default", "title": None, "description": None,
+            "articles": list(articles.keys()), "titles": [],
+        }] if articles else []
+
+    # Extract annexes
+    annexes = _extract_annexes_consolidated(body)
+
+    # Extract footnotes
+    footnotes = []
+    for p in body.find_all("p", class_="note"):
+        text = p.get_text(strip=True)
+        if text:
+            anchor = p.find("a", id=re.compile(r"^ntr"))
+            number = ""
+            if anchor:
+                num_span = anchor.find("span")
+                number = num_span.get_text(strip=True) if num_span else anchor.get_text(strip=True)
+            footnotes.append({"number": number, "text": text})
+
+    return {
+        "title": title,
+        "preamble": {"citations": [], "recitals": []},
+        "books_data": books_data,
+        "articles": articles,
+        "annexes": annexes,
+        "footnotes": footnotes,
+    }
+
+
+def _get_direct_text(el: Tag) -> str:
+    """Get meaningful text from a norm element, preferring direct <p> children."""
+    # For <p> elements, just get text directly
+    if el.name == "p":
+        return el.get_text(strip=True)
+    # For <div class="norm">, get text from direct <p> children or inline-element children
+    text_parts = []
+    for child in el.children:
+        if isinstance(child, Tag):
+            if child.name == "p":
+                child_cls = child.get("class") or []
+                # Skip article titles and sub-titles inside norm divs
+                if "title-article-norm" in child_cls or "stitle-article-norm" in child_cls:
+                    continue
+                t = child.get_text(strip=True)
+                if t:
+                    text_parts.append(t)
+            elif child.name == "span":
+                t = child.get_text(strip=True)
+                if t:
+                    text_parts.append(t)
+    if text_parts:
+        return " ".join(text_parts)
+    # Fallback: try inline-element divs
+    for child in el.children:
+        if isinstance(child, Tag) and child.name == "div" and "inline-element" in (child.get("class") or []):
+            for p in child.find_all("p", recursive=False):
+                t = p.get_text(strip=True)
+                if t:
+                    text_parts.append(t)
+    return " ".join(text_parts)
+
+
+def _parse_grid_subclause(grid_div: Tag) -> dict | None:
+    """Parse a single grid-container grid-list div into a sub-clause."""
+    label_div = grid_div.find("div", class_="grid-list-column-1")
+    content_div = grid_div.find("div", class_="grid-list-column-2")
+    if not label_div or not content_div:
+        return None
+    label_text = label_div.get_text(strip=True)
+    content_text = content_div.get_text(strip=True)
+    return {"label": label_text, "text": f"{label_text} {content_text}"}
 
 
 # --- Legacy format parser (pre-2012 EUR-Lex, no eli-container) ---
