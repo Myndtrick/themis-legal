@@ -75,7 +75,7 @@ def test_article_number_and_title():
     html = (FIXTURES / "eu_gdpr_sample.xhtml").read_text()
     result = parse_eu_xhtml(html)
     art1 = result["articles"]["1"]
-    assert art1["label"] == "Art. 1"
+    assert art1["label"] == "1"
     assert art1["article_title"] == "Obiect și obiective"
 
 
@@ -148,7 +148,7 @@ def test_article_full_text_assembled():
     html = (FIXTURES / "eu_gdpr_sample.xhtml").read_text()
     result = parse_eu_xhtml(html)
     art1 = result["articles"]["1"]
-    assert "Art. 1" in art1["full_text"]
+    assert "Articolul 1" in art1["full_text"]
     assert "Obiect și obiective" in art1["full_text"]
     assert "(1)" in art1["full_text"]
     assert "(2)" in art1["full_text"]

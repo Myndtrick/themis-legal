@@ -341,7 +341,7 @@ def _parse_article(art_div: Tag) -> dict | None:
 
     return {
         "article_id": art_num,
-        "label": f"Art. {art_num}",
+        "label": art_num,
         "article_title": article_title,
         "full_text": full_text,
         "paragraphs": paragraphs,
@@ -350,7 +350,11 @@ def _parse_article(art_div: Tag) -> dict | None:
 
 
 def _extract_paragraphs(art_div: Tag) -> list[dict]:
-    """Extract paragraphs from div#NNN.MMM containers within an article."""
+    """Extract paragraphs from div#NNN.MMM containers within an article.
+
+    Falls back to collecting direct <p> text and direct <table> sub-clauses
+    for articles without NNN.MMM divs (e.g., Art. 4 Definiții in GDPR).
+    """
     paragraphs = []
 
     # Find paragraph containers: divs with id like "001.001", "001.002", etc.
@@ -361,10 +365,28 @@ def _extract_paragraphs(art_div: Tag) -> list[dict]:
             if re.match(r"\d+\.\d+", child_id):
                 para_divs.append(child)
 
-    for para_div in para_divs:
-        para = _parse_paragraph(para_div)
-        if para:
-            paragraphs.append(para)
+    if para_divs:
+        for para_div in para_divs:
+            para = _parse_paragraph(para_div)
+            if para:
+                paragraphs.append(para)
+    else:
+        # Fallback: collect direct <p class="oj-normal"> and direct <table> sub-clauses
+        # This handles articles like Art. 4 (Definiții) that have tables directly in the article div
+        text_parts = []
+        for child in art_div.children:
+            if isinstance(child, Tag) and child.name == "p" and "oj-normal" in (child.get("class") or []):
+                text_parts.append(child.get_text(strip=True))
+
+        intro_text = " ".join(text_parts).strip()
+        subparagraphs = _extract_table_subclauses(art_div)
+
+        if intro_text or subparagraphs:
+            paragraphs.append({
+                "label": "",
+                "text": intro_text,
+                "subparagraphs": subparagraphs,
+            })
 
     return paragraphs
 
@@ -447,7 +469,7 @@ def _extract_table_subclauses(container: Tag) -> list[dict]:
 
 def _build_full_text(art_num: str, article_title: str, paragraphs: list[dict]) -> str:
     """Assemble full article text."""
-    parts = [f"Art. {art_num}"]
+    parts = [f"Articolul {art_num}"]
     if article_title:
         parts.append(article_title)
     for para in paragraphs:
