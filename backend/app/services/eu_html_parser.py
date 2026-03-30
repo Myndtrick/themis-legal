@@ -1,143 +1,476 @@
-"""Parse EUR-Lex XHTML into structured articles, chapters, and annexes."""
+"""Parse EUR-Lex XHTML into structured articles, chapters, and annexes.
+
+Uses ID-driven structural parsing based on real EUR-Lex XHTML conventions:
+- div.eli-container as root
+- div#enc_1 as the enacting clause container
+- div#cpt_I, div#cpt_II etc. for chapters
+- div#tis_I, div#tis_II for titles (higher-level grouping)
+- div#cpt_III.sct_1 for sections within chapters
+- div#art_1, div#art_2 etc. for articles
+- div#001.001, div#001.002 etc. for paragraph containers
+- <table> elements with 4%/96% columns for lettered sub-clauses
+- div#pbl_1 with div#cit_N and div#rct_N for preamble
+"""
+
 import re
 import logging
 from bs4 import BeautifulSoup, Tag
 
 logger = logging.getLogger(__name__)
 
-_PARA_NUM_RE = re.compile(r"^(\d+)\.\s+")
-_SUBPARA_RE = re.compile(r"^\(([a-z])\)\s*")
-_ARTICLE_NUM_RE = re.compile(r"(?:Article|Articolul|Artikel|Articolo|Artículo)\s+(\d+[a-z]?)", re.IGNORECASE)
-_CHAPTER_NUM_RE = re.compile(r"(?:CHAPTER|CAPITOLUL|CHAPITRE|KAPITEL)\s+([IVXLCDM]+)", re.IGNORECASE)
-_ANNEX_RE = re.compile(r"(?:ANNEX|ANEXA|ANNEXE|ANHANG)\s*([IVXLCDM]*)", re.IGNORECASE)
+_ARTICLE_NUM_RE = re.compile(r"^art_(\d+[a-z]?)$")
+_PARA_LABEL_RE = re.compile(r"^\((\d+)\)")
+_SUBPARA_LABEL_RE = re.compile(r"^\(([a-z]+)\)")
+_ROMAN_RE = re.compile(r"^\(([ivxlcdm]+)\)")
+_RECITAL_NUM_RE = re.compile(r"^\((\d+)\)")
 
 
 def parse_eu_xhtml(html: str) -> dict:
-    """Parse EUR-Lex XHTML and return {title, articles, structure, annexes}."""
+    """Parse EUR-Lex XHTML and return structured document data."""
     soup = BeautifulSoup(html, "html.parser")
-    title = _extract_title(soup)
-    structure, articles, annexes = _extract_body(soup)
-    return {"title": title, "articles": articles, "structure": structure, "annexes": annexes}
+
+    container = soup.find("div", class_="eli-container")
+    if not container:
+        return _empty_result()
+
+    title = _extract_title(container)
+    preamble = _extract_preamble(container)
+    enc = container.find("div", id="enc_1")
+
+    articles = {}
+    books_data = []
+    annexes = []
+
+    if not enc:
+        return {
+            "title": title,
+            "preamble": preamble,
+            "books_data": books_data,
+            "articles": articles,
+            "annexes": annexes,
+        }
+
+    # Determine top-level structure: titles or chapters directly
+    has_titles = bool(enc.find("div", id=re.compile(r"^tis_")))
+    has_chapters = bool(enc.find("div", id=re.compile(r"^cpt_")))
+
+    if has_titles:
+        # Title -> Chapter -> Section -> Article hierarchy
+        title_nodes = _find_direct_children(enc, r"^tis_")
+        parsed_titles = []
+        for tis_div in title_nodes:
+            parsed_title = _parse_title_div(tis_div, articles)
+            parsed_titles.append(parsed_title)
+
+        books_data = [{
+            "book_id": "default",
+            "title": None,
+            "description": None,
+            "articles": [],
+            "titles": parsed_titles,
+        }]
+    elif has_chapters:
+        # Chapter -> Section -> Article (no titles, e.g. GDPR)
+        chapter_nodes = _find_direct_children(enc, r"^cpt_")
+        parsed_chapters = []
+        for cpt_div in chapter_nodes:
+            parsed_chapter = _parse_chapter_div(cpt_div, articles)
+            parsed_chapters.append(parsed_chapter)
+
+        books_data = [{
+            "book_id": "default",
+            "title": None,
+            "description": None,
+            "articles": [],
+            "titles": [{
+                "title_id": "default",
+                "title": None,
+                "chapters": parsed_chapters,
+                "articles": [],
+            }],
+        }]
+    else:
+        # Articles directly under enc_1 (flat structure)
+        art_ids = []
+        for art_div in enc.find_all("div", id=re.compile(r"^art_")):
+            art = _parse_article(art_div)
+            if art:
+                articles[art["article_id"]] = art
+                art_ids.append(art["article_id"])
+
+        if art_ids:
+            books_data = [{
+                "book_id": "default",
+                "title": None,
+                "description": None,
+                "articles": art_ids,
+                "titles": [],
+            }]
+
+    # Extract annexes
+    for anx_div in container.find_all("div", id=re.compile(r"^anx_")):
+        annexes.append(_parse_annex(anx_div))
+
+    return {
+        "title": title,
+        "preamble": preamble,
+        "books_data": books_data,
+        "articles": articles,
+        "annexes": annexes,
+    }
 
 
-def _extract_title(soup: BeautifulSoup) -> str:
+def _empty_result() -> dict:
+    return {
+        "title": "",
+        "preamble": {"citations": [], "recitals": []},
+        "books_data": [],
+        "articles": {},
+        "annexes": [],
+    }
+
+
+def _extract_title(container: Tag) -> str:
+    """Extract document title from eli-main-title."""
+    title_div = container.find("div", class_="eli-main-title")
+    if not title_div:
+        return ""
     parts = []
-    for p in soup.find_all("p", class_="oj-doc-ti"):
+    for p in title_div.find_all("p", class_="oj-doc-ti"):
         text = p.get_text(strip=True)
         if text:
             parts.append(text)
     return " ".join(parts)
 
 
-def _extract_body(soup: BeautifulSoup) -> tuple[list, list, list]:
-    """Walk all oj-ti-section-1 and oj-ti-art elements in document order."""
-    structure = []
-    articles = []
-    annexes = []
-    current_chapter = None
+def _extract_preamble(container: Tag) -> dict:
+    """Extract citations and recitals from div#pbl_1."""
+    pbl = container.find("div", id="pbl_1")
+    if not pbl:
+        return {"citations": [], "recitals": []}
 
-    doc = soup.find("div", id="document1")
-    if not doc:
-        doc = soup.find("div", class_="eli-container")
-    if not doc:
-        return structure, articles, annexes
+    citations = []
+    for cit_div in pbl.find_all("div", id=re.compile(r"^cit_\d+")):
+        cit_id = cit_div.get("id", "")
+        text = cit_div.get_text(strip=True)
+        citations.append({"number": cit_id, "text": text})
 
-    # Collect all chapter headings and article titles in document order
-    markers = doc.find_all("p", class_=["oj-ti-section-1", "oj-ti-art"])
+    recitals = []
+    for rct_div in pbl.find_all("div", id=re.compile(r"^rct_\d+")):
+        # Recital number from the first td
+        num_match = None
+        first_td = rct_div.find("td")
+        if first_td:
+            td_text = first_td.get_text(strip=True)
+            num_match = _RECITAL_NUM_RE.match(td_text)
 
-    for marker in markers:
-        text = marker.get_text(strip=True)
-        classes = marker.get("class", [])
+        # Recital text from the second td
+        tds = rct_div.find_all("td")
+        text = ""
+        if len(tds) >= 2:
+            text = tds[1].get_text(strip=True)
 
-        # Chapter / section heading
-        if "oj-ti-section-1" in classes:
-            annex_match = _ANNEX_RE.match(text)
-            if annex_match:
-                # Collect annex text from the parent div
-                parent = marker.find_parent("div", class_="eli-subdivision") or marker.parent
-                annex_text_parts = [p.get_text(strip=True) for p in parent.find_all("p", class_="oj-normal")]
-                annexes.append({
-                    "title": text,
-                    "source_id": f"annex_{annex_match.group(1) or '1'}",
-                    "full_text": "\n".join(annex_text_parts),
-                })
-                continue
+        number = num_match.group(1) if num_match else rct_div.get("id", "").replace("rct_", "")
+        recitals.append({"number": number, "text": text})
 
-            chapter_num_match = _CHAPTER_NUM_RE.match(text)
-            # Look for subtitle sibling
-            subtitle = marker.find_next_sibling("p", class_="oj-sti-section-1")
-            if not subtitle:
-                # Try within same parent
-                parent = marker.parent
-                if parent:
-                    subtitle = parent.find("p", class_="oj-sti-section-1")
-            current_chapter = {
-                "type": "chapter",
-                "number": chapter_num_match.group(1) if chapter_num_match else text,
-                "title": subtitle.get_text(strip=True) if subtitle else "",
-                "article_ids": [],
-            }
-            structure.append(current_chapter)
-            continue
-
-        # Article title
-        if "oj-ti-art" in classes:
-            art_match = _ARTICLE_NUM_RE.match(text)
-            if not art_match:
-                continue
-            art_num = art_match.group(1)
-
-            # Find the containing div for this article's content
-            art_div = marker.find_parent("div", class_="eli-subdivision") or marker.parent
-            subtitle_p = art_div.find("p", class_="oj-sti-art") if art_div else None
-            label = subtitle_p.get_text(strip=True) if subtitle_p else ""
-            paragraphs = _extract_paragraphs(art_div) if art_div else []
-            full_text = _build_full_text(text, label, paragraphs)
-
-            article = {
-                "number": art_num,
-                "label": label,
-                "full_text": full_text,
-                "paragraphs": paragraphs,
-                "chapter_number": current_chapter["number"] if current_chapter else None,
-            }
-            articles.append(article)
-            if current_chapter:
-                current_chapter["article_ids"].append(art_num)
-
-    return structure, articles, annexes
+    return {"citations": citations, "recitals": recitals}
 
 
-def _extract_paragraphs(article_div: Tag) -> list[dict]:
+def _find_direct_children(parent: Tag, id_pattern: str) -> list[Tag]:
+    """Find direct child divs whose id matches pattern."""
+    results = []
+    compiled = re.compile(id_pattern)
+    for child in parent.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if compiled.match(child_id):
+                results.append(child)
+    return results
+
+
+def _parse_title_div(tis_div: Tag, articles: dict) -> dict:
+    """Parse a Title-level div (tis_I, tis_II, etc.)."""
+    tis_id = tis_div.get("id", "")
+    # Extract roman numeral: tis_I -> I, tis_II -> II
+    title_id = tis_id.split("_", 1)[1] if "_" in tis_id else tis_id
+
+    title_text = _extract_section_title(tis_div)
+
+    # Find chapters within this title
+    chapter_divs = []
+    for child in tis_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if ".cpt_" in child_id or (child_id.startswith("cpt_") and child_id != tis_id):
+                chapter_divs.append(child)
+
+    parsed_chapters = []
+    for cpt_div in chapter_divs:
+        parsed_chapter = _parse_chapter_div(cpt_div, articles)
+        parsed_chapters.append(parsed_chapter)
+
+    # Articles directly in this title (not in a chapter)
+    direct_art_ids = []
+    for child in tis_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if child_id.startswith("art_"):
+                art = _parse_article(child)
+                if art:
+                    articles[art["article_id"]] = art
+                    direct_art_ids.append(art["article_id"])
+
+    return {
+        "title_id": title_id,
+        "title": title_text,
+        "chapters": parsed_chapters,
+        "articles": direct_art_ids,
+    }
+
+
+def _parse_chapter_div(cpt_div: Tag, articles: dict) -> dict:
+    """Parse a Chapter-level div (cpt_I, tis_II.cpt_I, etc.)."""
+    cpt_id = cpt_div.get("id", "")
+    # Extract chapter roman numeral from id
+    # e.g. cpt_I -> I, tis_II.cpt_I -> I, cpt_III -> III
+    chapter_id = ""
+    cpt_match = re.search(r"cpt_([IVXLCDM]+)", cpt_id)
+    if cpt_match:
+        chapter_id = cpt_match.group(1)
+
+    title_text = _extract_section_title(cpt_div)
+
+    # Find sections within this chapter
+    section_divs = []
+    for child in cpt_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if ".sct_" in child_id or child_id.startswith("sct_"):
+                section_divs.append(child)
+
+    parsed_sections = []
+    for sct_div in section_divs:
+        parsed_section = _parse_section_div(sct_div, articles)
+        parsed_sections.append(parsed_section)
+
+    # Articles directly in this chapter (not in a section)
+    direct_art_ids = []
+    for child in cpt_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if child_id.startswith("art_"):
+                art = _parse_article(child)
+                if art:
+                    articles[art["article_id"]] = art
+                    direct_art_ids.append(art["article_id"])
+
+    return {
+        "chapter_id": chapter_id,
+        "title": title_text,
+        "description": None,
+        "sections": parsed_sections,
+        "articles": direct_art_ids,
+    }
+
+
+def _parse_section_div(sct_div: Tag, articles: dict) -> dict:
+    """Parse a Section-level div (cpt_III.sct_1, etc.)."""
+    sct_id = sct_div.get("id", "")
+    # Extract section number: cpt_III.sct_1 -> 1, tis_II.cpt_I.sct_1 -> 1
+    section_id = ""
+    sct_match = re.search(r"sct_(\d+)", sct_id)
+    if sct_match:
+        section_id = sct_match.group(1)
+
+    title_text = _extract_section_title(sct_div)
+
+    # Collect articles in this section
+    art_ids = []
+    for art_div in sct_div.find_all("div", id=re.compile(r"^art_")):
+        art = _parse_article(art_div)
+        if art:
+            articles[art["article_id"]] = art
+            art_ids.append(art["article_id"])
+
+    return {
+        "section_id": section_id,
+        "title": title_text,
+        "description": None,
+        "articles": art_ids,
+        "subsections": [],
+    }
+
+
+def _extract_section_title(div: Tag) -> str | None:
+    """Extract title from eli-title > oj-ti-section-2 or oj-sti-art."""
+    title_div = div.find("div", class_="eli-title", recursive=False)
+    if not title_div:
+        # Also check direct children
+        for child in div.children:
+            if isinstance(child, Tag) and child.name == "div" and "eli-title" in (child.get("class") or []):
+                title_div = child
+                break
+
+    if title_div:
+        p = title_div.find("p", class_="oj-ti-section-2")
+        if p:
+            return p.get_text(strip=True)
+    return None
+
+
+def _parse_article(art_div: Tag) -> dict | None:
+    """Parse an article div (art_1, art_2, etc.)."""
+    art_id = art_div.get("id", "")
+    art_num_match = _ARTICLE_NUM_RE.match(art_id)
+    if not art_num_match:
+        return None
+
+    art_num = art_num_match.group(1)
+
+    # Article title from oj-sti-art
+    article_title = ""
+    sti_p = art_div.find("p", class_="oj-sti-art")
+    if sti_p:
+        article_title = sti_p.get_text(strip=True)
+
+    # Parse paragraphs from div#NNN.MMM children
+    paragraphs = _extract_paragraphs(art_div)
+
+    # Build full text
+    full_text = _build_full_text(art_num, article_title, paragraphs)
+
+    return {
+        "article_id": art_num,
+        "label": f"Art. {art_num}",
+        "article_title": article_title,
+        "full_text": full_text,
+        "paragraphs": paragraphs,
+        "notes": [],
+    }
+
+
+def _extract_paragraphs(art_div: Tag) -> list[dict]:
+    """Extract paragraphs from div#NNN.MMM containers within an article."""
     paragraphs = []
-    current_para = None
-    for p in article_div.find_all("p", class_="oj-normal"):
-        text = p.get_text(strip=True)
-        if not text:
-            continue
-        para_match = _PARA_NUM_RE.match(text)
-        if para_match:
-            if current_para:
-                paragraphs.append(current_para)
-            current_para = {"number": para_match.group(1), "text": text, "subparagraphs": []}
-        elif _SUBPARA_RE.match(text) and current_para:
-            sub_match = _SUBPARA_RE.match(text)
-            current_para["subparagraphs"].append({"label": f"({sub_match.group(1)})", "text": text})
-        elif current_para:
-            current_para["text"] += " " + text
-        else:
-            current_para = {"number": "", "text": text, "subparagraphs": []}
-    if current_para:
-        paragraphs.append(current_para)
+
+    # Find paragraph containers: divs with id like "001.001", "001.002", etc.
+    para_divs = []
+    for child in art_div.children:
+        if isinstance(child, Tag) and child.name == "div":
+            child_id = child.get("id", "")
+            if re.match(r"\d+\.\d+", child_id):
+                para_divs.append(child)
+
+    for para_div in para_divs:
+        para = _parse_paragraph(para_div)
+        if para:
+            paragraphs.append(para)
+
     return paragraphs
 
 
-def _build_full_text(art_title: str, label: str, paragraphs: list[dict]) -> str:
-    parts = [art_title]
-    if label:
-        parts.append(label)
+def _parse_paragraph(para_div: Tag) -> dict | None:
+    """Parse a single paragraph container (div#NNN.MMM)."""
+    # Get the main text from oj-normal p (not inside tables)
+    text_parts = []
+    for child in para_div.children:
+        if isinstance(child, Tag):
+            if child.name == "p" and "oj-normal" in (child.get("class") or []):
+                text_parts.append(child.get_text(strip=True))
+
+    main_text = " ".join(text_parts).strip()
+
+    # Extract paragraph label
+    label = ""
+    label_match = _PARA_LABEL_RE.match(main_text)
+    if label_match:
+        label = f"({label_match.group(1)})"
+
+    # Extract sub-clauses from tables
+    subparagraphs = _extract_table_subclauses(para_div)
+
+    # Build the full paragraph text including subclauses
+    full_para_text = main_text
+    for sub in subparagraphs:
+        full_para_text += "\n" + sub["text"]
+
+    return {
+        "label": label,
+        "text": main_text,
+        "subparagraphs": subparagraphs,
+    }
+
+
+def _extract_table_subclauses(container: Tag) -> list[dict]:
+    """Extract (a), (b), (c) sub-clauses from table elements.
+
+    Tables have 4%/96% columns. First <td> = label, second <td> = text.
+    Nested tables inside second <td> = sub-sub-clauses (i), (ii).
+    """
+    subparagraphs = []
+
+    # Only process direct child tables (not nested ones)
+    for child in container.children:
+        if isinstance(child, Tag) and child.name == "table":
+            rows = child.find_all("tr")
+            for row in rows:
+                tds = row.find_all("td", recursive=False)
+                if len(tds) < 2:
+                    continue
+
+                label_text = tds[0].get_text(strip=True)
+                content_td = tds[1]
+
+                # Get text from p.oj-normal in the content td (not from nested tables)
+                content_parts = []
+                for p in content_td.find_all("p", class_="oj-normal", recursive=False):
+                    content_parts.append(p.get_text(strip=True))
+
+                content_text = " ".join(content_parts).strip()
+
+                # Check for nested sub-sub-clauses (i), (ii) in tables within this td
+                nested_subs = _extract_table_subclauses(content_td)
+                if nested_subs:
+                    # Include nested subclauses in the text
+                    nested_text = "\n".join(f"{s['label']} {s['text']}" for s in nested_subs)
+                    full_text = f"{label_text} {content_text}\n{nested_text}" if content_text else f"{label_text}\n{nested_text}"
+                else:
+                    full_text = f"{label_text} {content_text}"
+
+                subparagraphs.append({
+                    "label": label_text,
+                    "text": full_text,
+                })
+
+    return subparagraphs
+
+
+def _build_full_text(art_num: str, article_title: str, paragraphs: list[dict]) -> str:
+    """Assemble full article text."""
+    parts = [f"Art. {art_num}"]
+    if article_title:
+        parts.append(article_title)
     for para in paragraphs:
         parts.append(para["text"])
         for sub in para["subparagraphs"]:
             parts.append(sub["text"])
     return "\n".join(parts)
+
+
+def _parse_annex(anx_div: Tag) -> dict:
+    """Parse an annex div."""
+    anx_id = anx_div.get("id", "")
+    title_p = anx_div.find("p", class_="oj-ti-section-1")
+    title_text = title_p.get_text(strip=True) if title_p else anx_id
+
+    text_parts = []
+    for p in anx_div.find_all("p", class_="oj-normal"):
+        text = p.get_text(strip=True)
+        if text:
+            text_parts.append(text)
+
+    return {
+        "annex_id": anx_id,
+        "title": title_text,
+        "text": "\n".join(text_parts),
+    }
