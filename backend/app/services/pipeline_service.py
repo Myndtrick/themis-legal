@@ -170,6 +170,20 @@ def _build_step6_8_context(state: dict) -> str:
             if iv:
                 parts.append(f"  Version used: {law_key}, date_in_force {iv.get('date_in_force', 'unknown')}")
 
+        # Show per-fact version info if available
+        fact_version_map = state.get("fact_version_map", {})
+        fact_entries = [
+            (k, v) for k, v in fact_version_map.items()
+            if v.get("issue_id") == iid
+        ]
+        if fact_entries:
+            for fk, fv in fact_entries:
+                if fv.get("date_in_force") and fv.get("fact_ref"):
+                    parts.append(f"  Fact {fv['fact_ref']}: date={fv['relevant_date']}, "
+                                 f"version={fv.get('date_in_force', 'unknown')}")
+                    if fv.get("mitior_lex_newer_version"):
+                        parts.append(f"    ⚠ Mitior lex: newer version exists ({fv['mitior_lex_newer_version']})")
+
         parts.append("  Articles:")
         for art in issue_articles.get(iid, []):
             law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
@@ -323,6 +337,13 @@ def _build_step7_context(state: dict) -> str:
                 parts.append(f"  {art.get('text', '')}")
     else:
         # Fallback: no RL-RAP output, use raw articles
+        parts.append("\n⚠ FALLBACK MODE — NO STRUCTURED LEGAL ANALYSIS AVAILABLE.")
+        parts.append("Step 12 (Legal Reasoning) did not produce valid output.")
+        parts.append("CRITICAL OVERRIDE: Do NOT use the subsumption presentation format.")
+        parts.append("Do NOT include ✅/❓ condition lists or condition-by-condition analysis.")
+        parts.append("Present your analysis in NARRATIVE form based on the provided articles.")
+        parts.append("State clearly in your answer that this analysis has not been validated through structured legal reasoning.")
+        parts.append("")
         parts.append("\nRETRIEVED LAW ARTICLES FROM LEGAL LIBRARY:")
         for i, art in enumerate(state.get("retrieved_articles", []), 1):
             role_tag = f"[{art.get('role', 'SECONDARY')}]"
@@ -364,12 +385,12 @@ def _build_step7_context(state: dict) -> str:
     return "\n".join(parts)
 
 
-def _parse_step6_8_output(raw: str) -> dict | None:
-    """Parse Step 6.8 JSON output with backward-compatible defaults for new fields."""
+def _parse_step6_8_output(raw: str) -> tuple[dict | None, str | None]:
+    """Parse Step 6.8 JSON output. Returns (parsed_dict, error_message)."""
     try:
         parsed = _extract_json(raw)
         if not parsed or "issues" not in parsed:
-            return None
+            return None, f"JSON extracted but missing 'issues' key. Keys found: {list(parsed.keys()) if parsed else 'None'}"
         # Apply backward-compatible defaults for new fields
         for issue in parsed.get("issues", []):
             if "governing_norm_status" not in issue:
@@ -378,9 +399,9 @@ def _parse_step6_8_output(raw: str) -> dict | None:
                 issue["uncertainty_sources"] = []
             if "subsumption_summary" not in issue:
                 issue["subsumption_summary"] = None
-        return parsed
-    except Exception:
-        return None
+        return parsed, None
+    except Exception as e:
+        return None, f"JSON parse error: {str(e)}"
 
 
 def _derive_final_confidence(
@@ -477,15 +498,27 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
     user_message = _build_step6_8_context(state)
     prompt_text, prompt_ver = load_prompt("LA-S6.8", db)
 
+    num_issues = len(state.get("legal_issues", []))
+    complexity = state.get("complexity", "STANDARD")
+    if complexity == "COMPLEX" or num_issues >= 3:
+        rl_rap_max_tokens = min(16384, 4096 + num_issues * 2048)
+    else:
+        rl_rap_max_tokens = 8192
+
     response = call_claude(
         system=prompt_text,
         messages=[{"role": "user", "content": user_message}],
-        max_tokens=4096,
+        max_tokens=rl_rap_max_tokens,
         temperature=0.1,
     )
 
     raw_text = response.get("content", "")
-    parsed = _parse_step6_8_output(raw_text)
+    stop_reason = response.get("stop_reason", "")
+    if stop_reason == "max_tokens":
+        logger.warning(f"Step 6.8 output truncated (max_tokens hit) for run {state['run_id']}")
+        state["flags"].append("Step 6.8 output was truncated — consider increasing token budget")
+
+    parsed, parse_error = _parse_step6_8_output(raw_text)
 
     duration = time.time() - t0
 
@@ -526,12 +559,24 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
         state["rl_rap_output"] = None
         state["derived_confidence"] = None
         state["operative_articles"] = None
-        state["flags"].append("Step 6.8 failed to produce valid analysis — falling back to direct answer generation")
-        logger.warning(f"Step 6.8 failed to parse output for run {state['run_id']}")
+        state["_fallback_mode"] = True
+        error_detail = parse_error or "Unknown parse error"
+        if stop_reason == "max_tokens":
+            error_detail = f"Output truncated (max_tokens). {error_detail}"
+        state["flags"].append(f"Step 6.8 failed to produce valid analysis — falling back to direct answer generation. Detail: {error_detail}")
+        logger.warning(f"Step 6.8 failed for run {state['run_id']}: {error_detail}")
         log_step(
             db, state["run_id"], "legal_reasoning", 12, "done", duration,
-            output_summary="Failed to parse — fallback mode",
-            warnings=["Malformed RL-RAP output"],
+            prompt_id="LA-S6.8",
+            prompt_version=prompt_ver,
+            output_summary=f"Failed to parse — {error_detail}",
+            output_data={
+                "raw_response_preview": raw_text[:2000],
+                "parse_error": error_detail,
+                "stop_reason": stop_reason,
+                "tokens_out": response.get("tokens_out", 0),
+            },
+            warnings=["Malformed RL-RAP output", error_detail],
         )
 
     log_api_call(
@@ -1171,15 +1216,33 @@ def run_pipeline(
             "coverage_status": state.get("coverage_status"),
         }, time.time() - t0)
 
+        # Step 6: Version Selection (DB query — runs before currency check & gate
+        # so that version-aware availability info is available for the gate)
+        yield _step_event(6, "version_selection", "running")
+        t0 = time.time()
+        state = _step3_version_selection(state, db)
+        yield _step_event(6, "version_selection", "done", {
+            "selected_versions": state.get("selected_versions"),
+        }, time.time() - t0)
+
         # Step 4: Version Currency Check — verify DB versions against legislatie.just.ro
         yield _step_event(4, "version_currency_check", "running")
         t0 = time.time()
+
+        # Determine which laws need currency checking (only those used in current-law issues)
+        laws_needing_check = set()
+        for issue in state.get("legal_issues", []):
+            if issue.get("temporal_rule") == "current_law":
+                for law_key in issue.get("applicable_laws", []):
+                    laws_needing_check.add(law_key)
+
         state["candidate_laws"] = check_version_currency(
             state.get("candidate_laws", []),
             db,
             state["today"],
             date_type=state.get("date_type"),
             primary_date=state.get("primary_date"),
+            laws_needing_check=laws_needing_check if laws_needing_check else None,
         )
         currency_duration = time.time() - t0
         n_stale = sum(1 for c in state.get("candidate_laws", []) if c.get("currency_status") == "stale")
@@ -1215,6 +1278,7 @@ def run_pipeline(
         }, currency_duration)
 
         # Step 5: Early Relevance Gate — check if primary laws exist or are stale
+        # (now version-aware: version selection has already run)
         yield _step_event(5, "early_relevance_gate", "running")
         t0 = time.time()
         gate_result = _step2_5_early_relevance_gate(state, db)
@@ -1267,14 +1331,6 @@ def run_pipeline(
             yield _step_event(5, "early_relevance_gate", "done", {
                 "gate_triggered": False,
             }, gate_duration)
-
-        # Step 6: Version Selection (DB query)
-        yield _step_event(6, "version_selection", "running")
-        t0 = time.time()
-        state = _step3_version_selection(state, db)
-        yield _step_event(6, "version_selection", "done", {
-            "selected_versions": state.get("selected_versions"),
-        }, time.time() - t0)
 
         # Run Steps 7-15 (shared between run_pipeline and resume_pipeline)
         path_gen = _run_steps_4_through_7(state, db, run_id)
@@ -1367,9 +1423,13 @@ def resume_pipeline(
                         yield {"type": "step", "step": 5, "name": "importing", "status": "running",
                                "data": {"importing": law_key}}
 
-                        relevant_date = state.get("law_date_map", {}).get(
-                            law_key, state.get("primary_date")
-                        )
+                        dates = state.get("law_date_map", {}).get(law_key)
+                        if isinstance(dates, list) and dates:
+                            relevant_date = max(dates)
+                        elif isinstance(dates, str):
+                            relevant_date = dates
+                        else:
+                            relevant_date = state.get("primary_date")
                         result = import_law_smart(
                             db, ver_id,
                             primary_date=relevant_date,
@@ -1648,20 +1708,19 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
         valid_laws.append(law_entry)
     state["applicable_laws"] = valid_laws
 
-    # Build law_date_map: latest relevant date per law across all issues
-    law_date_map = {}
+    # Build law_date_map: all relevant dates per law across all issues
+    _law_dates = {}
     for issue in state.get("legal_issues", []):
         for law_key in issue.get("applicable_laws", []):
-            existing = law_date_map.get(law_key)
             issue_date = issue.get("relevant_date", "")
             if issue_date and issue_date != "unknown":
-                if not existing or issue_date > existing:
-                    law_date_map[law_key] = issue_date
+                _law_dates.setdefault(law_key, set()).add(issue_date)
 
+    # Store as sorted lists (JSON-serializable)
+    law_date_map = {k: sorted(v) for k, v in _law_dates.items()}
     state["law_date_map"] = law_date_map
-    state["primary_date"] = (
-        max(law_date_map.values()) if law_date_map else state["today"]
-    )
+    all_dates = [d for dates in law_date_map.values() for d in dates]
+    state["primary_date"] = max(all_dates) if all_dates else state["today"]
 
     update_run_mode(db, state["run_id"], state["output_mode"])
 
@@ -1684,56 +1743,99 @@ def _step1_issue_classification(state: dict, db: Session) -> dict:
 
 
 def _step1b_date_extraction(state: dict, db: Session) -> dict:
-    """Extract temporal context — local regex, no Claude call.
+    """Derive temporal context from Step 1 classification output.
 
     Sets state["date_type"] (used by version currency check to skip
-    remote queries for historical questions) and enriches dates_found.
-    Does NOT override primary_date if Step 1 already computed it from
-    per-issue dates via law_date_map.
+    remote queries for historical questions). Replaces the legacy
+    regex-based date extractor.
     """
-    from app.services.date_extractor import extract_date_local
-
     t0 = time.time()
-    parsed = extract_date_local(state["question"], state["today"])
 
-    if parsed and parsed.get("primary_date"):
-        # Determine date_type from the extraction (explicit / relative / implicit_current)
-        dates = parsed.get("dates_found", [])
-        if dates:
-            # If any date is explicit, treat the whole query as explicit-dated
-            if any(d.get("type") == "explicit" for d in dates):
-                state["date_type"] = "explicit"
-            elif any(d.get("type") == "relative" for d in dates):
-                state["date_type"] = "relative"
-            else:
-                state["date_type"] = "implicit_current"
-        else:
-            state["date_type"] = "implicit_current"
+    # Derive date_type from Step 1's temporal rules
+    event_rules = {"contract_formation", "performance", "act_date", "breach_date",
+                   "registration_date", "insolvency_opening"}
+    temporal_rules = [i.get("temporal_rule") for i in state.get("legal_issues", [])]
 
-        # Only override primary_date if Step 1 didn't set it from issue dates.
-        # Step 1 sets primary_date = max(law_date_map.values()) which is per-issue
-        # aware; local extraction is a fallback / enrichment.
-        if not state.get("law_date_map"):
-            state["primary_date"] = parsed["primary_date"]
-
-        state["date_logic"] = parsed.get("date_logic", "")
-        state["dates_found"] = parsed.get("dates_found", [])
-
-        if parsed.get("needs_clarification"):
-            state["flags"].append(
-                f"Date ambiguous: {parsed.get('date_logic', 'unclear temporal context')} "
-                f"— using {state['primary_date']} as best estimate"
-            )
+    if any(r in event_rules for r in temporal_rules):
+        # Issues reference specific events — check if any have non-today dates
+        non_today = [
+            i["relevant_date"] for i in state.get("legal_issues", [])
+            if i.get("relevant_date")
+            and i["relevant_date"] != state["today"]
+            and i["relevant_date"] != "unknown"
+        ]
+        state["date_type"] = "explicit" if non_today else "implicit_current"
     else:
         state["date_type"] = "implicit_current"
-        state["flags"].append("No specific date detected — using current law versions")
+
+    # Build per-fact version requirements
+    versions_needed = {}  # {law_key: set of dates}
+    fact_version_map = {}  # {"ISSUE-N:fact_ref:law_key": {"relevant_date": ..., "temporal_rule": ...}}
+
+    for issue in state.get("legal_issues", []):
+        issue_id = issue.get("issue_id", "ISSUE-?")
+        fact_dates = issue.get("fact_dates", [])
+
+        if fact_dates:
+            # Per-fact dates available
+            for fact in fact_dates:
+                fact_ref = fact.get("fact_ref", "?")
+                fact_date = fact.get("relevant_date", issue.get("relevant_date", state["today"]))
+                if fact_date == "unknown":
+                    fact_date = state["today"]
+                fact_rule = fact.get("temporal_rule", issue.get("temporal_rule", "current_law"))
+                fact_laws = fact.get("applicable_laws", issue.get("applicable_laws", []))
+
+                for law_key in fact_laws:
+                    versions_needed.setdefault(law_key, set()).add(fact_date)
+                    map_key = f"{issue_id}:{fact_ref}:{law_key}"
+                    fact_version_map[map_key] = {
+                        "relevant_date": fact_date,
+                        "temporal_rule": fact_rule,
+                        "issue_id": issue_id,
+                        "fact_ref": fact_ref,
+                    }
+        else:
+            # No per-fact dates — use issue-level date for all applicable laws
+            issue_date = issue.get("relevant_date", state["today"])
+            if issue_date == "unknown":
+                issue_date = state["today"]
+            issue_rule = issue.get("temporal_rule", "current_law")
+            for law_key in issue.get("applicable_laws", []):
+                versions_needed.setdefault(law_key, set()).add(issue_date)
+                map_key = f"{issue_id}:{law_key}"
+                fact_version_map[map_key] = {
+                    "relevant_date": issue_date,
+                    "temporal_rule": issue_rule,
+                    "issue_id": issue_id,
+                }
+
+    state["versions_needed"] = {k: sorted(v) for k, v in versions_needed.items()}
+    state["fact_version_map"] = fact_version_map
+
+    # Update law_date_map to include all fact-level dates (keep as sorted lists)
+    law_date_map = state.get("law_date_map", {})
+    for law_key, dates in versions_needed.items():
+        existing = law_date_map.get(law_key, [])
+        if isinstance(existing, str):
+            existing = [existing]
+        merged = set(existing) | dates
+        law_date_map[law_key] = sorted(merged)
+    state["law_date_map"] = law_date_map
 
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "date_extraction", 2, "done", duration,
         input_summary=state["question"][:200],
-        output_summary=f"primary_date={state.get('primary_date')}, date_type={state.get('date_type')}",
-        output_data=parsed,
+        output_summary=f"date_type={state['date_type']}, fact_mappings={len(fact_version_map)}, versions_needed={len(versions_needed)}",
+        output_data={
+            "date_type": state["date_type"],
+            "primary_date": state.get("primary_date"),
+            "temporal_rules": temporal_rules,
+            "derived_from": "step1_classification",
+            "versions_needed": {k: sorted(v) for k, v in versions_needed.items()},
+            "fact_count": len(fact_version_map),
+        },
     )
 
     return state
@@ -1863,6 +1965,7 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
         # Build law preview for frontend
         laws_preview = []
         law_date_map = state.get("law_date_map", {})
+        issue_versions = state.get("issue_versions", {})
         for law in candidate_laws:
             law_key = f"{law['law_number']}/{law['law_year']}"
             preview = {
@@ -1885,6 +1988,23 @@ def _step2_5_early_relevance_gate(state: dict, db: Session) -> dict | None:
                 "official_current_date": law.get("official_current_date"),
                 "db_latest_date": law.get("db_latest_date"),
             }
+
+            # Add version selection info if available (version selection runs before gate)
+            versions_for_law = [
+                iv for iv in issue_versions.values()
+                if iv.get("law_key") == law_key
+            ]
+            if versions_for_law:
+                preview["selected_versions"] = [
+                    {
+                        "issue_id": iv.get("issue_id"),
+                        "relevant_date": iv.get("relevant_date"),
+                        "date_in_force": iv.get("date_in_force"),
+                        "is_current": iv.get("is_current"),
+                    }
+                    for iv in versions_for_law
+                ]
+
             laws_preview.append(preview)
 
         # Build user-friendly message
@@ -2004,12 +2124,15 @@ def _step3_version_selection(state: dict, db: Session) -> dict:
             if relevant_date == "unknown":
                 relevant_date = today
 
-            # Future date rule
+            # Future date: use latest available version (don't override the date)
             if relevant_date > today:
                 version_notes.append(
-                    f"{issue_id}: Event date {relevant_date} is in the future — using current law"
+                    f"{issue_id}: Event date {relevant_date} is in the future — using latest available version"
                 )
-                relevant_date = today
+                # Do NOT override relevant_date to today.
+                # _find_version_for_date will naturally return the latest enacted version
+                # since it finds the newest version with date_in_force <= relevant_date,
+                # and for a future date, this is the most recent enacted version.
 
             for law_key in issue.get("applicable_laws", []):
                 db_law_id = law_id_lookup.get(law_key)
@@ -2060,6 +2183,63 @@ def _step3_version_selection(state: dict, db: Session) -> dict:
                         "is_current": selected.is_current,
                         "ver_id": selected.ver_id,
                     }
+
+    # --- Per-fact version selection (Phase 2) ---
+    fact_version_map = state.get("fact_version_map", {})
+    for map_key, fact_info in fact_version_map.items():
+        parts = map_key.split(":")
+        if len(parts) == 3:
+            issue_id, fact_ref, law_key = parts
+        elif len(parts) == 2:
+            issue_id, law_key = parts
+            fact_ref = None
+        else:
+            continue
+
+        db_law_id = law_id_lookup.get(law_key)
+        if not db_law_id:
+            continue
+
+        versions = _get_versions(db_law_id)
+        if not versions:
+            continue
+
+        fact_date = fact_info.get("relevant_date", today)
+        if fact_date == "unknown":
+            fact_date = today
+
+        # Do NOT override future dates — _find_version_for_date handles them naturally
+        selected = _find_version_for_date(versions, fact_date)
+        if not selected:
+            selected = _fallback_version(versions)
+            version_notes.append(
+                f"{map_key}: No version for {fact_date}, using current"
+            )
+
+        if not selected:
+            continue
+
+        # Store the version binding in fact_version_map
+        fact_info["law_version_id"] = selected.id
+        fact_info["date_in_force"] = str(selected.date_in_force) if selected.date_in_force else None
+        fact_info["is_current"] = selected.is_current
+
+        # Track unique versions for retrieval
+        unique_versions.setdefault(law_key, set()).add(selected.id)
+
+        # Check for mitior lex (criminal law newer version awareness)
+        if fact_info.get("temporal_rule") == "act_date":
+            # Check if a newer version exists (for potential mitior lex)
+            issue = next((i for i in legal_issues if i.get("issue_id") == issue_id), None)
+            if issue and issue.get("mitior_lex_relevant"):
+                newer = [v for v in versions if v.date_in_force and str(v.date_in_force) > fact_date]
+                if newer:
+                    fact_info["mitior_lex_newer_version"] = str(newer[0].date_in_force)
+                    version_notes.append(
+                        f"{map_key}: Newer version exists ({newer[0].date_in_force}) — mitior lex may apply"
+                    )
+
+    state["fact_version_map"] = fact_version_map
 
     # Check for historical versions
     for key, v in selected_versions.items():
@@ -2708,6 +2888,14 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         state["answer"] = full_text
         state["answer_structured"] = None
 
+    # Append fallback disclaimer when RL-RAP was unavailable
+    if state.get("_fallback_mode"):
+        disclaimer = "\n\n⚠ Această analiză se bazează pe citirea directă a articolelor de lege, fără raționament juridic structurat. Se recomandă reverificarea concluziilor."
+        state["answer"] = state.get("answer", "") + disclaimer
+        if state.get("answer_structured") and isinstance(state["answer_structured"], dict):
+            existing_answer = state["answer_structured"].get("answer", "")
+            state["answer_structured"]["answer"] = existing_answer + disclaimer
+
     log_api_call(
         db, state["run_id"], "answer_generation",
         total_tokens_in, total_tokens_out, total_duration, state.get("model", ""),
@@ -2744,6 +2932,7 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
         "confidence": state.get("confidence"),
         "is_partial": state.get("is_partial", False),
         "output_mode": mode,
+        "reasoning_mode": "fallback" if state.get("_fallback_mode") else "structured",
     }
     if structured:
         # Extract sources info without the full answer text
