@@ -169,6 +169,41 @@ def remove_law_articles(db: Session, law_id: int):
     logger.info(f"Removed {len(ids)} items from ChromaDB for law_id={law_id}")
 
 
+def verify_index_completeness(db: Session) -> list[dict]:
+    """Compare current versions' DB article counts against ChromaDB counts.
+    Returns list of mismatches for logging/alerting."""
+    from sqlalchemy import func
+
+    collection = get_collection()
+    mismatches = []
+
+    current_versions = (
+        db.query(LawVersion, func.count(Article.id))
+        .join(Article, Article.law_version_id == LawVersion.id)
+        .filter(LawVersion.is_current == True)
+        .group_by(LawVersion.id)
+        .all()
+    )
+
+    for version, db_count in current_versions:
+        try:
+            chroma_result = collection.get(where={"law_version_id": version.id})
+            chroma_count = len(chroma_result["ids"])
+        except Exception:
+            chroma_count = 0
+
+        if chroma_count == 0 and db_count > 0:
+            mismatches.append({
+                "law_version_id": version.id,
+                "law_id": version.law_id,
+                "db_count": db_count,
+                "chroma_count": 0,
+                "status": "MISSING",
+            })
+
+    return mismatches
+
+
 def query_articles(
     query_text: str,
     law_ids: list[int] | None = None,

@@ -733,14 +733,23 @@ def import_law_smart(
     # MUST commit before background job starts (so its session sees these versions)
     db.commit()
 
-    # Index imported versions into ChromaDB
+    # Index imported versions into ChromaDB (with validation)
     try:
         from app.services.chroma_service import index_law_version as chroma_index
         all_db_versions = (
             db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
         )
         for v in all_db_versions:
-            chroma_index(db, law.id, v.id)
+            indexed = chroma_index(db, law.id, v.id)
+            expected = db.query(Article).filter(Article.law_version_id == v.id).count()
+            if indexed < expected:
+                logger.error(
+                    f"ChromaDB indexing incomplete for {law.law_number}/{law.law_year} "
+                    f"v{v.id}: indexed {indexed}/{expected} articles — retrying"
+                )
+                indexed = chroma_index(db, law.id, v.id)
+                if indexed < expected:
+                    logger.error(f"ChromaDB retry also incomplete: {indexed}/{expected}")
     except Exception as e:
         logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
 
@@ -848,7 +857,13 @@ def import_remaining_versions(
         try:
             from app.services.chroma_service import index_law_version as chroma_index
             for v in all_versions:
-                chroma_index(db, law.id, v.id)
+                indexed = chroma_index(db, law.id, v.id)
+                expected = db.query(Article).filter(Article.law_version_id == v.id).count()
+                if indexed < expected:
+                    logger.error(
+                        f"Background ChromaDB incomplete for v{v.id}: {indexed}/{expected} — retrying"
+                    )
+                    chroma_index(db, law.id, v.id)
         except Exception as e:
             logger.warning(f"Background ChromaDB indexing failed: {e}")
 
@@ -1003,7 +1018,13 @@ def import_law(
             db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
         )
         for v in db_versions:
-            chroma_index(db, law.id, v.id)
+            indexed = chroma_index(db, law.id, v.id)
+            expected = db.query(Article).filter(Article.law_version_id == v.id).count()
+            if indexed < expected:
+                logger.error(
+                    f"EU ChromaDB incomplete for v{v.id}: {indexed}/{expected} — retrying"
+                )
+                chroma_index(db, law.id, v.id)
     except Exception as e:
         logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
 
