@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Law Detail Page - Redesign Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f5f5f4;
+    color: #1a1a1a;
+    padding: 32px;
+    line-height: 1.5;
+  }
+
+  .back-link {
+    font-size: 13px;
+    color: #6b7280;
+    text-decoration: none;
+    margin-bottom: 20px;
+    display: inline-block;
+  }
+  .back-link:hover { color: #374151; }
+
+  /* Header Card */
+  .header-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 24px 28px;
+    margin-bottom: 16px;
+  }
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .header-content { flex: 1; }
+  .header-actions {
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+    margin-left: 24px;
+  }
+  .header-actions button {
+    padding: 7px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #374151;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .header-actions button:hover { background: #f9fafb; }
+
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .breadcrumb .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3b82f6;
+  }
+  .breadcrumb .group { color: #6b7280; }
+  .breadcrumb .sep { color: #d1d5db; }
+  .breadcrumb .cat { color: #374151; }
+
+  .law-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 4px;
+  }
+  .law-subtitle {
+    font-size: 14px;
+    color: #6b7280;
+    margin-bottom: 2px;
+  }
+  .law-issuer {
+    font-size: 13px;
+    color: #9ca3af;
+  }
+
+  .header-divider {
+    height: 1px;
+    background: #f3f4f6;
+    margin: 16px 0;
+  }
+
+  .header-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: #6b7280;
+    flex-wrap: wrap;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #f3f4f6;
+    color: #6b7280;
+    border: 1px solid #e5e7eb;
+  }
+  .meta-dot { color: #d1d5db; }
+  .category-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #fff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+  }
+
+  /* Compare Versions Card */
+  .compare-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 20px 28px;
+    margin-bottom: 16px;
+  }
+  .compare-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #111827;
+    margin-bottom: 14px;
+  }
+  .compare-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .compare-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+    flex-shrink: 0;
+  }
+  .compare-select {
+    flex: 1;
+    max-width: 280px;
+    padding: 8px 12px;
+    font-size: 13px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #6b7280;
+  }
+  .compare-arrow {
+    color: #9ca3af;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .compare-btn {
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    background: #fff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .compare-btn:hover { background: #f9fafb; }
+
+  /* Update Banner - Up to date */
+  .update-banner {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .update-banner.green {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+  }
+  .update-banner.amber {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+  }
+  .update-banner .icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .update-banner.green .icon { color: #16a34a; }
+  .update-banner.amber .icon { color: #d97706; }
+  .update-banner .text-main {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .update-banner.green .text-main { color: #166534; }
+  .update-banner.amber .text-main { color: #92400e; }
+  .update-banner .text-sub {
+    font-size: 13px;
+    margin-top: 1px;
+  }
+  .update-banner.green .text-sub { color: #6b7280; }
+  .update-banner.amber .text-sub { color: #b45309; opacity: 0.7; }
+
+  /* Version Table */
+  .version-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .version-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 24px;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .version-header .icon {
+    width: 20px;
+    height: 20px;
+    color: #2563eb;
+  }
+  .version-header h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #111827;
+  }
+  .version-header .count {
+    font-size: 12px;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 2px 10px;
+    border-radius: 9999px;
+  }
+
+  .version-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .version-table thead th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 10px 24px;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .version-table thead th:last-child {
+    text-align: right;
+  }
+  .version-table tbody tr {
+    border-bottom: 1px solid #f9fafb;
+  }
+  .version-table tbody tr.current-row {
+    background: #eff6ff;
+  }
+  .version-table tbody tr.older-row {
+    opacity: 0.55;
+  }
+  .version-table tbody td {
+    padding: 14px 24px;
+    font-size: 13px;
+    vertical-align: middle;
+  }
+  .version-table tbody td:last-child {
+    text-align: right;
+  }
+
+  .ver-number {
+    font-weight: 700;
+    color: #111827;
+    font-size: 14px;
+  }
+  .ver-date { color: #6b7280; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    margin-right: 4px;
+  }
+  .badge.blue { background: #dbeafe; color: #1d4ed8; }
+  .badge.green { background: #dcfce7; color: #15803d; }
+  .badge.red { background: #fee2e2; color: #dc2626; }
+
+  .status-current {
+    font-size: 13px;
+    font-weight: 500;
+    color: #166534;
+  }
+  .status-imported {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #f3f4f6;
+    color: #6b7280;
+  }
+
+  .action-btn {
+    padding: 5px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #2563eb;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-left: 6px;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .action-btn:hover { background: #dbeafe; }
+
+  /* Show all toggle */
+  .show-all-row {
+    display: flex;
+    align-items: center;
+    padding: 14px 24px;
+    cursor: pointer;
+    border-top: 1px solid #f3f4f6;
+  }
+  .show-all-row:hover { background: #fafafa; }
+  .show-all-line {
+    flex: 1;
+    height: 1px;
+    background: #e5e7eb;
+  }
+  .show-all-label {
+    padding: 0 16px;
+    font-size: 13px;
+    color: #9ca3af;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .section-label {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-bottom: 8px;
+    margin-top: 24px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<a href="#" class="back-link">&larr; Back to Legal Library</a>
+
+<!-- HEADER CARD -->
+<div class="header-card">
+  <div class="header-top">
+    <div class="header-content">
+      <div class="breadcrumb">
+        <span class="dot"></span>
+        <span class="group">Civil law</span>
+        <span class="sep">&rsaquo;</span>
+        <span class="cat">Civil procedure</span>
+      </div>
+      <div class="law-title">Legea 85 din 25.06.2014</div>
+      <div class="law-subtitle">privind procedurile de prevenire a insolventei si de insolventa</div>
+      <div class="law-issuer">Issuer: Parlamentul Romaniei</div>
+    </div>
+    <div class="header-actions">
+      <button>Edit</button>
+      <button>Delete 16 old versions</button>
+    </div>
+  </div>
+  <div class="header-divider"></div>
+  <div class="header-meta">
+    <span class="status-pill">Unknown</span>
+    <span class="meta-dot">&middot;</span>
+    <span>Legea 85/2014</span>
+    <span class="meta-dot">&middot;</span>
+    <span>Published: 25 Jun 2014</span>
+    <span class="meta-dot">&middot;</span>
+    <span class="category-pill">Civil procedure</span>
+  </div>
+</div>
+
+<!-- COMPARE VERSIONS CARD -->
+<div class="compare-card">
+  <div class="compare-title">Compare versions</div>
+  <div class="compare-row">
+    <span class="compare-label">From</span>
+    <select class="compare-select">
+      <option>Select version...</option>
+    </select>
+    <span class="compare-arrow">&rarr;</span>
+    <span class="compare-label">To</span>
+    <select class="compare-select">
+      <option>Select version...</option>
+    </select>
+    <button class="compare-btn">Compare</button>
+  </div>
+</div>
+
+<!-- UPDATE BANNER (Green - up to date) -->
+<div class="update-banner green">
+  <svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+  <div>
+    <div class="text-main">No new versions</div>
+    <div class="text-sub">Last checked: today, 09:50 &middot; All available versions are imported</div>
+  </div>
+</div>
+
+<!-- IMPORTED VERSIONS TABLE -->
+<div class="version-card">
+  <div class="version-header">
+    <svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <h3>Imported versions</h3>
+    <span class="count">17 versions</span>
+  </div>
+
+  <table class="version-table">
+    <thead>
+      <tr>
+        <th style="width:80px">VER.</th>
+        <th style="width:130px">DATE</th>
+        <th>CHANGES VS PREVIOUS</th>
+        <th style="width:150px">STATUS</th>
+        <th style="width:170px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="current-row">
+        <td><span class="ver-number">v17</span></td>
+        <td class="ver-date">18 Dec 2025</td>
+        <td>
+          <span class="badge blue">33 modified</span>
+          <span class="badge green">2 added</span>
+        </td>
+        <td><span class="status-current">Current version</span></td>
+        <td>
+          <a href="#" class="action-btn">Read</a>
+          <a href="#" class="action-btn">Compare</a>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="ver-number">v16</span></td>
+        <td class="ver-date">04 Sep 2025</td>
+        <td>
+          <span class="badge blue">12 modified</span>
+          <span class="badge red">1 removed</span>
+        </td>
+        <td><span class="status-imported">Imported</span></td>
+        <td>
+          <a href="#" class="action-btn">Read</a>
+          <a href="#" class="action-btn">Compare</a>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="ver-number">v15</span></td>
+        <td class="ver-date">11 Mar 2025</td>
+        <td>
+          <span class="badge blue">8 modified</span>
+          <span class="badge green">4 added</span>
+          <span class="badge red">2 removed</span>
+        </td>
+        <td><span class="status-imported">Imported</span></td>
+        <td>
+          <a href="#" class="action-btn">Read</a>
+          <a href="#" class="action-btn">Compare</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Show all older versions -->
+  <div class="show-all-row">
+    <span class="show-all-line"></span>
+    <span class="show-all-label">
+      Show all older versions
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+      </svg>
+    </span>
+    <span class="show-all-line"></span>
+  </div>
+
+  <!-- Example older rows (hidden by default, shown when expanded) -->
+  <table class="version-table" id="older-versions" style="display:none;">
+    <tbody>
+      <tr class="older-row">
+        <td><span class="ver-number">v14</span></td>
+        <td class="ver-date">01 Jan 2025</td>
+        <td>
+          <span class="badge blue">5 modified</span>
+        </td>
+        <td><span class="status-imported">Imported</span></td>
+        <td>
+          <a href="#" class="action-btn">Read</a>
+          <a href="#" class="action-btn">Compare</a>
+        </td>
+      </tr>
+      <tr class="older-row">
+        <td><span class="ver-number">v13</span></td>
+        <td class="ver-date">15 Oct 2024</td>
+        <td>
+          <span class="badge blue">3 modified</span>
+          <span class="badge green">1 added</span>
+        </td>
+        <td><span class="status-imported">Imported</span></td>
+        <td>
+          <a href="#" class="action-btn">Read</a>
+          <a href="#" class="action-btn">Compare</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<br><br>
+
+<!-- ALTERNATE: Amber update banner example -->
+<p style="font-size:12px; color:#999; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; font-weight:600;">Alternate: amber banner (when new versions exist)</p>
+<div class="update-banner amber">
+  <svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+  </svg>
+  <div style="flex:1;">
+    <div class="text-main">2 new versions available</div>
+    <div class="text-sub">Last checked: today, 09:50 &middot; 2 versions not yet imported</div>
+  </div>
+  <div style="display:flex; gap:8px; align-items:center; flex-shrink:0;">
+    <button style="padding:7px 16px; font-size:13px; font-weight:500; background:#d97706; color:#fff; border:none; border-radius:6px; cursor:pointer;">Import latest version (v18)</button>
+    <button style="padding:7px 16px; font-size:13px; font-weight:500; background:#fff; color:#92400e; border:1px solid #fde68a; border-radius:6px; cursor:pointer;">Dismiss</button>
+  </div>
+</div>
+
+<script>
+  document.querySelector('.show-all-row').addEventListener('click', function() {
+    const older = document.getElementById('older-versions');
+    if (older.style.display === 'none') {
+      older.style.display = '';
+      this.querySelector('.show-all-label').innerHTML = 'Hide older versions <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" /></svg>';
+    } else {
+      older.style.display = 'none';
+      this.querySelector('.show-all-label').innerHTML = 'Show all older versions <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>';
+    }
+  });
+</script>
+</body>
+</html>
