@@ -289,8 +289,13 @@ def _build_step7_context(state: dict) -> str:
                 parts.append(f"    Conflict: {c.get('resolution_rule', 'UNRESOLVED')} — {c.get('rationale', '')}")
 
             ta = issue.get("temporal_applicability", {})
+            if not ta.get("version_matches", True):
+                parts.append(
+                    "    ⚠ Versiunea legii utilizată nu corespunde exact datei evenimentului."
+                )
             if ta.get("temporal_risks"):
-                parts.append(f"    Temporal risks: {', '.join(ta['temporal_risks'])}")
+                for risk in ta["temporal_risks"]:
+                    parts.append(f"    Risc temporal: {risk}")
 
             parts.append(f"    Conclusion: {issue.get('conclusion', '')}")
 
@@ -593,6 +598,19 @@ def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
         missing_ids = expected_ids - returned_ids
         for mid in missing_ids:
             state["flags"].append(f"{mid}: not analyzed by reasoning step")
+
+        # Surface version mismatches as flags
+        for issue in parsed.get("issues", []):
+            ta = issue.get("temporal_applicability", {})
+            if not ta.get("version_matches", True):
+                risks = ta.get("temporal_risks", [])
+                risk_text = (
+                    "; ".join(risks) if risks
+                    else "versiunea utilizată nu corespunde datei evenimentului"
+                )
+                state["flags"].append(
+                    f"{issue['issue_id']}: Necorelare versiune — {risk_text}"
+                )
 
         log_step(
             db, state["run_id"], "legal_reasoning", 12, "done", duration,
