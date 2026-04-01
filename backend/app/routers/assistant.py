@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.database import get_db
+from app.services.pipeline_v2_service import run_pipeline_v2, resume_pipeline_v2
 from app.schemas.assistant import (
     CreateSessionResponse,
     MessageRequest,
@@ -93,6 +94,7 @@ def get_session_detail(session_id: str, db: Session = Depends(get_db)):
 def send_message(
     session_id: str,
     req: MessageRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Send a message and get a streamed response via SSE.
@@ -115,6 +117,8 @@ def send_message(
     # Build conversation context (session memory)
     context = build_conversation_context(db, session_id)
 
+    use_v2 = request.headers.get("X-Pipeline-Version", "v1") == "v2"
+
     def event_generator():
         from app.services.pipeline_service import run_pipeline
 
@@ -128,7 +132,12 @@ def send_message(
             final_run_id = None
             final_reasoning = None
 
-            for event in run_pipeline(req.content, context, gen_db):
+            if use_v2:
+                pipeline_gen = run_pipeline_v2(req.content, context, gen_db)
+            else:
+                pipeline_gen = run_pipeline(req.content, context, gen_db)
+
+            for event in pipeline_gen:
                 event_type = event.get("type", "unknown")
 
                 if event_type == "token":
@@ -224,6 +233,7 @@ def send_message(
 def resume_paused_pipeline(
     session_id: str,
     req: ResumeRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Resume a paused pipeline after user responds to import request.
@@ -236,6 +246,8 @@ def resume_paused_pipeline(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    use_v2 = request.headers.get("X-Pipeline-Version", "v1") == "v2"
+
     def event_generator():
         from app.services.pipeline_service import resume_pipeline
         from app.database import SessionLocal
@@ -247,7 +259,12 @@ def resume_paused_pipeline(
             final_run_id = req.run_id
             final_reasoning = None
 
-            for event in resume_pipeline(req.run_id, req.decisions, gen_db):
+            if use_v2:
+                pipeline_gen = resume_pipeline_v2(req.run_id, req.decisions, gen_db)
+            else:
+                pipeline_gen = resume_pipeline(req.run_id, req.decisions, gen_db)
+
+            for event in pipeline_gen:
                 event_type = event.get("type", "unknown")
 
                 if event_type == "token":
@@ -329,6 +346,7 @@ def resume_paused_pipeline(
 def retry_pipeline(
     session_id: str,
     req: RetryRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Retry a failed pipeline run.
@@ -340,6 +358,8 @@ def retry_pipeline(
     session = get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    use_v2 = request.headers.get("X-Pipeline-Version", "v1") == "v2"
 
     def event_generator():
         from app.database import SessionLocal
@@ -370,12 +390,18 @@ def retry_pipeline(
 
                 from app.services.pipeline_service import run_pipeline
 
-                pipeline = run_pipeline(question, context, gen_db)
+                if use_v2:
+                    pipeline = run_pipeline_v2(question, context, gen_db)
+                else:
+                    pipeline = run_pipeline(question, context, gen_db)
             else:
                 # Resume: re-check law mapping (laws should be imported now)
                 from app.services.pipeline_service import resume_pipeline
 
-                pipeline = resume_pipeline(req.run_id, {}, gen_db)
+                if use_v2:
+                    pipeline = resume_pipeline_v2(req.run_id, {}, gen_db)
+                else:
+                    pipeline = resume_pipeline(req.run_id, {}, gen_db)
 
             for event in pipeline:
                 event_type = event.get("type", "unknown")
