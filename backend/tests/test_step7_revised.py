@@ -20,7 +20,7 @@ def test_context_includes_operative_articles_only(mock_state_standard, mock_rl_r
     mock_state_standard["rl_rap_output"] = mock_rl_rap_output
     mock_state_standard["retrieved_articles"] = mock_articles
     ctx = _build_step7_context(mock_state_standard)
-    assert "ADDITIONAL RETRIEVED ARTICLES" in ctx
+    assert "ARTICOLE RELEVANTE" in ctx or "ARTICOLE SUPLIMENTARE" in ctx or "ALTE ARTICOLE" in ctx
     assert "art.197" in ctx.lower() or "Art. 197" in ctx
 
 

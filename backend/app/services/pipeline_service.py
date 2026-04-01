@@ -343,34 +343,59 @@ def _build_step7_context(state: dict) -> str:
             if issue.get("missing_facts"):
                 parts.append(f"    Informații lipsă: {'; '.join(issue['missing_facts'])}")
 
-        # Supporting article texts — operative first, then remaining
+        # Tiered article rendering: operative (full) > related (abbreviated) > rest (reference)
         operative_refs = set()
         for issue in rl_rap.get("issues", []):
             for oa in issue.get("operative_articles", []):
                 operative_refs.add(oa.get("article_ref", ""))
 
         all_articles = [a for a in state.get("retrieved_articles", []) if a]
-        operative_articles = []
-        other_articles = []
+
+        issue_article_ids = set()
+        for arts in state.get("issue_articles", {}).values():
+            for a in arts:
+                issue_article_ids.add(a.get("article_id"))
+
+        tier1, tier2, tier3 = [], [], []
         for art in all_articles:
             art_ref = f"art.{art.get('article_number', '')}"
             if any(art_ref in ref for ref in operative_refs):
-                operative_articles.append(art)
+                tier1.append(art)
+            elif art.get("article_id") in issue_article_ids:
+                tier2.append(art)
             else:
-                other_articles.append(art)
+                tier3.append(art)
 
-        parts.append("\nOPERATIVE ARTICLE TEXTS:")
-        for art in operative_articles:
-            law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
-            parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
-            parts.append(f"  {art.get('text', '')}")
-
-        if other_articles:
-            parts.append("\nADDITIONAL RETRIEVED ARTICLES (not flagged as operative by reasoning step — review for missed provisions):")
-            for art in other_articles:
+        # Tier 1 — full text (operative articles analyzed by reasoning step)
+        parts.append("\nARTICOLE RELEVANTE (analizate juridic):")
+        if tier1:
+            for art in tier1:
                 law_ref = f"{art.get('law_title', '')} ({art.get('law_number', '')}/{art.get('law_year', '')})"
-                parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, version {art.get('date_in_force', '')}")
+                parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}, versiune {art.get('date_in_force', '')}")
                 parts.append(f"  {art.get('text', '')}")
+        else:
+            parts.append("  (niciun articol operativ identificat)")
+
+        # Tier 2 — abbreviated (assigned to issues but not operative)
+        if tier2:
+            parts.append("\nARTICOLE SUPLIMENTARE (disponibile pentru citare):")
+            for art in tier2:
+                law_ref = f"{art.get('law_number', '')}/{art.get('law_year', '')}"
+                text = art.get("text", "")
+                if len(text) > 200:
+                    text_preview = text[:200].rsplit(" ", 1)[0] + "..."
+                else:
+                    text_preview = text
+                parts.append(f"  [Art. {art.get('article_number', '')}] {law_ref}: {text_preview}")
+
+        # Tier 3 — reference only (not assigned to any issue)
+        if tier3:
+            parts.append("\nALTE ARTICOLE RECUPERATE (referință):")
+            refs = [
+                f"Art. {a.get('article_number', '')} ({a.get('law_number', '')}/{a.get('law_year', '')})"
+                for a in tier3
+            ]
+            parts.append(f"  {', '.join(refs)}")
     else:
         # Fallback: no RL-RAP output, use raw articles
         parts.append("\n⚠ FALLBACK MODE — NO STRUCTURED LEGAL ANALYSIS AVAILABLE.")
