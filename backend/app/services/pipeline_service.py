@@ -1083,52 +1083,65 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             "derived_confidence": state.get("derived_confidence"),
         })
 
-        # Conditional Retrieval Pass (existing missing articles + governing norm fetch)
+        # Conditional Retrieval Pass (flag-only, re-run only for governing norms)
         if state.get("rl_rap_output"):
             missing = _check_missing_articles(state["rl_rap_output"])
+            governing_norm_issues = []
             governing_norm_fetched = []
 
             # Fetch governing norms for issues with MISSING status
             for issue in state["rl_rap_output"].get("issues", []):
-                gn_articles = _fetch_governing_norm(issue, state, db)
-                if gn_articles:
-                    governing_norm_fetched.extend(gn_articles)
+                gns = issue.get("governing_norm_status", {})
+                if gns.get("status") == "MISSING":
+                    governing_norm_issues.append(issue["issue_id"])
+                    gn_articles = _fetch_governing_norm(issue, state, db)
+                    if gn_articles:
+                        governing_norm_fetched.extend(gn_articles)
 
-            needs_retrieval = bool(missing) or bool(governing_norm_fetched)
+            # Fetch standard missing articles (non-governing)
+            fetched = _fetch_missing_articles(missing, state, db) if missing else []
 
-            if needs_retrieval:
+            all_fetched = fetched + governing_norm_fetched
+            needs_step13_log = bool(missing) or bool(governing_norm_issues)
+
+            if all_fetched:
+                # Add fetched articles to issue_articles / shared_context
+                for art in all_fetched:
+                    added = False
+                    for iid, arts in state.get("issue_articles", {}).items():
+                        iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
+                        if iv_key in state.get("issue_versions", {}):
+                            arts.append(art)
+                            added = True
+                    if not added:
+                        state.setdefault("shared_context", []).append(art)
+
+            # Re-run Step 12 ONLY if a governing norm was MISSING and is now found
+            should_rerun = bool(governing_norm_fetched) and bool(governing_norm_issues)
+
+            if should_rerun:
+                state = _step6_8_legal_reasoning(state, db)
+
+            # Flag unfetched articles
+            if missing:
+                fetched_refs = set()
+                for a in all_fetched:
+                    fetched_refs.add(
+                        f"{a.get('law_number', '')}/{a.get('law_year', '')} "
+                        f"art.{a.get('article_number', '')}"
+                    )
+                unfetched = [m for m in missing if m not in fetched_refs]
+                if unfetched:
+                    state["flags"].append(
+                        f"Articole solicitate de analiză dar nedisponibile: "
+                        f"{', '.join(unfetched)}"
+                    )
+
+            if needs_step13_log:
                 yield _step_event(13, "conditional_retrieval", "running")
-                t0 = time.time()
-
-                # Fetch standard missing articles
-                fetched = _fetch_missing_articles(missing, state, db) if missing else []
-
-                # Combine with governing norm articles
-                all_fetched = fetched + governing_norm_fetched
-
-                if all_fetched:
-                    for art in all_fetched:
-                        added = False
-                        for iid, arts in state.get("issue_articles", {}).items():
-                            iv_key = f"{iid}:{art['law_number']}/{art['law_year']}"
-                            if iv_key in state.get("issue_versions", {}):
-                                arts.append(art)
-                                added = True
-                        if not added:
-                            state.setdefault("shared_context", []).append(art)
-                    # Re-run reasoning with expanded article set
-                    state = _step6_8_legal_reasoning(state, db)
-                else:
-                    if missing:
-                        state["flags"].append(f"Missing provisions not in library: {', '.join(missing)}")
-
-                cond_duration = time.time() - t0
                 cond_data = {
                     "requested_refs": missing,
-                    "governing_norms_searched": [
-                        i["issue_id"] for i in state["rl_rap_output"].get("issues", [])
-                        if i.get("governing_norm_status", {}).get("status") == "MISSING"
-                    ],
+                    "governing_norms_searched": governing_norm_issues,
                     "fetched_articles": [
                         {
                             "article_number": a.get("article_number"),
@@ -1138,18 +1151,25 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
                         for a in all_fetched
                     ],
                     "fetched_count": len(all_fetched),
-                    "requested_count": len(missing) + len(governing_norm_fetched),
-                    "re_ran_reasoning": bool(all_fetched),
+                    "requested_count": len(missing) + len(governing_norm_issues),
+                    "re_ran_reasoning": should_rerun,
                 }
                 log_step(
-                    db, state["run_id"], "conditional_retrieval", 13, "done", cond_duration,
-                    output_summary=f"Requested {len(missing)} missing + {len(governing_norm_fetched)} governing norms, fetched {len(all_fetched)}",
+                    db, state["run_id"], "conditional_retrieval", 13, "done",
+                    0,
+                    output_summary=(
+                        f"Requested {len(missing)} missing + "
+                        f"{len(governing_norm_issues)} governing norms, "
+                        f"fetched {len(all_fetched)}"
+                        + (", re-ran reasoning" if should_rerun else "")
+                    ),
                     output_data=cond_data,
                 )
                 yield _step_event(13, "conditional_retrieval", "done", {
                     "requested": cond_data["requested_count"],
                     "fetched": cond_data["fetched_count"],
-                }, cond_duration)
+                    "re_ran": should_rerun,
+                })
 
             # Post-6.9 Governing Norm Gate
             gate_result = _post_6_9_governing_norm_gate(state)
