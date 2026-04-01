@@ -12,7 +12,7 @@ def test_context_includes_rl_rap_analysis(mock_state_standard, mock_rl_rap_outpu
     ctx = _build_step7_context(mock_state_standard)
     assert "LEGAL ANALYSIS" in ctx
     assert "ISSUE-1" in ctx
-    assert "CONDITIONAL" in ctx
+    assert "Concluzia depinde de informații lipsă" in ctx
 
 
 def test_context_includes_operative_articles_only(mock_state_standard, mock_rl_rap_output, mock_articles):
@@ -20,7 +20,7 @@ def test_context_includes_operative_articles_only(mock_state_standard, mock_rl_r
     mock_state_standard["rl_rap_output"] = mock_rl_rap_output
     mock_state_standard["retrieved_articles"] = mock_articles
     ctx = _build_step7_context(mock_state_standard)
-    assert "SUPPORTING ARTICLE TEXTS" in ctx
+    assert "ADDITIONAL RETRIEVED ARTICLES" in ctx
     assert "art.197" in ctx.lower() or "Art. 197" in ctx
 
 

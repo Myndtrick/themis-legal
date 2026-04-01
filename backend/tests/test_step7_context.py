@@ -65,10 +65,10 @@ def test_step7_context_includes_uncertainty_sources():
     }
     state = _make_state(rl_rap=rl_rap)
     result = _build_step7_context(state)
-    assert "Uncertainty sources:" in result
-    assert "FACTUAL_GAP" in result
-    assert "Condition table:" in result
-    assert "Subsumption:" in result
+    assert "Surse de incertitudine:" in result
+    assert "Informație lipsă din întrebare" in result
+    assert "Conditions:" in result
+    assert "Rezultat:" in result
 
 
 def test_step7_context_without_new_fields():

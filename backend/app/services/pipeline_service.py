@@ -247,40 +247,72 @@ def _build_step7_context(state: dict) -> str:
                 for f in facts["missing"]:
                     parts.append(f"    {f['fact_id']}: {f['description']}")
 
-        # RL-RAP analysis
+        # RL-RAP analysis — translated to Romanian for Step 14
+        _STATUS_MAP = {
+            "SATISFIED": "Condiție îndeplinită",
+            "NOT_SATISFIED": "Condiție neîndeplinită",
+            "UNKNOWN": "Informație lipsă",
+        }
+        _CERTAINTY_MAP = {
+            "CERTAIN": "Concluzia este fermă.",
+            "PROBABLE": "Concluzia este probabilă, cu rezerve minore.",
+            "CONDITIONAL": "Concluzia depinde de informații lipsă.",
+            "UNCERTAIN": "Analiza este incompletă — concluzie nesigură.",
+        }
+        _NORM_MAP = {
+            "YES": "Norma se aplică",
+            "NO": "Norma nu se aplică",
+            "CONDITIONAL": "Aplicabilitate condiționată",
+        }
+        _UNCERTAINTY_TYPE_MAP = {
+            "LIBRARY_GAP": "Articol indisponibil",
+            "FACTUAL_GAP": "Informație lipsă din întrebare",
+            "LEGAL_AMBIGUITY": "Chestiune juridică interpretabilă",
+        }
+
         parts.append("\nLEGAL ANALYSIS (from reasoning step):")
         for issue in rl_rap.get("issues", []):
             parts.append(f"\n  {issue['issue_id']}: {issue.get('issue_label', '')}")
-            parts.append(f"    Certainty: {issue.get('certainty_level', 'UNKNOWN')}")
+            certainty = issue.get("certainty_level", "UNKNOWN")
+            parts.append(f"    {_CERTAINTY_MAP.get(certainty, certainty)}")
 
             for oa in issue.get("operative_articles", []):
                 parts.append(f"    Operative article: {oa['article_ref']} — {oa.get('disposition', {}).get('modality', '')}")
 
-            # Legacy conditions format (fallback when no condition_table)
-            if not issue.get("condition_table") and issue.get("decomposed_conditions"):
-                parts.append("    Conditions:")
-                for c in issue.get("decomposed_conditions", []):
-                    fact_refs = ", ".join(c.get("supporting_fact_ids", []))
-                    parts.append(f"      {c['condition_id']}: {c['condition_text']} — {c['condition_status']}" +
-                               (f" ({fact_refs})" if fact_refs else ""))
-
-            # Condition table (new format)
+            # Condition table — translated statuses
             if issue.get("condition_table"):
-                parts.append("    Condition table:")
+                parts.append("    Conditions:")
                 for ct in issue["condition_table"]:
-                    parts.append(f"      {ct['condition_id']}: {ct['condition_text']} — {ct['status']}"
-                               + (f" (evidence: {ct['evidence']})" if ct.get("evidence") else "")
-                               + (f" [MISSING: {ct['missing_fact']}]" if ct.get("missing_fact") else ""))
+                    status_ro = _STATUS_MAP.get(ct.get("status", ""), ct.get("status", ""))
+                    line = f"      {ct['condition_id']}: {ct['condition_text']} — {status_ro}"
+                    if ct.get("evidence"):
+                        line += f" (fapt: {ct['evidence']})"
+                    if ct.get("missing_fact"):
+                        line += f" [Lipsă: {ct['missing_fact']}]"
+                    parts.append(line)
+
                 summary = issue.get("subsumption_summary") or {}
                 if summary:
-                    parts.append(f"    Subsumption: {summary.get('satisfied', 0)} satisfied, "
-                               f"{summary.get('not_satisfied', 0)} not satisfied, "
-                               f"{summary.get('unknown', 0)} unknown → {summary.get('norm_applicable', '?')}")
+                    norm_status = _NORM_MAP.get(summary.get("norm_applicable", "?"), summary.get("norm_applicable", "?"))
+                    parts.append(
+                        f"    Rezultat: {summary.get('satisfied', 0)} îndeplinite, "
+                        f"{summary.get('not_satisfied', 0)} neîndeplinite, "
+                        f"{summary.get('unknown', 0)} lipsă → {norm_status}"
+                    )
                     if summary.get("blocking_unknowns"):
-                        parts.append(f"    Blocking unknowns: {', '.join(summary['blocking_unknowns'])}")
+                        parts.append(f"    Condiții nerezolvate: {', '.join(summary['blocking_unknowns'])}")
+
+            # Legacy conditions format
+            elif issue.get("decomposed_conditions"):
+                parts.append("    Conditions:")
+                for c in issue.get("decomposed_conditions", []):
+                    status_ro = _STATUS_MAP.get(c.get("condition_status", ""), c.get("condition_status", ""))
+                    fact_refs = ", ".join(c.get("supporting_fact_ids", []))
+                    parts.append(f"      {c['condition_id']}: {c['condition_text']} — {status_ro}" +
+                               (f" ({fact_refs})" if fact_refs else ""))
 
             if issue.get("exceptions_checked"):
-                parts.append("    Exceptions checked:")
+                parts.append("    Excepții verificate:")
                 for ex in issue["exceptions_checked"]:
                     parts.append(f"      {ex['exception_ref']} — {ex['condition_status_summary']} — {ex.get('impact', '')}")
 
@@ -290,28 +322,26 @@ def _build_step7_context(state: dict) -> str:
 
             ta = issue.get("temporal_applicability", {})
             if not ta.get("version_matches", True):
-                parts.append(
-                    "    ⚠ Versiunea legii utilizată nu corespunde exact datei evenimentului."
-                )
+                parts.append("    ⚠ Versiunea legii utilizată nu corespunde exact datei evenimentului.")
             if ta.get("temporal_risks"):
                 for risk in ta["temporal_risks"]:
                     parts.append(f"    Risc temporal: {risk}")
 
             parts.append(f"    Conclusion: {issue.get('conclusion', '')}")
 
-            # Governing norm status
             gns = issue.get("governing_norm_status", {})
             if gns.get("status") and gns["status"] != "PRESENT":
                 parts.append(f"    Governing norm: {gns['status']} — {gns.get('explanation', '')}")
 
-            # Uncertainty sources
+            # Uncertainty sources — translated
             if issue.get("uncertainty_sources"):
-                parts.append("    Uncertainty sources:")
+                parts.append("    Surse de incertitudine:")
                 for us in issue["uncertainty_sources"]:
-                    parts.append(f"      {us['type']}: {us['detail']} (impact: {us.get('impact', '')})")
+                    type_ro = _UNCERTAINTY_TYPE_MAP.get(us.get("type", ""), us.get("type", ""))
+                    parts.append(f"      {type_ro}: {us['detail']} (impact: {us.get('impact', '')})")
 
             if issue.get("missing_facts"):
-                parts.append(f"    Missing facts: {'; '.join(issue['missing_facts'])}")
+                parts.append(f"    Informații lipsă: {'; '.join(issue['missing_facts'])}")
 
         # Supporting article texts — operative first, then remaining
         operative_refs = set()
