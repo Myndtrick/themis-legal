@@ -2684,6 +2684,15 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
             all_articles.append(art)
             candidate_count += 1
 
+    # Add protected candidates from concept resolution (Step 1c)
+    protected_candidates = state.get("protected_candidates", [])
+    for art in protected_candidates:
+        aid = f"{art.get('doc_type', 'article')}:{art['article_id']}"
+        if aid not in seen_ids:
+            seen_ids.add(aid)
+            all_articles.append(art)
+            candidate_count += 1
+
     bm25_count = 0
     semantic_count = 0
     duplicates_removed = 0
@@ -2967,7 +2976,8 @@ def _step5_graph_expansion(state: dict, db: Session) -> dict:
 
 
 def _step6_select_articles(state: dict, db: Session, top_k_override: int | None = None) -> dict:
-    """Rerank articles using cross-encoder, select top-k."""
+    """Rerank articles using cross-encoder, select top-k.
+    Protected articles (from concept resolution) bypass reranking."""
     from app.services.reranker_service import rerank_articles
 
     num_issues = len(state.get("legal_issues", []))
@@ -2981,26 +2991,39 @@ def _step6_select_articles(state: dict, db: Session, top_k_override: int | None 
                  output_summary="No articles to select from")
         return state
 
-    ranked = rerank_articles(state["question"], raw, top_k=top_k)
-    state["retrieved_articles"] = ranked
+    # Split: protected candidates bypass reranker
+    protected = [a for a in raw if a.get("protected")]
+    searchable = [a for a in raw if not a.get("protected")]
 
-    kept_ids = {a["article_id"] for a in ranked}
+    # Rerank only non-protected articles
+    if searchable:
+        ranked = rerank_articles(state["question"], searchable, top_k=top_k)
+    else:
+        ranked = []
+
+    # Merge: protected always kept + reranked top-k
+    merged = protected + ranked
+    state["retrieved_articles"] = merged
+
+    kept_ids = {a["article_id"] for a in merged}
     dropped = [a for a in raw if a["article_id"] not in kept_ids]
 
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "article_selection", 9, "done", duration,
-        output_summary=f"Reranker: {len(raw)} -> top {len(ranked)} articles",
+        output_summary=f"Reranker: {len(searchable)} -> top {len(ranked)} articles + {len(protected)} protected",
         output_data={
             "method": "reranker",
+            "protected_count": len(protected),
             "kept_articles": [
                 {
                     "article_id": a["article_id"],
                     "article_number": a.get("article_number"),
                     "law": f"{a.get('law_number')}/{a.get('law_year')}",
-                    "score": round(a.get("reranker_score", 0), 3),
+                    "score": round(a.get("reranker_score", 0), 3) if a.get("reranker_score") is not None else None,
+                    "protected": a.get("protected", False),
                 }
-                for a in ranked
+                for a in merged
             ],
             "dropped_count": len(dropped),
             "total_candidates": len(raw),
