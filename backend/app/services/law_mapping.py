@@ -12,6 +12,7 @@ def check_laws_in_db(
     laws: list[dict],
     db: Session,
     law_date_map: dict[str, list[str] | str] | None = None,
+    fact_version_map: dict | None = None,
 ) -> list[dict]:
     """Enrich each law dict with DB availability and version status.
 
@@ -98,6 +99,17 @@ def check_laws_in_db(
             )
             law["availability"] = "available" if any_version else "missing"
             law["available_version_date"] = str(any_version.date_in_force) if any_version else None
+
+    # --- Enrich with version availability from Step 2's fact_version_map ---
+    if fact_version_map:
+        for law in laws:
+            law_key = f"{law['law_number']}/{law['law_year']}"
+            has_version = any(
+                info.get("law_version_id") is not None
+                for key, info in fact_version_map.items()
+                if key.endswith(f":{law_key}")
+            )
+            law["version_available"] = has_version
 
     # --- Version status check (uses KnownVersion) ---
     for law in laws:
