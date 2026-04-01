@@ -1390,6 +1390,13 @@ def run_pipeline(
         # Step 2: Version Preparation (date extraction + DB version lookups)
         state = _step1b_version_preparation(state, db)
 
+        # Step 1c: Concept-Based Article Resolution
+        yield _step_event(2, "concept_resolution", "running")
+        t0_cr = time.time()
+        _step1c_concept_resolution(state, db)
+        cr_log = state.get("_concept_resolution_log", {})
+        yield _step_event(2, "concept_resolution", "done", cr_log, time.time() - t0_cr)
+
         # Step 3: Law Mapping (rule-based, no Claude)
         yield _step_event(3, "law_mapping", "running")
         t0 = time.time()
@@ -2113,6 +2120,181 @@ def _step1b_version_preparation(state: dict, db: Session) -> dict:
     )
 
     return state
+
+
+# ---------------------------------------------------------------------------
+# Step 1c: Concept-Based Article Resolution
+# ---------------------------------------------------------------------------
+
+
+def _step1c_concept_resolution(state: dict, db, chroma_collection=None) -> list[dict]:
+    """Resolve legal concepts to actual articles via validation + semantic search.
+
+    Phase A: Validate candidate_articles from Step 1 (filter abrogated/missing).
+    Phase B: Concept search within each law via ChromaDB filtered queries.
+    Returns a merged, deduplicated list of protected article dicts.
+    """
+    from app.models.law import Article as ArticleModel
+
+    if chroma_collection is None:
+        from app.services.chroma_service import get_collection
+        chroma_collection = get_collection()
+
+    protected_articles: list[dict] = []
+    seen: set[tuple[int, str]] = set()  # (law_version_id, article_number)
+    validated_log: list[dict] = []
+    rejected_log: list[dict] = []
+    concept_log: list[dict] = []
+
+    unique_versions = state.get("unique_versions", {})
+
+    for issue in state.get("legal_issues", []):
+        issue_id = issue["issue_id"]
+
+        # --- Phase A: Validate proposed candidate_articles ---
+        for ca in issue.get("candidate_articles", []):
+            law_key = ca.get("law_key", "")
+            article_num = ca.get("article", "")
+            if not law_key or not article_num:
+                continue
+
+            version_ids = unique_versions.get(law_key, [])
+            for vid in version_ids:
+                if (vid, article_num) in seen:
+                    continue
+
+                article = (
+                    db.query(ArticleModel)
+                    .filter(
+                        ArticleModel.law_version_id == vid,
+                        ArticleModel.article_number == article_num,
+                        ArticleModel.is_abrogated == False,
+                    )
+                    .first()
+                )
+
+                if article:
+                    seen.add((vid, article_num))
+                    parts = law_key.split("/")
+                    protected_articles.append({
+                        "article_id": article.id,
+                        "law_version_id": vid,
+                        "article_number": article.article_number,
+                        "text": article.full_text,
+                        "label": article.label,
+                        "source": "candidate_validated",
+                        "tier": "tier1_primary",
+                        "role": "PRIMARY",
+                        "law_number": parts[0] if len(parts) > 0 else "",
+                        "law_year": parts[1] if len(parts) > 1 else "",
+                        "is_abrogated": False,
+                        "doc_type": "article",
+                        "protected": True,
+                        "issue_id": issue_id,
+                    })
+                    validated_log.append({
+                        "law_key": law_key, "article": article_num,
+                        "status": "valid", "article_id": article.id,
+                    })
+                else:
+                    # Check if it exists but is abrogated
+                    abrogated = (
+                        db.query(ArticleModel)
+                        .filter(
+                            ArticleModel.law_version_id == vid,
+                            ArticleModel.article_number == article_num,
+                        )
+                        .first()
+                    )
+                    status = "abrogated" if (abrogated and abrogated.is_abrogated) else "not_found"
+                    rejected_log.append({
+                        "law_key": law_key, "article": article_num, "status": status,
+                    })
+
+        # --- Phase B: Concept search within each law ---
+        for cd in issue.get("concept_descriptions", []):
+            law_key = cd.get("law_key", "")
+            if not law_key:
+                continue
+            version_ids = unique_versions.get(law_key, [])
+
+            for vid in version_ids:
+                queries = [cd["concept_general"]]
+                if cd.get("concept_specific"):
+                    queries.append(cd["concept_specific"])
+
+                found_for_concept: list[str] = []
+                top_distance = None
+
+                for query_text in queries:
+                    try:
+                        results = chroma_collection.query(
+                            query_texts=[query_text],
+                            n_results=7,
+                            where={"law_version_id": vid},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Concept search failed for {law_key} vid={vid}: {e}")
+                        continue
+
+                    if not results["ids"] or not results["ids"][0]:
+                        continue
+
+                    distances = results["distances"][0]
+                    if top_distance is None and distances:
+                        top_distance = distances[0]
+
+                    # Adaptive: take top 5 if good match, top 7 if weak
+                    n_take = 7 if (distances and distances[0] > 0.35) else 5
+
+                    for i in range(min(n_take, len(results["ids"][0]))):
+                        meta = results["metadatas"][0][i]
+                        art_num = meta.get("article_number", "")
+                        art_id_str = meta.get("article_id", "")
+
+                        if (vid, art_num) in seen:
+                            continue
+                        if meta.get("is_abrogated") == "True":
+                            continue
+
+                        seen.add((vid, art_num))
+                        found_for_concept.append(art_num)
+
+                        parts = law_key.split("/")
+                        protected_articles.append({
+                            "article_id": int(art_id_str) if art_id_str else 0,
+                            "law_version_id": vid,
+                            "article_number": art_num,
+                            "text": results["documents"][0][i] if results.get("documents") else "",
+                            "label": art_num,
+                            "source": "concept_search",
+                            "tier": "tier1_primary",
+                            "role": "PRIMARY",
+                            "law_number": parts[0] if len(parts) > 0 else "",
+                            "law_year": parts[1] if len(parts) > 1 else "",
+                            "is_abrogated": False,
+                            "doc_type": "article",
+                            "protected": True,
+                            "issue_id": issue_id,
+                        })
+
+                concept_log.append({
+                    "issue_id": issue_id,
+                    "law_key": law_key,
+                    "concept": cd["concept_general"][:80],
+                    "found": found_for_concept,
+                    "top_distance": round(top_distance, 4) if top_distance else None,
+                })
+
+    state["protected_candidates"] = protected_articles
+    state["_concept_resolution_log"] = {
+        "validated_candidates": validated_log,
+        "rejected_candidates": rejected_log,
+        "concept_search_results": concept_log,
+        "total_protected": len(protected_articles),
+    }
+
+    return protected_articles
 
 
 # ---------------------------------------------------------------------------
