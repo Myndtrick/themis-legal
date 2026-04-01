@@ -269,6 +269,22 @@ def _build_step7_context(state: dict) -> str:
             "FACTUAL_GAP": "Informație lipsă din întrebare",
             "LEGAL_AMBIGUITY": "Chestiune juridică interpretabilă",
         }
+        _GOVERNING_NORM_MAP = {
+            "PRESENT": None,
+            "MISSING": "Norma nu a fost identificată în articolele disponibile",
+            "INFERRED": "Norma a fost dedusă din cadrul legal general",
+        }
+        _EXCEPTION_STATUS_MAP = {
+            "SATISFIED": "Excepție aplicabilă",
+            "NOT_SATISFIED": "Excepție inaplicabilă",
+            "UNKNOWN": "Excepție — informație insuficientă",
+        }
+        _CONFLICT_RESOLUTION_MAP = {
+            "UNRESOLVED": "Conflict nerezolvat între norme concurente",
+            "lex_specialis": "Se aplică norma specială",
+            "lex_posterior": "Se aplică norma mai recentă",
+            "lex_superior": "Se aplică norma superioară",
+        }
 
         parts.append("\nLEGAL ANALYSIS (from reasoning step):")
         for issue in rl_rap.get("issues", []):
@@ -300,7 +316,13 @@ def _build_step7_context(state: dict) -> str:
                         f"{summary.get('unknown', 0)} lipsă → {norm_status}"
                     )
                     if summary.get("blocking_unknowns"):
-                        parts.append(f"    Condiții nerezolvate: {', '.join(summary['blocking_unknowns'])}")
+                        ct_lookup = {
+                            ct["condition_id"]: ct.get("condition_text", ct["condition_id"])
+                            for ct in issue.get("condition_table", [])
+                            if ct.get("condition_id")
+                        }
+                        blocking_texts = [ct_lookup.get(cid, cid) for cid in summary["blocking_unknowns"]]
+                        parts.append(f"    Condiții nerezolvate: {'; '.join(blocking_texts)}")
 
             # Legacy conditions format
             elif issue.get("decomposed_conditions"):
@@ -314,24 +336,39 @@ def _build_step7_context(state: dict) -> str:
             if issue.get("exceptions_checked"):
                 parts.append("    Excepții verificate:")
                 for ex in issue["exceptions_checked"]:
-                    parts.append(f"      {ex['exception_ref']} — {ex['condition_status_summary']} — {ex.get('impact', '')}")
+                    ex_status = _EXCEPTION_STATUS_MAP.get(
+                        ex.get("condition_status_summary", ""),
+                        ex.get("condition_status_summary", ""),
+                    )
+                    parts.append(f"      {ex['exception_ref']} — {ex_status} — {ex.get('impact', '')}")
 
             if issue.get("conflicts"):
                 c = issue["conflicts"]
-                parts.append(f"    Conflict: {c.get('resolution_rule', 'UNRESOLVED')} — {c.get('rationale', '')}")
+                rule = _CONFLICT_RESOLUTION_MAP.get(
+                    c.get("resolution_rule", "UNRESOLVED"),
+                    c.get("resolution_rule", "UNRESOLVED"),
+                )
+                parts.append(f"    Conflict: {rule} — {c.get('rationale', '')}")
 
             ta = issue.get("temporal_applicability", {})
             if not ta.get("version_matches", True):
                 parts.append("    ⚠ Versiunea legii utilizată nu corespunde exact datei evenimentului.")
             if ta.get("temporal_risks"):
                 for risk in ta["temporal_risks"]:
-                    parts.append(f"    Risc temporal: {risk}")
+                    if isinstance(risk, dict):
+                        parts.append(f"    Risc temporal: {risk.get('description', str(risk))}")
+                    else:
+                        parts.append(f"    Risc temporal: {risk}")
 
             parts.append(f"    Conclusion: {issue.get('conclusion', '')}")
 
             gns = issue.get("governing_norm_status", {})
-            if gns.get("status") and gns["status"] != "PRESENT":
-                parts.append(f"    Governing norm: {gns['status']} — {gns.get('explanation', '')}")
+            if gns.get("status"):
+                translated_gns = _GOVERNING_NORM_MAP.get(gns["status"])
+                if translated_gns:  # None = PRESENT, don't output
+                    parts.append(f"    Norma guvernantă: {translated_gns}")
+                    if gns.get("explanation"):
+                        parts.append(f"      Detalii: {gns['explanation']}")
 
             # Uncertainty sources — translated
             if issue.get("uncertainty_sources"):
@@ -2433,6 +2470,67 @@ _ENTITY_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _fetch_candidate_articles(state: dict, db) -> list[dict]:
+    """Fetch candidate articles from Step 1 by direct DB lookup.
+
+    Returns article dicts ready to merge into the retrieval pool.
+    These are articles Claude identified as likely applicable during
+    issue classification — fetching them directly ensures retrieval
+    doesn't miss legally-correct but semantically-distant articles.
+    """
+    from app.models.law import Article as ArticleModel
+
+    results = []
+    seen = set()
+    unique_versions = state.get("unique_versions", {})
+
+    for issue in state.get("legal_issues", []):
+        for ca in issue.get("candidate_articles", []):
+            law_key = ca.get("law_key", "")
+            article_num = ca.get("article", "")
+            if not law_key or not article_num:
+                continue
+
+            version_ids = unique_versions.get(law_key, [])
+            if not version_ids:
+                continue
+
+            for vid in version_ids:
+                cache_key = f"{vid}:{article_num}"
+                if cache_key in seen:
+                    continue
+                seen.add(cache_key)
+
+                article = (
+                    db.query(ArticleModel)
+                    .filter(
+                        ArticleModel.law_version_id == vid,
+                        ArticleModel.article_number == article_num,
+                    )
+                    .first()
+                )
+                if not article:
+                    continue
+
+                parts = law_key.split("/")
+                results.append({
+                    "article_id": article.id,
+                    "law_version_id": vid,
+                    "article_number": article.article_number,
+                    "text": article.full_text,
+                    "label": article.label,
+                    "source": "candidate_lookup",
+                    "tier": "tier1_primary",
+                    "role": "PRIMARY",
+                    "law_number": parts[0] if len(parts) > 0 else "",
+                    "law_year": parts[1] if len(parts) > 1 else "",
+                    "is_abrogated": article.is_abrogated,
+                    "doc_type": "article",
+                })
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Step 7: Hybrid Retrieval (BM25 + semantic)
 # ---------------------------------------------------------------------------
@@ -2444,7 +2542,19 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
 
     t0 = time.time()
     all_articles = []
+
+    # Direct lookup for candidate articles from Step 1 classification
+    candidate_results = _fetch_candidate_articles(state, db)
+    candidate_count = 0
+
     seen_ids = set()
+    for art in candidate_results:
+        aid = f"{art.get('doc_type', 'article')}:{art['article_id']}"
+        if aid not in seen_ids:
+            seen_ids.add(aid)
+            all_articles.append(art)
+            candidate_count += 1
+
     bm25_count = 0
     semantic_count = 0
     duplicates_removed = 0
@@ -2588,9 +2698,10 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
     duration = time.time() - t0
     log_step(
         db, state["run_id"], "hybrid_retrieval", 7, "done", duration,
-        output_summary=f"Retrieved {len(all_articles)} articles (BM25: {bm25_count}, semantic: {semantic_count}, entity: {entity_count}, dupes removed: {duplicates_removed})",
+        output_summary=f"Retrieved {len(all_articles)} articles (candidate: {candidate_count}, BM25: {bm25_count}, semantic: {semantic_count}, entity: {entity_count}, dupes removed: {duplicates_removed})",
         output_data={
             "article_count": len(all_articles),
+            "candidate_count": candidate_count,
             "bm25_count": bm25_count,
             "semantic_count": semantic_count,
             "entity_count": entity_count,

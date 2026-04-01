@@ -105,6 +105,13 @@ For each legal issue, perform the following analysis IN ORDER:
    - Lex superior (higher-ranked norm prevails: Constitution > organic law > ordinary law > OUG/OG > HG)
    - Lex specialis (special law prevails over general)
    - Lex posterior (later prevails within comparable rank) — BUT an older special law is NOT automatically overridden by a newer general law. Mark UNCERTAIN if unclear.
+   - Express vs implicit repeal: When a newer law does not expressly repeal the older special law,
+     the special law survives unless the newer law is clearly incompatible (implicit repeal requires
+     demonstrated incompatibility, not just topical overlap). Check for express repeal clauses
+     ("se abrogă...") before concluding implicit repeal.
+   - EU law priority: EU regulations have direct effect and prevail over conflicting domestic law.
+     EU directives prevail to the extent of their transposition deadline. When a domestic norm
+     conflicts with directly applicable EU law, the domestic norm is set aside (not annulled).
    - If unresolved, set certainty_level to UNCERTAIN.
 
 6. VERIFY TEMPORAL APPLICABILITY

@@ -91,3 +91,60 @@ def test_certainty_as_natural_sentence():
     state = _make_state_with_rl_rap()
     ctx = _build_step7_context(state)
     assert "Concluzia depinde de informații lipsă" in ctx
+
+
+def test_no_raw_governing_norm_status():
+    """Governing norm status MISSING/INFERRED must be translated."""
+    state = _make_state_with_rl_rap()
+    state["rl_rap_output"]["issues"][0]["governing_norm_status"] = {
+        "status": "MISSING",
+        "explanation": "Art. 169 not in provided articles",
+    }
+    ctx = _build_step7_context(state)
+    assert "MISSING" not in ctx
+    assert "Norma nu a fost identificat" in ctx
+
+
+def test_no_raw_exception_status():
+    """Exception condition_status_summary must be translated."""
+    state = _make_state_with_rl_rap()
+    state["rl_rap_output"]["issues"][0]["exceptions_checked"] = [
+        {
+            "exception_ref": "Legea 31/1990 art.197 alin.(4)",
+            "condition_status_summary": "UNKNOWN",
+            "impact": "Exception for ordinary course",
+        }
+    ]
+    ctx = _build_step7_context(state)
+    lines_with_exception = [l for l in ctx.split("\n") if "197" in l and "alin" in l]
+    for line in lines_with_exception:
+        assert "— UNKNOWN —" not in line
+
+
+def test_no_raw_conflict_resolution_rule():
+    """Conflict resolution_rule must be translated."""
+    state = _make_state_with_rl_rap()
+    state["rl_rap_output"]["issues"][0]["conflicts"] = {
+        "resolution_rule": "UNRESOLVED",
+        "rationale": "competing provisions",
+    }
+    ctx = _build_step7_context(state)
+    assert "UNRESOLVED" not in ctx
+    assert "Conflict nerezolvat" in ctx
+
+
+def test_blocking_unknowns_use_condition_text():
+    """blocking_unknowns should show condition text, not IDs like C1, C2."""
+    state = _make_state_with_rl_rap()
+    state["rl_rap_output"]["issues"][0]["subsumption_summary"]["blocking_unknowns"] = ["C2"]
+    ctx = _build_step7_context(state)
+    assert "unknown condition" in ctx
+
+
+def test_governing_norm_present_not_shown():
+    """When governing_norm_status is PRESENT, nothing should be output about it."""
+    state = _make_state_with_rl_rap()
+    state["rl_rap_output"]["issues"][0]["governing_norm_status"] = {"status": "PRESENT"}
+    ctx = _build_step7_context(state)
+    assert "Governing norm" not in ctx
+    assert "Norma guvernant" not in ctx

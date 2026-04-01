@@ -177,6 +177,7 @@ def check_version_currency(
     today: str,
     date_type: str | None = None,
     primary_date: str | None = None,
+    laws_needing_check: set[str] | None = None,
 ) -> list[dict]:
     """Check version currency for all available candidate laws.
 
@@ -191,21 +192,38 @@ def check_version_currency(
         today: Today's date as ISO string.
         date_type: How the date was determined ("explicit", "relative", "implicit_current").
         primary_date: The primary date extracted from the question.
+        laws_needing_check: Optional set of law keys (e.g. "31/1990") that need
+            currency checking because at least one issue uses temporal_rule="current_law".
+            If None, all laws are checked (backward compat).
 
     Returns:
         The same candidate_laws list, enriched with currency_status fields.
     """
-    # Skip currency check for historical questions
+    # Per-law filtering: only check laws that are needed for current-date issues
+    if laws_needing_check is not None:
+        for law in candidate_laws:
+            law_key = f"{law.get('law_number', '')}/{law.get('law_year', '')}"
+            if law_key not in laws_needing_check:
+                law["currency_status"] = "not_checked"
+                law["currency_note"] = "All issues use historical versions — currency check skipped"
+        # Only check the laws that need it
+        laws_to_filter = laws_needing_check
+    else:
+        laws_to_filter = None
+
+    # Legacy skip for explicitly historical questions (backward compat)
     if date_type == "explicit" and primary_date and primary_date < today:
         for law in candidate_laws:
-            law["currency_status"] = "not_checked"
-            law["currency_note"] = "Historical question — currency check skipped"
+            if "currency_status" not in law:
+                law["currency_status"] = "not_checked"
+                law["currency_note"] = "Historical question — currency check skipped"
         return candidate_laws
 
     # Identify laws that need checking
     laws_to_check = [
         law for law in candidate_laws
         if law.get("availability") == "available" and law.get("db_law_id")
+        and law.get("currency_status") != "not_checked"  # Skip already-filtered laws
     ]
 
     # Mark non-checkable laws

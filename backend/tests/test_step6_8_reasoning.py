@@ -30,16 +30,18 @@ def test_build_context_includes_per_issue_articles(mock_state_standard, mock_art
 def test_parse_valid_output(mock_rl_rap_output):
     """Valid RL-RAP JSON should parse correctly."""
     raw = json.dumps(mock_rl_rap_output)
-    parsed = _parse_step6_8_output(raw)
+    parsed, error = _parse_step6_8_output(raw)
     assert parsed is not None
+    assert error is None
     assert "issues" in parsed
     assert parsed["issues"][0]["issue_id"] == "ISSUE-1"
     assert parsed["issues"][0]["certainty_level"] == "CONDITIONAL"
 
 
 def test_parse_malformed_output():
-    """Malformed output should return None."""
-    parsed = _parse_step6_8_output("this is not json {{{")
+    """Malformed output should return None with error message."""
+    parsed, error = _parse_step6_8_output("this is not json {{{")
     assert parsed is None
+    assert error is not None
 
 

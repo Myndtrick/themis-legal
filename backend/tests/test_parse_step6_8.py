@@ -29,8 +29,9 @@ def test_parse_with_all_new_fields():
             "missing_articles_needed": []
         }]
     }'''
-    result = _parse_step6_8_output(raw)
+    result, error = _parse_step6_8_output(raw)
     assert result is not None
+    assert error is None
     issue = result["issues"][0]
     assert issue["governing_norm_status"]["status"] == "PRESENT"
     assert len(issue["condition_table"]) == 1
@@ -56,8 +57,9 @@ def test_parse_old_format_gets_defaults():
             "missing_articles_needed": []
         }]
     }'''
-    result = _parse_step6_8_output(raw)
+    result, error = _parse_step6_8_output(raw)
     assert result is not None
+    assert error is None
     issue = result["issues"][0]
     assert issue["governing_norm_status"] == {"status": "PRESENT"}
     assert issue["uncertainty_sources"] == []
@@ -92,8 +94,9 @@ def test_parse_missing_governing_norm():
             "missing_articles_needed": ["Legea 85/2014 art.169"]
         }]
     }'''
-    result = _parse_step6_8_output(raw)
+    result, error = _parse_step6_8_output(raw)
     assert result is not None
+    assert error is None
     issue = result["issues"][0]
     assert issue["governing_norm_status"]["status"] == "MISSING"
     assert issue["governing_norm_status"]["missing_norm_ref"] == "Legea 85/2014 art.169"

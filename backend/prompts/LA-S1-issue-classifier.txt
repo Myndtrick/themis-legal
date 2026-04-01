@@ -110,12 +110,29 @@ CLASSIFICATION RULES:
    FUTURE DATE RULES:
      - If the event date is in the future or cannot be determined, use temporal_rule "current_law"
 
-   HYPOTHETICAL SCENARIO ANCHORING (CRITICAL):
-   When the question uses conditional language ("Dacă...", "în cazul în care...")
-   or describes a scenario without specific past dates, anchor the first event
-   to TODAY'S DATE and compute subsequent events relative to it.
-   Past tense alone does NOT make a scenario historical — only explicit calendar
-   dates or historical references do.
+   HYPOTHETICAL vs HISTORICAL — DECISION GATE (apply BEFORE choosing temporal_rule):
+
+   Step A — Is there an explicit calendar date (e.g., "pe 15.03.2024", "în anul 2023")
+            or reference to a specific historical event in the question?
+     YES → The scenario is HISTORICAL. Use act_date/contract_formation/etc.
+           with the stated date.
+     NO  → Go to Step B.
+
+   Step B — Does the question use conditional language ("Dacă...",
+            "în cazul în care...", "ce se întâmplă dacă..."), or describe
+            a scenario without anchoring it to a specific past moment?
+     YES → The scenario is HYPOTHETICAL. Apply Rule H below.
+     NO  → Default to current_law with TODAY'S DATE.
+
+   Rule H (HYPOTHETICAL SCENARIOS):
+     - The FIRST described event happens at TODAY'S DATE
+     - Subsequent events are computed relative to TODAY
+       Example: "~1 year later" → TODAY + 1 year
+     - ALL temporal_rules use the anchored dates (not fabricated past dates)
+     - Past tense does NOT make it historical — Romanian hypotheticals
+       commonly use past tense ("a transferat", "a intrat")
+     - For criminal issues: use act_date with the ANCHORED date (= TODAY),
+       not a fabricated past date
 
    CRIMINAL LAW — TEMPUS REGIT ACTUM:
    For criminal liability issues, the applicable law is always the one in force at the moment
@@ -202,6 +219,13 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "priority": "PRIMARY or SECONDARY or SUPPORTING",
       "priority_reasoning": "<why this issue has this priority relative to the user's question>",
       "mitior_lex_relevant": false,
+      "candidate_articles": [
+        {
+          "law_key": "<law_number/law_year>",
+          "article": "<article number, e.g. '241' or '144^1'>",
+          "reason": "<brief reason why this article applies>"
+        }
+      ],
       "fact_dates": [
         {
           "fact_ref": "<fact_id from the facts section, e.g. F1>",
@@ -235,6 +259,13 @@ If all facts share the same date, leave fact_dates as an empty array [].
 
 MITIOR LEX FLAG: For criminal issues referencing Codul Penal, set
 "mitior_lex_relevant": true to flag potential applicability of a more favorable law.
+
+CANDIDATE ARTICLES (recommended for STANDARD and COMPLEX questions):
+For each legal issue, list specific articles you believe are directly
+applicable based on your legal knowledge. Format: law_key and article number.
+These improve retrieval precision — the system also searches broadly,
+so missing an article here is not critical. List only articles you
+are confident about. For SIMPLE questions, use an empty array [].
 
 IMPORTANT:
 - Respond in the same language as the question (Romanian or English)
