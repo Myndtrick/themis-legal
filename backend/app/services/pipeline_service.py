@@ -36,6 +36,7 @@ from app.services.pipeline_logger import (
     save_paused_state,
     update_run_mode,
 )
+from app.services.bm25_service import search_bm25
 from app.services.prompt_service import load_prompt
 from app.services.version_currency import check_version_currency
 
@@ -489,6 +490,55 @@ def _derive_final_confidence(
             reason = "Law version may be outdated"
 
     return confidence, reason
+
+
+def _validate_article_coverage(state: dict, db: Session) -> dict:
+    """Ensure each issue has articles from all its applicable laws.
+    If a law has 0 articles for an issue, fetch directly from DB via BM25."""
+    from collections import Counter
+
+    issue_articles = state.get("issue_articles", {})
+    issue_versions = state.get("issue_versions", {})
+
+    for issue in state.get("legal_issues", []):
+        iid = issue["issue_id"]
+        arts = issue_articles.get(iid, [])
+
+        law_counts = Counter(
+            f"{a.get('law_number', '')}/{a.get('law_year', '')}" for a in arts
+        )
+
+        for law_key in issue.get("applicable_laws", []):
+            if law_counts.get(law_key, 0) > 0:
+                continue
+
+            iv_key = f"{iid}:{law_key}"
+            iv = issue_versions.get(iv_key, {})
+            if not iv:
+                continue
+
+            version_id = iv["law_version_id"]
+            fetched = search_bm25(db, state["question"], [version_id], limit=5)
+
+            if fetched:
+                for art in fetched:
+                    art["_coverage_fix"] = True
+                issue_articles.setdefault(iid, []).extend(fetched)
+                state["flags"].append(
+                    f"{iid}: {law_key} lipsea din rezultatele căutării — "
+                    f"s-au adăugat {len(fetched)} articole direct din baza de date"
+                )
+
+    state["issue_articles"] = issue_articles
+
+    # Also add to retrieved_articles so Step 14 context builder can render them
+    for issue in state.get("legal_issues", []):
+        iid = issue["issue_id"]
+        for art in issue_articles.get(iid, []):
+            if art.get("_coverage_fix"):
+                state.setdefault("retrieved_articles", []).append(art)
+
+    return state
 
 
 def _step6_8_legal_reasoning(state: dict, db: Session) -> dict:
@@ -1021,6 +1071,9 @@ def _run_steps_4_through_7(state: dict, db: Session, run_id: str) -> Generator[d
             "issues_with_articles": partition_data["issues_with_articles"],
             "shared_context": partition_data["shared_context_count"],
         }, partition_duration)
+
+        # Coverage validation: ensure each issue has articles from all applicable laws
+        state = _validate_article_coverage(state, db)
 
         # Step 12: Legal Reasoning (RL-RAP)
         yield _step_event(12, "legal_reasoning", "running")
