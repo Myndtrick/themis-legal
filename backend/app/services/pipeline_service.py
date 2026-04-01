@@ -3053,6 +3053,18 @@ def _step7_answer_generation(state: dict, db: Session) -> Generator[dict, None, 
     # Build user message using centralized context builder
     user_message = _build_step7_context(state)
 
+    # Defense-in-depth: warn if any untranslated pipeline terms leaked through
+    _FORBIDDEN_TERMS = {
+        "SATISFIED", "NOT_SATISFIED", "LIBRARY_GAP", "FACTUAL_GAP",
+        "ARTICLE_IMPORT", "USER_INPUT", "GOVERNING_NORM_INCOMPLETE",
+        "GOVERNING_NORM_MISSING", "UNRESOLVED", "RISC NEDETERMINAT",
+    }
+    for term in _FORBIDDEN_TERMS:
+        if term in user_message:
+            logger.warning(
+                f"Untranslated pipeline term '{term}' in Step 14 context for run {state.get('run_id', '?')}"
+            )
+
     # Build conversation history for session memory
     history_msgs = []
     for msg in state.get("session_context", [])[-5:]:
