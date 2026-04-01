@@ -21,6 +21,18 @@ const STEP_LABELS: Record<string, string> = {
   citation_validation: "Validating citations",
 };
 
+const V2_STEP_NAMES: Record<string, string> = {
+  classify: "Clasificare",
+  resolve: "Versiuni & Gate",
+  retrieve: "Recuperare articole",
+  reasoning: "Raționament juridic",
+  answer: "Generare răspuns",
+};
+
+function getStepLabel(name: string): string {
+  return V2_STEP_NAMES[name] ?? STEP_LABELS[name] ?? name;
+}
+
 export function StepIndicator({ steps }: { steps: StepProgress[] }) {
   if (steps.length === 0) return null;
 
@@ -32,7 +44,7 @@ export function StepIndicator({ steps }: { steps: StepProgress[] }) {
       {currentStep ? (
         <>
           <span className="animate-spin inline-block w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full" />
-          <span>{STEP_LABELS[currentStep.name] || currentStep.name}...</span>
+          <span>{getStepLabel(currentStep.name)}...</span>
         </>
       ) : (
         <>

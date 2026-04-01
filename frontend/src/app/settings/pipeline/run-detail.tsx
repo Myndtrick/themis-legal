@@ -33,10 +33,21 @@ const STEP_CONFIG: Record<
   15: { label: "Citation Validation", displayNum: "15", order: 15 },
 };
 
+/** Maps V2 step names → human-readable display label */
+const V2_STEP_NAME_LABELS: Record<string, string> = {
+  classify: "Classify",
+  resolve: "Resolve",
+  retrieve: "Retrieve",
+  reasoning: "Reasoning",
+  answer: "Answer",
+};
+
 function getStepConfig(step: StepLogData) {
   return (
     STEP_CONFIG[step.step_number] ?? {
-      label: step.step_name.replace(/_/g, " "),
+      label:
+        V2_STEP_NAME_LABELS[step.step_name] ??
+        step.step_name.replace(/_/g, " "),
       displayNum: String(step.step_number),
       order: step.step_number,
     }
