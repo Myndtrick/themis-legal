@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getAuthToken } from "@/lib/api";
+import { api, getAuthToken } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -17,12 +17,20 @@ interface SearchResult {
   description: string;
   already_imported: boolean;
   local_law_id: number | null;
+  source?: string;
 }
 
 interface FilterOption {
   value: string;
   label: string;
 }
+
+const EU_DOC_TYPES: FilterOption[] = [
+  { value: "directive", label: "Directive" },
+  { value: "regulation", label: "Regulation" },
+  { value: "eu_decision", label: "Decision" },
+  { value: "treaty", label: "Treaty" },
+];
 
 // Fallback doc types used until the dynamic list loads from the API
 const DEFAULT_ACT_TYPES: FilterOption[] = [
@@ -77,6 +85,9 @@ export default function SearchImportForm() {
   // Pre-fill from URL query params (e.g. /laws?number=85&year=2014)
   const initialNumber = searchParams.get("number") || "";
   const initialYear = searchParams.get("year") || "";
+
+  // Source toggle: all | ro | eu
+  const [source, setSource] = useState<"all" | "ro" | "eu">("all");
 
   // Filter options fetched from the API
   const [actTypes, setActTypes] = useState<FilterOption[]>(DEFAULT_ACT_TYPES);
@@ -198,32 +209,64 @@ export default function SearchImportForm() {
     });
   }
 
+  // Visible doc types based on source selection
+  const visibleDocTypes: FilterOption[] =
+    source === "eu" ? EU_DOC_TYPES :
+    source === "ro" ? actTypes :
+    [...actTypes, ...EU_DOC_TYPES];
+
   // Filtered doc types list based on search
   const filteredActTypes = docTypeSearch
-    ? actTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
-    : actTypes;
+    ? visibleDocTypes.filter((t) => t.label.toLowerCase().includes(docTypeSearch.toLowerCase()))
+    : visibleDocTypes;
 
   // Labels for selected types (for displaying chips)
-  const selectedDocTypeLabels = actTypes.filter((t) => selectedDocTypes.has(t.value));
+  const selectedDocTypeLabels = visibleDocTypes.filter((t) => selectedDocTypes.has(t.value));
 
   async function handleSearch(e?: React.FormEvent) {
     e?.preventDefault();
     setSearching(true);
     setSearchError(null);
 
-    const params = new URLSearchParams();
-    if (keyword) params.set("keyword", keyword);
-    if (selectedDocTypes.size > 0) {
-      params.set("doc_type", Array.from(selectedDocTypes).join(","));
-    }
-    if (lawNumber) params.set("number", lawNumber);
-    if (year) params.set("year", year);
-    if (emitent) params.set("emitent", emitent);
-    if (dateFrom) params.set("date_from", dateFrom);
-    if (dateTo) params.set("date_to", dateTo);
-    params.set("include_repealed", includeRepealed);
-
     try {
+      if (source === "eu") {
+        const euResults = await api.laws.euSearch({
+          keyword: keyword || undefined,
+          doc_type: selectedDocTypes.size === 1 ? [...selectedDocTypes][0] : undefined,
+          year: year || undefined,
+          number: lawNumber || undefined,
+        });
+        setResults(euResults.map((r) => ({
+          ver_id: r.celex,
+          title: r.title,
+          doc_type: r.doc_type,
+          number: r.celex,
+          date: r.date,
+          date_iso: r.date,
+          issuer: "European Union",
+          description: "",
+          already_imported: r.already_imported,
+          local_law_id: null,
+          source: "eu" as const,
+        })));
+        setTotal(euResults.length);
+        setSearching(false);
+        return;
+      }
+
+      const params = new URLSearchParams();
+      if (keyword) params.set("keyword", keyword);
+      if (selectedDocTypes.size > 0) {
+        params.set("doc_type", Array.from(selectedDocTypes).join(","));
+      }
+      if (lawNumber) params.set("number", lawNumber);
+      if (year) params.set("year", year);
+      if (emitent) params.set("emitent", emitent);
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
+      params.set("include_repealed", includeRepealed);
+      if (source === "ro") params.append("source", "ro");
+
       const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -256,6 +299,23 @@ export default function SearchImportForm() {
 
   async function handleImport(verId: string, importHistory: boolean) {
     setPendingImportId(null);
+
+    const result = results.find((r) => r.ver_id === verId);
+    if (result && result.source === "eu") {
+      setImportingIds((prev) => new Set(prev).add(verId));
+      try {
+        const res = await api.laws.euImport(verId, importHistory);
+        setImportedIds((prev) => new Map(prev).set(verId, res.law_id));
+        router.refresh();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Import failed";
+        setImportErrors((prev) => new Map(prev).set(verId, { message }));
+      } finally {
+        setImportingIds((prev) => { const next = new Set(prev); next.delete(verId); return next; });
+      }
+      return;
+    }
+
     setImportingIds((prev) => new Set(prev).add(verId));
     setImportErrors((prev) => {
       const next = new Map(prev);
@@ -365,6 +425,24 @@ export default function SearchImportForm() {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">Search & Import Laws</h2>
+
+      {/* Source toggle */}
+      <div className="flex gap-1 mb-3 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-lg w-fit">
+        {(["all", "ro", "eu"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => { setSource(s); setResults([]); }}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              source === s
+                ? "bg-white dark:bg-neutral-700 shadow-sm font-medium"
+                : "text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300"
+            }`}
+          >
+            {s === "all" ? "All" : s === "ro" ? "Romanian" : "EU"}
+          </button>
+        ))}
+      </div>
 
       {/* Keyword bar */}
       <form onSubmit={handleSearch} className="space-y-3">
@@ -691,6 +769,13 @@ export default function SearchImportForm() {
                 <div className="flex items-center justify-between">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
+                        r.source === "eu"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                          : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                      }`}>
+                        {r.source === "eu" ? "EU" : "RO"}
+                      </span>
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${colorClass}`}>
                         {r.doc_type || "DOC"}
                       </span>

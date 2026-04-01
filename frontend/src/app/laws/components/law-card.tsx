@@ -36,6 +36,9 @@ function issuerColor(issuer: string): string {
   if (s.includes("MINISTER")) return "bg-teal-100 text-teal-800";
   if (s.includes("AGENȚI") || s.includes("AGENTI") || s.includes("AGENȚIA") || s.includes("AGENTIA")) return "bg-cyan-100 text-cyan-800";
   if (s.includes("DIRECȚI") || s.includes("DIRECTI") || s.includes("DIRECȚIA") || s.includes("DIRECTIA")) return "bg-indigo-100 text-indigo-800";
+  if (s.includes("COMISI")) return "bg-blue-100 text-blue-800";
+  if (s.includes("CONSILIU")) return "bg-yellow-100 text-yellow-800";
+  if (s.includes("BANC")) return "bg-emerald-100 text-emerald-800";
   return "bg-gray-100 text-gray-700";
 }
 
@@ -82,14 +85,28 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
           )}
         </div>
         <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+          {law.source === "eu" ? (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+              EU
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+              RO
+            </span>
+          )}
+          {law.language === "en" && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              EN
+            </span>
+          )}
           {state && (
             <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}>
               {state}
             </span>
           )}
-          {law.issuer && (
-            <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${issuerColor(law.issuer)}`}>{law.issuer}</span>
-          )}
+          {law.issuer && law.issuer.split(",").map((iss) => iss.trim()).filter(Boolean).map((iss, i) => (
+            <span key={i} className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${issuerColor(iss)}`}>{iss}</span>
+          ))}
         </div>
       </Link>
       <div className="flex items-center gap-2 ml-3 flex-shrink-0">

@@ -14,6 +14,51 @@ For each legal issue, perform the following analysis IN ORDER:
      - SUPPORTING: General norms that provide framework context but do not independently trigger the consequence (e.g., general duty of care when a specific liability norm exists).
    - When multiple RULE articles exist for an issue, always identify the PRIMARY norm first. This is the norm around which the analysis is structured.
 
+   FULL ARTICLE SCANNING (REQUIRED):
+   A single article often contains multiple alineate/litere, each establishing a SEPARATE
+   legal ground with different conditions. Do NOT stop at the first matching provision.
+   Scan every alineat and every litera of each retrieved article to identify ALL provisions
+   that could independently apply to the facts — even if their applicability depends on an
+   unknown fact. Each such provision must be listed as a separate operative_articles entry.
+
+   Example: Art. 117 of an insolvency law might contain:
+   - alin. (2) lit. c) — fraudulent acts (requires intent)
+   - alin. (2) lit. f) — early debt repayment (requires maturity date after insolvency)
+   - alin. (4) lit. c) — acts with 20%+ shareholders (requires shareholding threshold)
+   All three are separate legal grounds. If facts satisfy (4)(c) but the maturity date is
+   unknown for (2)(f), you must STILL list (2)(f) as operative and mark its key condition
+   as UNKNOWN — producing a conditional conclusion, not silence.
+
+1b. GOVERNING NORM CHECK (REQUIRED — perform before subsumption)
+   For each issue, before beginning condition analysis, answer:
+   "Do I have the specific norm that triggers the main legal consequence for this issue?"
+
+   This is not about whether you have *relevant* articles. It is about whether you have
+   *the* article — the one a lawyer would cite as the legal basis for the primary conclusion.
+
+   Examples of the distinction:
+   - Having articles about transaction annulment but NOT the administrator liability provision → MISSING
+   - Having the general duty of care but NOT the specific sanction for breach → MISSING
+   - Having eligibility conditions for a subsidy but NOT the provision that grants or revokes it → MISSING
+   - Having the dismissal procedure but NOT the article defining valid grounds → MISSING
+
+   Set governing_norm_status:
+   - PRESENT: The norm that directly triggers the main legal consequence is among the provided articles. Cite it.
+   - INFERRED: No single article explicitly governs the consequence, but the conclusion can be
+     constructed from multiple provided norms with reasonable certainty. Explain the chain.
+   - MISSING: The provided articles are related but do not contain the norm that governs the
+     primary legal consequence. The analysis proceeds on secondary aspects only.
+
+   When status is MISSING:
+   - Add the expected norm to missing_articles_needed
+   - State clearly in the conclusion that the analysis is incomplete
+   - Do NOT produce a confident conclusion based only on surrounding norms
+   - Set certainty_level to UNCERTAIN unless secondary aspects can be analyzed independently
+
+   When status is INFERRED:
+   - Explain the reasoning chain from multiple norms to the conclusion
+   - Set certainty_level no higher than PROBABLE
+
 2. DECOMPOSE EACH RULE ARTICLE
    - Split into: hypothesis (conditions of applicability), disposition (the rule — OBLIGATION, PROHIBITION, PERMISSION, or POWER), and sanction/effect (explicit or implicit).
    - Extract hypothesis as atomic, fact-testable conditions. Each condition must be a single testable statement.
@@ -22,17 +67,29 @@ For each legal issue, perform the following analysis IN ORDER:
    - Identify cross-references ("potrivit art. ...") needed to understand the rule.
    - Do NOT invent conditions, sanctions, thresholds, or deadlines not present in the text.
 
-3. PERFORM SUBSUMPTION
-   - Analyze the PRIMARY norm first. Its conditions and conclusion anchor the issue. Then analyze SECONDARY norms, then SUPPORTING norms. This order ensures the analysis mirrors civil-law reasoning: specific trigger → related mechanisms → general framework.
-   - For each condition in each operative article, evaluate against the stated facts:
+3. PERFORM SUBSUMPTION (with enforced condition table)
+   - Analyze the PRIMARY norm first. Then SECONDARY, then SUPPORTING.
+   - You MUST populate the condition_table completely BEFORE writing the conclusion.
+     A conclusion without a complete condition table is invalid.
+   - For each RULE article, extract every ATOMIC condition from the hypothesis.
+     "Atomic" means a single factual predicate that can be independently true or false.
+     Do NOT merge multiple conditions into one row. "The administrator acted in bad faith
+     and caused damage" is TWO conditions, not one.
+   - For each condition, evaluate against stated facts:
      - SATISFIED: supported by an explicit stated fact (cite fact_id)
      - NOT_SATISFIED: contradicted by an explicit stated fact (cite fact_id)
-     - UNKNOWN: fact not provided or insufficient — MUST produce a missing_facts entry
+     - UNKNOWN: fact not provided — MUST produce a missing_fact entry. NEVER guess.
    - UNKNOWN must NEVER be resolved by guessing. If the fact is not stated, it stays UNKNOWN.
-   - A single NOT_SATISFIED on a necessary condition makes the norm inapplicable (unless alternative norms exist).
+   - A single NOT_SATISFIED on a necessary condition makes the norm inapplicable.
    - For OR-lists: SATISFIED if at least one branch is SATISFIED.
    - For AND-lists: all must be SATISFIED for the norm to apply.
    - Do NOT skip conditions because they are difficult (causation, intent, good faith).
+   - After completing condition_table, populate subsumption_summary by counting statuses.
+   - The conclusion must be logically derivable from subsumption_summary:
+     - If norm_applicable is CONDITIONAL: conclusion MUST state what depends on which unknowns
+     - If norm_applicable is false (NOT_SATISFIED on necessary condition): conclusion MUST state the norm does not apply
+     - A conclusion asserting a legal consequence while blocking_unknowns exist is INVALID
+       unless it explicitly conditions the consequence on those unknowns
 
 4. CHECK EXCEPTIONS AND DEROGATIONS
    Before concluding, check in this order:
@@ -63,6 +120,61 @@ For each legal issue, perform the following analysis IN ORDER:
    - CONDITIONAL: At least one material condition or exception is UNKNOWN. State what the outcome would be under each scenario.
    - UNCERTAIN: Missing critical law text, unresolved conflict, or severe temporal risk.
 
+   SILENT SKIP PROHIBITION:
+   If a provision's applicability depends on a fact the user did not provide, you MUST NOT
+   silently omit that provision from the analysis. Instead:
+   1. Include it as an operative article
+   2. Mark the missing-fact condition as UNKNOWN in the condition_table
+   3. Produce a CONDITIONAL conclusion: "If [missing fact], then [legal consequence]"
+   A provision with UNKNOWN conditions is a conditional path — not an absent one.
+   This applies across all fields of law.
+
+   RISK DERIVATION FROM CONDITION COMPLETENESS (MANDATORY):
+   The certainty_level MUST be derived mechanically from the condition_table:
+   - ALL conditions SATISFIED, no blocking exceptions → CERTAIN
+   - Most conditions SATISFIED, 1 minor UNKNOWN → PROBABLE
+   - Any material condition UNKNOWN → CONDITIONAL (never higher)
+   - Governing norm MISSING or majority conditions UNKNOWN → UNCERTAIN
+
+   You MUST NOT assign CERTAIN or PROBABLE when material conditions are UNKNOWN.
+   "A norm exists that could apply" is not the same as "the norm applies."
+   Risk is a function of (condition completeness × legal consequence severity):
+   - High severity + all conditions met → high risk
+   - High severity + conditions unknown → CONDITIONAL risk (state what it depends on)
+   - High severity + conditions unmet → no risk from this norm
+
+   CAUSATION AND INTENT AS EXPLICIT CONDITIONS:
+   When a norm requires causation (e.g., "causing damage", "prejudicing creditors") or
+   intent/fault (e.g., "with intent to defraud", "through negligence"), these are MANDATORY
+   conditions that must appear in the condition_table. They are NOT optional annotations.
+   - Causation: Was there a causal link between the act and the harm? Temporal proximity
+     alone does NOT prove causation — state this explicitly when proximity is the only evidence.
+   - Intent/fault: Was the required mental state present?
+   If these facts are not stated, mark them UNKNOWN. Never infer causation or intent from
+   context or temporal proximity alone.
+
+   RELEVANCE GATE PER NORM:
+   Before including a norm in the analysis, verify: "Does this norm materially affect the
+   user's specific question?" If a norm is legally correct but does not change the answer
+   to what the user asked (e.g., creditor voting rights when the user asked about administrator
+   liability), mark it as SUPPORTING context only — do not give it a full subsumption analysis.
+   Focus analytical depth on norms that directly answer the user's question.
+
+8. CLASSIFY UNCERTAINTY SOURCES (REQUIRED when certainty_level is not CERTAIN)
+   When certainty_level is PROBABLE, CONDITIONAL, or UNCERTAIN, populate uncertainty_sources:
+   - FACTUAL_GAP: You need a fact the user did not provide. Never guess — list it.
+     resolvable_by: USER_INPUT
+   - LIBRARY_GAP: You need a legal provision not in the provided articles.
+     This is a system limitation, not legal uncertainty.
+     resolvable_by: ARTICLE_IMPORT
+   - LEGAL_AMBIGUITY: The law is genuinely ambiguous or doctrinally contested.
+     This exists even with complete facts and complete library.
+     resolvable_by: LEGAL_INTERPRETATION
+
+   CRITICAL: Do NOT conflate these. "I don't have Art. X" is a LIBRARY_GAP, not legal uncertainty.
+   "Art. X could be interpreted two ways" is LEGAL_AMBIGUITY.
+   "I don't know if the company had >50 employees" is a FACTUAL_GAP.
+
 OUTPUT FORMAT — Return valid JSON only:
 
 {
@@ -70,27 +182,43 @@ OUTPUT FORMAT — Return valid JSON only:
     {
       "issue_id": "ISSUE-N",
       "issue_label": "short description",
+      "governing_norm_status": {
+        "status": "PRESENT|INFERRED|MISSING",
+        "explanation": "...",
+        "expected_norm_description": "...",
+        "missing_norm_ref": "..."
+      },
       "operative_articles": [
         {
           "article_ref": "Legea N/YYYY art.X alin.(Y) lit.(Z)",
-          "law_version_id": <id>,
+          "law_version_id": "<id>",
           "norm_type": "RULE|DEFINITION|PROCEDURAL_RULE|REFERENCE_RULE",
           "priority": "PRIMARY|SECONDARY|SUPPORTING",
           "disposition": {"modality": "OBLIGATION|PROHIBITION|PERMISSION|POWER", "text": "..."},
-          "sanction": {"explicit": true|false, "text": "..."}
+          "sanction": {"explicit": true, "text": "..."}
         }
       ],
-      "decomposed_conditions": [
+      "condition_table": [
         {
           "condition_id": "C1",
           "norm_ref": "...",
-          "condition_text": "atomic testable condition",
+          "condition_text": "...",
+          "source": "HYPOTHESIS|DISPOSITION|SANCTION_TRIGGER",
           "list_type": "OR|AND|null",
-          "condition_status": "SATISFIED|NOT_SATISFIED|UNKNOWN",
-          "supporting_fact_ids": ["F1"],
-          "missing_facts": ["precise missing fact if UNKNOWN"]
+          "list_group": "G1 or null",
+          "status": "SATISFIED|NOT_SATISFIED|UNKNOWN",
+          "evidence": "F1: fact or null",
+          "missing_fact": "... or null"
         }
       ],
+      "subsumption_summary": {
+        "total_conditions": 0,
+        "satisfied": 0,
+        "not_satisfied": 0,
+        "unknown": 0,
+        "norm_applicable": "YES|NO|CONDITIONAL",
+        "blocking_unknowns": ["C2", "C4"]
+      },
       "exceptions_checked": [
         {
           "exception_ref": "...",
@@ -113,6 +241,14 @@ OUTPUT FORMAT — Return valid JSON only:
       },
       "conclusion": "2-6 lines; conditional branches allowed",
       "certainty_level": "CERTAIN|PROBABLE|CONDITIONAL|UNCERTAIN",
+      "uncertainty_sources": [
+        {
+          "type": "FACTUAL_GAP|LIBRARY_GAP|LEGAL_AMBIGUITY",
+          "detail": "...",
+          "impact": "...",
+          "resolvable_by": "USER_INPUT|ARTICLE_IMPORT|LEGAL_INTERPRETATION"
+        }
+      ],
       "missing_facts": ["all missing facts for this issue"],
       "missing_articles_needed": ["Legea N/YYYY art.X if critical cross-ref missing"]
     }

@@ -21,6 +21,10 @@ class DocumentType(str, enum.Enum):
     NORM = "norm"
     DECISION = "decision"
     OTHER = "other"
+    # EU-specific document types
+    DIRECTIVE = "directive"
+    EU_DECISION = "eu_decision"
+    TREATY = "treaty"
 
 
 class DocumentState(str, enum.Enum):
@@ -72,6 +76,10 @@ class Law(Base):
     last_checked_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime, nullable=True, default=None
     )
+    # EU integration fields
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
+    celex_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cellar_uri: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     category: Mapped["Category | None"] = relationship(back_populates="laws")
     versions: Mapped[list["LawVersion"]] = relationship(
@@ -97,6 +105,7 @@ class LawVersion(Base):
     )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     diff_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
 
     law: Mapped["Law"] = relationship(back_populates="versions")
     structural_elements: Mapped[list["StructuralElement"]] = relationship(
@@ -122,6 +131,7 @@ class KnownVersion(Base):
     discovered_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.datetime.utcnow
     )
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="ro")
 
     law: Mapped["Law"] = relationship(back_populates="known_versions")
 
@@ -131,10 +141,10 @@ class StructuralElement(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     law_version_id: Mapped[int] = mapped_column(
-        ForeignKey("law_versions.id"), nullable=False
+        ForeignKey("law_versions.id"), nullable=False, index=True
     )
     parent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("structural_elements.id"), nullable=True
+        ForeignKey("structural_elements.id"), nullable=True, index=True
     )
     element_type: Mapped[str] = mapped_column(String(50), nullable=False)
     number: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -158,10 +168,10 @@ class Article(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     law_version_id: Mapped[int] = mapped_column(
-        ForeignKey("law_versions.id"), nullable=False
+        ForeignKey("law_versions.id"), nullable=False, index=True
     )
     structural_element_id: Mapped[int | None] = mapped_column(
-        ForeignKey("structural_elements.id"), nullable=True
+        ForeignKey("structural_elements.id"), nullable=True, index=True
     )
     article_number: Mapped[str] = mapped_column(String(50), nullable=False)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -186,7 +196,7 @@ class Paragraph(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int] = mapped_column(
-        ForeignKey("articles.id"), nullable=False
+        ForeignKey("articles.id"), nullable=False, index=True
     )
     paragraph_number: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -204,7 +214,7 @@ class Subparagraph(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     paragraph_id: Mapped[int] = mapped_column(
-        ForeignKey("paragraphs.id"), nullable=False
+        ForeignKey("paragraphs.id"), nullable=False, index=True
     )
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -218,7 +228,7 @@ class AmendmentNote(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int] = mapped_column(
-        ForeignKey("articles.id"), nullable=False
+        ForeignKey("articles.id"), nullable=False, index=True
     )
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     date: Mapped[str | None] = mapped_column(String(50), nullable=True)

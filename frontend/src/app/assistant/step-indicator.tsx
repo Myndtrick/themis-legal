@@ -4,21 +4,21 @@ import type { StepProgress } from "./use-chat";
 
 const STEP_LABELS: Record<string, string> = {
   issue_classification: "Classifying question",
+  date_extraction: "Extracting dates",
   law_mapping: "Mapping applicable laws",
+  version_currency_check: "Checking law versions",
   early_relevance_gate: "Checking law coverage",
   version_selection: "Selecting law versions",
   hybrid_retrieval: "Searching articles",
-  expansion: "Expanding context",
-  exception_retrieval: "Searching for exceptions",
+  graph_expansion: "Expanding context",
   article_selection: "Selecting relevant articles",
   reranking: "Ranking relevance",
   relevance_check: "Checking relevance",
-  answer_generation: "Generating answer",
-  citation_validation: "Validating citations",
-  pre_expansion_filter: "Filtering results...",
   article_partitioning: "Organizing by issue...",
   legal_reasoning: "Analyzing legal provisions...",
   conditional_retrieval: "Fetching additional provisions...",
+  answer_generation: "Generating answer",
+  citation_validation: "Validating citations",
 };
 
 export function StepIndicator({ steps }: { steps: StepProgress[] }) {

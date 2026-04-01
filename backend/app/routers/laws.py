@@ -7,13 +7,15 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
+from collections import defaultdict
+
+from sqlalchemy.orm import Session, subqueryload
 from sse_starlette.sse import EventSourceResponse
 
 from app.auth import get_current_user
 from app.database import get_db
 from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
-from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, StructuralElement
+from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, Paragraph, StructuralElement
 from app.models.category import LawMapping
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,11 @@ class ImportStreamRequest(BaseModel):
     category_id: int | None = None
 
 
+class EUImportRequest(BaseModel):
+    celex_number: str
+    import_history: bool = True
+
+
 # LawMapping.document_type stores English keys; advanced_search expects
 # Romanian abbreviated keys or numeric codes from legislatie.just.ro.
 _DOC_TYPE_TO_SEARCH_CODE = {
@@ -51,19 +58,29 @@ _DOC_TYPE_TO_SEARCH_CODE = {
 
 
 @router.get("/search")
-def search_external(q: str):
-    """Search legislatie.just.ro for laws matching a query."""
-    from app.services.search_service import search_laws
+def search_laws_endpoint(q: str, source: str | None = None, db: Session = Depends(get_db)):
+    """Search laws from external sources. source: 'ro', 'eu', or None (both)."""
+    results = []
 
-    if len(q.strip()) < 2:
-        return []
+    if source != "eu":
+        from app.services.search_service import search_laws
+        ro_results = search_laws(q)
+        for r in ro_results:
+            d = r.to_dict()
+            d["source"] = "ro"
+            results.append(d)
 
-    try:
-        results = search_laws(q.strip(), max_results=10)
-        return [r.to_dict() for r in results]
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Search failed: {str(e)}")
+    if source != "ro":
+        from app.services.eu_cellar_service import search_eu_legislation
+        eu_results = search_eu_legislation(keyword=q)
+        for r in eu_results:
+            existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+            r.already_imported = existing is not None
+            d = r.to_dict()
+            d["source"] = "eu"
+            results.append(d)
+
+    return results
 
 
 @router.get("/advanced-search")
@@ -76,9 +93,18 @@ def advanced_search_endpoint(
     date_from: str = "",
     date_to: str = "",
     include_repealed: str = "only_in_force",
+    source: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Advanced search on legislatie.just.ro with structured filters."""
+    if source == "eu":
+        from app.services.eu_cellar_service import search_eu_legislation
+        eu_results = search_eu_legislation(keyword=keyword, doc_type=doc_type, year=year, number=number)
+        for r in eu_results:
+            existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+            r.already_imported = existing is not None
+        return {"results": [r.to_dict() for r in eu_results], "total": len(eu_results)}
+
     from app.services.search_service import advanced_search
 
     if not any([keyword, doc_type, number, year, emitent, date_from, date_to]):
@@ -143,6 +169,57 @@ def get_emitents(q: str = ""):
     """Autocomplete emitent (issuer) names."""
     from app.services.filter_options import search_emitents
     return {"emitents": search_emitents(q)}
+
+
+@router.get("/eu/search")
+def eu_search(
+    keyword: str | None = None,
+    doc_type: str | None = None,
+    year: str | None = None,
+    number: str | None = None,
+    in_force_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Search EU legislation via CELLAR SPARQL."""
+    from app.services.eu_cellar_service import search_eu_legislation
+    results = search_eu_legislation(
+        keyword=keyword, doc_type=doc_type, year=year,
+        number=number, in_force_only=in_force_only,
+    )
+    for r in results:
+        existing = db.query(Law).filter(Law.celex_number == r.celex).first()
+        r.already_imported = existing is not None
+    return [r.to_dict() for r in results]
+
+
+@router.post("/eu/import")
+def eu_import(req: EUImportRequest, db: Session = Depends(get_db)):
+    """Import an EU law by CELEX number."""
+    from app.services.eu_cellar_service import import_eu_law
+    existing = db.query(Law).filter(Law.celex_number == req.celex_number).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Already imported as law_id={existing.id}")
+    try:
+        result = import_eu_law(db, req.celex_number, import_history=req.import_history)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.error(f"EU import failed for {req.celex_number}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/eu/filter-options")
+def eu_filter_options():
+    """Return available EU document type filters."""
+    return {
+        "doc_types": [
+            {"value": "directive", "label": "Directive"},
+            {"value": "regulation", "label": "Regulation"},
+            {"value": "eu_decision", "label": "Decision"},
+            {"value": "treaty", "label": "Treaty"},
+        ]
+    }
 
 
 @router.post("/import")
@@ -580,6 +657,7 @@ def list_laws(db: Session = Depends(get_db)):
             "category_id": law.category_id,
             "category_group_slug": law.category.group.slug if law.category else None,
             "category_confidence": law.category_confidence,
+            "source": getattr(law, "source", "ro"),
             "unimported_version_count": db.query(KnownVersion).filter(
                 KnownVersion.law_id == law.id,
                 KnownVersion.ver_id.notin_(
@@ -839,33 +917,44 @@ def get_law_version(law_id: int, version_id: int, db: Session = Depends(get_db))
     articles = (
         db.query(Article)
         .filter(Article.law_version_id == version_id)
-        .options(joinedload(Article.paragraphs), joinedload(Article.amendment_notes))
+        .options(
+            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs),
+            subqueryload(Article.amendment_notes),
+        )
         .order_by(Article.order_index)
         .all()
     )
 
+    # Pre-index articles and elements for O(1) lookups
+    articles_by_element = defaultdict(list)
+    orphan_articles = []
+    for a in articles:
+        if a.structural_element_id is None:
+            orphan_articles.append(a)
+        else:
+            articles_by_element[a.structural_element_id].append(a)
+
+    children_by_parent = defaultdict(list)
+    for el in elements:
+        children_by_parent[el.parent_id].append(el)
+
     def build_element_tree(parent_id=None):
         result = []
-        for el in elements:
-            if el.parent_id == parent_id:
-                el_articles = [a for a in articles if a.structural_element_id == el.id]
-                children = build_element_tree(el.id)
-                # Skip empty structural elements (no articles, no non-empty children)
-                if not el_articles and not children:
-                    continue
-                result.append({
-                    "id": el.id,
-                    "type": el.element_type,
-                    "number": el.number,
-                    "title": el.title,
-                    "description": el.description,
-                    "children": children,
-                    "articles": [serialize_article(a, law) for a in el_articles],
-                })
+        for el in children_by_parent.get(parent_id, []):
+            el_articles = articles_by_element.get(el.id, [])
+            children = build_element_tree(el.id)
+            if not el_articles and not children:
+                continue
+            result.append({
+                "id": el.id,
+                "type": el.element_type,
+                "number": el.number,
+                "title": el.title,
+                "description": el.description,
+                "children": children,
+                "articles": [serialize_article(a, law) for a in el_articles],
+            })
         return result
-
-    # Articles not attached to any structural element
-    orphan_articles = [a for a in articles if a.structural_element_id is None]
 
     # Annexes
     annexes = (

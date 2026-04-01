@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy.orm import Session
+
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category, user  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
@@ -32,6 +34,26 @@ def run_update_check():
     )
 
 
+def run_eu_update_check():
+    """Scheduled job: discover new consolidated versions for all EU laws."""
+    from app.services.eu_version_discovery import run_eu_weekly_discovery
+    logger.info("Running scheduled EU version discovery...")
+    results = run_eu_weekly_discovery()
+    logger.info(f"EU discovery complete: {results}")
+
+
+def _add_column_if_missing(db: Session, table: str, column: str, col_type: str, default: str | None = None):
+    """Add a column to a table if it doesn't exist. Safe for repeated runs."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(engine)
+    existing = [c["name"] for c in inspector.get_columns(table)]
+    if column not in existing:
+        default_clause = f" DEFAULT {default}" if default is not None else ""
+        db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}{default_clause}"))
+        db.commit()
+        logger.info(f"Added column {table}.{column}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create data directories and database tables on startup
@@ -45,10 +67,20 @@ async def lifespan(app: FastAPI):
 
     db = SessionLocal()
     try:
+        # Additive migration: EU integration columns
+        _add_column_if_missing(db, "laws", "source", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "laws", "celex_number", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "laws", "cellar_uri", "VARCHAR(200)", None)
+        _add_column_if_missing(db, "law_versions", "language", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "known_versions", "language", "VARCHAR(10)", "'ro'")
+        _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
+
         seed_defaults(db)
         sync_prompts_from_files(db)
-        from app.services.category_service import seed_categories, backfill_law_mapping_fields
+        from app.services.category_service import seed_categories, backfill_law_mapping_fields, ensure_eu_decision_category, seed_eu_celex_mappings
         seed_categories(db)
+        ensure_eu_decision_category(db)
+        seed_eu_celex_mappings(db)
         backfill_law_mapping_fields(db)
         from app.services.user_service import seed_admin_users
         seed_admin_users(db)
@@ -84,6 +116,15 @@ async def lifespan(app: FastAPI):
         hour=3,
         minute=0,
         id="daily_law_update",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_eu_update_check,
+        "cron",
+        day_of_week="sun",
+        hour=4,
+        minute=0,
+        id="weekly_eu_discovery",
         replace_existing=True,
     )
     scheduler.start()

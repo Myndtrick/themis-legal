@@ -39,9 +39,54 @@ CLASSIFICATION RULES:
      - "PRIMARY" = directly applicable law (lex specialis for this question)
      - "SECONDARY" = applies subsidiarily or fills gaps
    - A question can have MULTIPLE PRIMARY laws (e.g., corporate + insolvency)
+   - CRITICAL — err on the side of OVER-inclusion: It is far better to list a law that turns
+     out to be marginally relevant than to omit one that the analysis later needs. For every
+     legal issue you identify, ask yourself: "What foundational or adjacent law governs the
+     actors, relationships, obligations, or sanctions involved?" and include it.
+     Examples of commonly missed connections:
+       • Corporate scenario → Legea 31/1990 (company law defines actor duties/liability)
+       • Any potential criminal conduct → Codul Penal (286/2009)
+       • Contractual obligations → Codul Civil (287/2009)
+       • Employment aspects → Codul Muncii (53/2003)
+       • Tax/fiscal implications → Codul Fiscal (227/2015)
+       • Procedural questions → the relevant procedure code
+     These are examples, not an exhaustive list. Apply the same reasoning to ANY legal domain.
    - Include the law's official number, year, and Romanian title
    - Include a brief reason explaining why this law applies
    - If the Legal Library list is provided, use it as reference but do NOT restrict your identification to it
+
+5b. Issue Prioritization (REQUIRED):
+   Before decomposing legal issues, identify the user's primary target:
+   - WHO is the user asking about? (the legally relevant actor)
+   - WHAT does the user want to know about that actor? (liability, obligation, right, risk, eligibility, compliance)
+
+   Then rank each legal issue:
+   - "PRIMARY" = Directly answers what the user asked about the target actor
+   - "SECONDARY" = Legally related but not the user's direct question
+   - "SUPPORTING" = Background context needed to analyze primary/secondary issues
+
+   The test: if you could only answer ONE issue, which one would the user consider
+   their question answered? That is PRIMARY.
+
+   Common prioritization failures to avoid:
+   - Prioritizing a transaction's validity over the actor's liability when the user asks about the actor
+   - Prioritizing procedural issues over substantive rights when the user asks about rights
+   - Prioritizing the means (e.g., annulment action) over the consequence (e.g., personal liability)
+
+   ISSUE SEPARATION (REQUIRED):
+   Decompose into DISTINCT legal issues that each have their own governing norm and conditions.
+   Do NOT merge different legal consequences into one issue. Common separations:
+
+   - Transaction vulnerability (can the act be annulled?) vs Personal liability (does the actor pay damages?)
+   - Civil liability vs Criminal exposure vs Administrative sanctions
+   - Substantive rights vs Procedural mechanisms to enforce them
+   - Obligations of different actors (e.g., administrator vs shareholder vs company)
+
+   Example: "Administrator risks in insolvency" should decompose into:
+   - ISSUE-1: Administrator personal liability (governing norm: specific liability article)
+   - ISSUE-2: Transaction annulment risk (governing norm: avoidance provisions)
+   - ISSUE-3: Criminal exposure if applicable (governing norm: criminal law provisions)
+   NOT a single "administrator risks" issue that blends everything together.
 
 6. Temporal Decomposition (REQUIRED for question type "B", optional for "A"):
    - Extract ALL factual events mentioned in the question, with their dates
@@ -65,13 +110,36 @@ CLASSIFICATION RULES:
      - The per-issue "applicable_laws" array contains law keys (e.g., "31/1990") referencing entries in the top-level "applicable_laws" array
 
 7. For question type "A" (direct questions):
-   - Output a single entry in "legal_issues" with relevant_date = today or mentioned date
    - Output "events" as an empty array unless a date is explicitly mentioned
+   - IMPORTANT — multi-date exception: If the question mentions TWO OR MORE DISTINCT DATES
+     and asks about differences, comparisons, or changes between them (e.g., "de ce factura
+     din 23.05.2025 are TVA 19% dar cea din 23.08.2025 are diferit?"), you MUST create a
+     SEPARATE legal_issues entry for EACH date, even for question type "A". Each issue gets
+     its own relevant_date so the system can retrieve the correct law version for each date.
+     Example for a question comparing VAT on two dates:
+       ISSUE-1: "Cota TVA aplicabilă la data de 23.05.2025", relevant_date: "2025-05-23"
+       ISSUE-2: "Cota TVA aplicabilă la data de 23.08.2025", relevant_date: "2025-08-23"
+   - For single-date questions, output a single entry in "legal_issues" with relevant_date = today or mentioned date
 
-8. Complexity Assessment:
-   - "SIMPLE": Single factual question about a current rule, definition, threshold, or procedure. No scenario, no multiple parties, no temporal dimension.
-   - "STANDARD": Specific situation with 1-2 issues, potentially requiring temporal or exception analysis.
-   - "COMPLEX": Multi-issue scenario with multiple parties, dates, conflicting laws, or comprehensive analysis needed.
+8. Complexity Assessment — use the decision rubric:
+
+   COMPLEXITY DECISION RUBRIC — count how many signals are present:
+     Signal A: Multiple distinct legal issues (not sub-points of one issue)
+     Signal B: Multiple parties with different legal positions
+     Signal C: Temporal dimension (past events, future deadlines, law version changes)
+     Signal D: Potential conflicts between laws or articles
+     Signal E: Scenario with stated/assumed facts requiring condition analysis
+
+     0 signals -> "SIMPLE"
+     1-2 signals -> "STANDARD"
+     3+ signals -> "COMPLEX"
+
+     Override: If the question is literally "what is X" or "what does Art. Y say" -> always "SIMPLE" regardless of signals.
+
+   Examples:
+     "Care este capitalul social minim pentru un SRL?" -> 0 signals -> SIMPLE
+     "Un administrator a acordat un imprumut societatii fara aprobarea AGA. Este valid?" -> Signal B (administrator vs company) + Signal E (scenario with facts) -> STANDARD
+     "O societate cu 3 asociati, 2 rezidenti si 1 nerezident, vrea sa fuzioneze cu o firma din UE. Ce obligatii fiscale si corporative au?" -> Signal A (fiscal + corporate) + Signal B (3 parties) + Signal D (domestic vs EU law) -> COMPLEX
 
 RESPONSE FORMAT — You must respond with valid JSON only, no other text:
 
@@ -84,6 +152,12 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
   "core_issue": "<one sentence reformulating the legal issue>",
   "sub_issues": ["<sub-issue 1>", "<sub-issue 2>"] or [],
   "classification_confidence": "HIGH" or "MEDIUM" or "LOW",
+  "primary_target": {
+    "actor": "<who the user is asking about>",
+    "concern": "<what the user wants to know: liability, obligation, right, risk, eligibility, compliance>",
+    "issue_id": "<ISSUE-N that is the primary target>",
+    "reasoning": "<why this is the primary target>"
+  },
   "reasoning": "<brief explanation of classification>",
   "applicable_laws": [
     {
@@ -109,7 +183,9 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
       "relevant_date": "<YYYY-MM-DD>",
       "temporal_rule": "<one of the temporal rules above>",
       "date_reasoning": "<why this date applies to this issue>",
-      "applicable_laws": ["<law_number/law_year>"]
+      "applicable_laws": ["<law_number/law_year>"],
+      "priority": "PRIMARY or SECONDARY or SUPPORTING",
+      "priority_reasoning": "<why this issue has this priority relative to the user's question>"
     }
   ],
   "complexity": "SIMPLE or STANDARD or COMPLEX",

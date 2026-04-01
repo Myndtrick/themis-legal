@@ -6,12 +6,19 @@ import type { StepProgress } from "./use-chat";
 const STEP_NAMES: Record<string, string> = {
   issue_classification: "Issue Classification",
   date_extraction: "Date Extraction",
-  law_identification: "Law Identification",
-  coverage_check: "Coverage Check",
+  law_mapping: "Law Mapping",
   version_currency_check: "Version Currency Check",
-  import_permission: "Import Permission",
+  early_relevance_gate: "Early Relevance Gate",
   version_selection: "Version Selection",
+  hybrid_retrieval: "Hybrid Retrieval",
+  graph_expansion: "Graph Expansion",
+  article_selection: "Article Selection",
+  relevance_check: "Relevance Check",
+  article_partitioning: "Article Partitioning",
+  legal_reasoning: "Legal Reasoning",
+  conditional_retrieval: "Conditional Retrieval",
   answer_generation: "Answer Generation",
+  citation_validation: "Citation Validation",
 };
 
 function StepIcon({ status }: { status: string }) {
@@ -86,10 +93,10 @@ export function ReasoningPanel({
           {/* Static reasoning data from completed messages */}
           {reasoning && !isStreaming && (
             <div className="px-3 py-2 text-xs text-gray-500 space-y-2">
-              {reasoning.step3_laws?.candidate_laws?.length > 0 && (
+              {reasoning.step3_law_mapping?.candidate_laws?.length > 0 && (
                 <div>
                   <div className="font-medium text-gray-700 mb-1">Laws Identified</div>
-                  {reasoning.step3_laws.candidate_laws.map(
+                  {reasoning.step3_law_mapping.candidate_laws.map(
                     (law: Record<string, string>, i: number) => (
                       <div key={i} className="flex items-center gap-2">
                         <span
@@ -131,14 +138,14 @@ export function ReasoningPanel({
                     ))}
                   </div>
                 )}
-              {reasoning.step2a_version_currency?.results &&
-                Object.keys(reasoning.step2a_version_currency.results).length > 0 && (
+              {reasoning.step4_version_currency?.results &&
+                Object.keys(reasoning.step4_version_currency.results).length > 0 && (
                   <div>
                     <div className="font-medium text-gray-700 mb-1">
                       Version Currency
                     </div>
                     {Object.entries(
-                      reasoning.step2a_version_currency.results as Record<
+                      reasoning.step4_version_currency.results as Record<
                         string,
                         Record<string, unknown>
                       >
@@ -169,9 +176,9 @@ export function ReasoningPanel({
                     ))}
                   </div>
                 )}
-              {reasoning.step7_answer?.articles_retrieved != null && (
+              {reasoning.step14_answer?.articles_retrieved != null && (
                 <div className="text-gray-500">
-                  Articles retrieved: {reasoning.step7_answer.articles_retrieved}
+                  Articles retrieved: {reasoning.step14_answer.articles_retrieved}
                 </div>
               )}
             </div>

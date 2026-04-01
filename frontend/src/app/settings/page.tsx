@@ -17,7 +17,7 @@ function SettingsContent() {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+        <h1 className="text-3xl font-bold text-blue-600">Settings</h1>
         <p className="mt-1 text-gray-600">
           Manage prompts, inspect pipeline runs, and review version history
         </p>

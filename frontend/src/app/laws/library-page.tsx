@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { api, importSuggestionSSE, importAllSuggestionsSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult } from "@/lib/api";
+import { api, importAllSuggestionsSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
@@ -157,9 +157,15 @@ export default function LibraryPage() {
 
   async function handleAssign(categoryId: number) {
     if (!assigningLawId) return;
-    await api.laws.assignCategory(assigningLawId, categoryId);
-    setAssigningLawId(null);
-    fetchData();
+    try {
+      await api.laws.assignCategory(assigningLawId, categoryId);
+      setAssigningLawId(null);
+      fetchData();
+    } catch (err) {
+      console.error("Failed to assign category:", err);
+      setError(err instanceof Error ? err.message : "Failed to assign category");
+      setAssigningLawId(null);
+    }
   }
 
   // Optimistic import: immediately move suggestion to pending, run import in background
@@ -189,20 +195,12 @@ export default function LibraryPage() {
     const timeoutMs = importHistory ? 600_000 : 120_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    importSuggestionSSE(
-      suggestion.id,
-      importHistory,
-      (progressEvent) => {
-        setPendingImports((prev) => {
-          const next = new Map(prev);
-          const entry = next.get(suggestion.id);
-          if (entry) {
-            next.set(suggestion.id, { ...entry, progress: progressEvent });
-          }
-          return next;
-        });
-      },
-      () => {
+    const importPromise = suggestion.celex_number
+      ? api.laws.euImport(suggestion.celex_number, importHistory, controller.signal)
+      : api.laws.importSuggestion(suggestion.id, importHistory, controller.signal);
+
+    importPromise
+      .then(() => {
         clearTimeout(timer);
         setPendingImports((prev) => {
           const next = new Map(prev);
@@ -210,17 +208,8 @@ export default function LibraryPage() {
           return next;
         });
         fetchData();
-      },
-      (err) => {
-        clearTimeout(timer);
-        setPendingImports((prev) => {
-          const next = new Map(prev);
-          next.set(suggestion.id, { suggestion, error: err.message, errorCode: err.code });
-          return next;
-        });
-      },
-      controller.signal,
-    ).catch((err) => {
+      })
+      .catch((err) => {
       clearTimeout(timer);
       const message =
         err instanceof DOMException && err.name === "AbortError"

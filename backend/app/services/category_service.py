@@ -89,6 +89,7 @@ def seed_categories(db: Session) -> None:
         ("eu", "eu.directive", "Directive UE transpuse", "EU directives", "Directive transpuse în drept român — legătură lege națională ↔ directivă sursă", True, 2),
         ("eu", "eu.treaty", "Drept primar și tratate", "EU treaties", "TFUE, TUE, Carta drepturilor fundamentale, protocoale", True, 3),
         ("eu", "eu.caselaw", "Jurisprudență CJUE", "CJEU case law", "Hotărâri CJUE relevante pentru România, trimiteri preliminare", True, 4),
+        ("eu", "eu.decision", "Decizii UE", "EU decisions", "Decizii ale Consiliului, Comisiei, BCE — obligatorii pentru destinatari", True, 5),
     ]
     cat_map = {}
     for group_slug, slug, name_ro, name_en, desc, is_eu, sort in cats_data:
@@ -312,6 +313,57 @@ def seed_categories(db: Session) -> None:
 
     db.commit()
     logger.info("Category taxonomy seeded successfully.")
+
+
+def seed_eu_celex_mappings(db: Session) -> None:
+    """Backfill celex_number on EU law mappings. Safe to run multiple times."""
+    celex_map = {
+        "Regulamentul (UE) 2016/679 — GDPR": "32016R0679",
+        "Regulamentul (UE) 2024/1689 — AI Act": "32024R1689",
+        "Regulamentul (UE) 2022/2065 — DSA (Digital Services Act)": "32022R2065",
+        "Regulamentul (UE) 2022/1925 — DMA (Digital Markets Act)": "32022R1925",
+        "Regulamentul (UE) 2017/745 — MDR (dispozitive medicale)": "32017R0745",
+        "Regulamentul (UE) 1215/2012 — competența judiciară în materie civilă (Bruxelles I)": "32012R1215",
+        "Regulamentul (UE) 593/2008 — legea aplicabilă obligațiilor contractuale (Roma I)": "32008R0593",
+        "Regulamentul (UE) 864/2007 — legea aplicabilă obligațiilor necontractuale (Roma II)": "32007R0864",
+        "Directiva 2011/83/UE — drepturile consumatorilor (transpusă prin OUG 34/2014)": "32011L0083",
+        "Directiva 2019/1023/UE — restructurare și insolvență (transpusă prin Legea 216/2022)": "32019L1023",
+        "Directiva 2022/2557/UE — reziliența entităților critice (CER)": "32022L2557",
+        "Directiva 2022/2555/UE — NIS2": "32022L2555",
+        "Directiva 2023/970/UE — transparența salarială": "32023L0970",
+        "Directiva 2009/72/CE — piața internă a energiei electrice": "32009L0072",
+    }
+    updated = 0
+    for title, celex in celex_map.items():
+        mapping = db.query(LawMapping).filter(LawMapping.title == title, LawMapping.celex_number.is_(None)).first()
+        if mapping:
+            mapping.celex_number = celex
+            updated += 1
+    if updated:
+        db.commit()
+        logger.info(f"Backfilled celex_number on {updated} EU law mappings")
+
+
+def ensure_eu_decision_category(db: Session) -> None:
+    """Add eu.decision category if missing. Safe for repeated runs."""
+    existing = db.query(Category).filter_by(slug="eu.decision").first()
+    if existing:
+        return
+    eu_group = db.query(CategoryGroup).filter_by(slug="eu").first()
+    if not eu_group:
+        return
+    cat = Category(
+        group_id=eu_group.id,
+        slug="eu.decision",
+        name_ro="Decizii UE",
+        name_en="EU decisions",
+        description="Decizii ale Consiliului, Comisiei, BCE — obligatorii pentru destinatari",
+        is_eu=True,
+        sort_order=5,
+    )
+    db.add(cat)
+    db.commit()
+    logger.info("Added eu.decision category")
 
 
 def backfill_law_mapping_fields(db: Session) -> None:
@@ -550,6 +602,7 @@ def get_library_data(db: Session) -> dict:
             "category_id": law.category_id, "category_group_slug": group_slug,
             "category_confidence": law.category_confidence,
             "unimported_version_count": 0,
+            "source": getattr(law, "source", "ro"),
             "current_version": {"id": current.id, "state": current.state} if current else None,
         })
 
@@ -574,6 +627,7 @@ def get_library_data(db: Session) -> dict:
         if cat:
             suggested.append({
                 "id": m.id, "title": m.title, "law_number": m.law_number,
+                "celex_number": m.celex_number,
                 "category_id": m.category_id, "category_slug": cat.slug,
                 "group_slug": cat.group.slug,
             })

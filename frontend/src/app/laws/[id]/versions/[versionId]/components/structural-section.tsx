@@ -63,11 +63,30 @@ export function StructuralSection({
     <ArticleCard key={article.id} article={article} />
   ));
 
+  const label = typeLabels[element.type] || element.type;
+  // Build heading: "Capitolul III — Drepturile persoanei vizate"
+  // For Romanian laws, title already contains "Capitolul I" so don't duplicate
+  const titleAlreadyHasLabel = element.title?.toLowerCase().startsWith(label.toLowerCase());
+  let heading: string;
+  if (titleAlreadyHasLabel) {
+    // Romanian law pattern: title = "Capitolul I" — use as-is
+    heading = element.title!;
+  } else if (element.number && element.title) {
+    // EU law pattern: number = "III", title = "Drepturile persoanei vizate"
+    heading = `${label} ${element.number} — ${element.title}`;
+  } else if (element.number) {
+    heading = `${label} ${element.number}`;
+  } else if (element.title) {
+    heading = element.title;
+  } else {
+    heading = label;
+  }
+
   return (
     <div className={style.wrapper}>
       <div className={`${style.card} text-center`}>
         <h3 className={style.heading}>
-          {element.title || typeLabels[element.type] || element.type}
+          {heading}
         </h3>
         {element.description && (
           <p className={`${style.description} text-sm mt-1 font-normal`}>

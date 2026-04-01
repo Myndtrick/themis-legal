@@ -16,6 +16,7 @@ def mock_state_simple():
         "legal_domain": "corporate",
         "output_mode": "qa",
         "core_issue": "Capitalul social minim SRL",
+        "primary_target": None,
         "sub_issues": [],
         "entity_types": ["SRL"],
         "applicable_laws": [
@@ -50,6 +51,12 @@ def mock_state_standard():
         "legal_domain": "corporate",
         "output_mode": "qa",
         "core_issue": "Validitatea actului juridic administrator-societate",
+        "primary_target": {
+            "actor": "administrator",
+            "concern": "validity of transaction",
+            "issue_id": "ISSUE-1",
+            "reasoning": "User asks about the validity of the administrator's act",
+        },
         "sub_issues": [],
         "entity_types": ["SRL"],
         "applicable_laws": [
@@ -65,6 +72,8 @@ def mock_state_standard():
                 "relevant_date": "2025-01-01",
                 "temporal_rule": "contract_formation",
                 "applicable_laws": ["31/1990"],
+                "priority": "PRIMARY",
+                "priority_reasoning": "Direct question about transaction validity",
             }
         ],
         "facts": {

@@ -3,7 +3,7 @@ import json
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.pipeline_service import _build_step6_8_context, _parse_step6_8_output, _derive_confidence
+from app.services.pipeline_service import _build_step6_8_context, _parse_step6_8_output
 
 
 def test_build_context_includes_facts(mock_state_standard, mock_articles, mock_issue_versions):
@@ -23,7 +23,7 @@ def test_build_context_includes_per_issue_articles(mock_state_standard, mock_art
     mock_state_standard["shared_context"] = [mock_articles[3]]
     mock_state_standard["issue_versions"] = mock_issue_versions
     ctx = _build_step6_8_context(mock_state_standard)
-    assert "ISSUE-1:" in ctx
+    assert "ISSUE-1" in ctx
     assert "SHARED CONTEXT" in ctx
 
 
@@ -43,25 +43,3 @@ def test_parse_malformed_output():
     assert parsed is None
 
 
-def test_derive_confidence_all_certain():
-    issues = [{"certainty_level": "CERTAIN"}, {"certainty_level": "CERTAIN"}]
-    assert _derive_confidence(issues) == "HIGH"
-
-
-def test_derive_confidence_any_conditional():
-    issues = [{"certainty_level": "CERTAIN"}, {"certainty_level": "CONDITIONAL"}]
-    assert _derive_confidence(issues) == "MEDIUM"
-
-
-def test_derive_confidence_any_uncertain():
-    issues = [{"certainty_level": "CERTAIN"}, {"certainty_level": "UNCERTAIN"}]
-    assert _derive_confidence(issues) == "LOW"
-
-
-def test_derive_confidence_empty():
-    assert _derive_confidence([]) == "LOW"
-
-
-def test_derive_confidence_probable():
-    issues = [{"certainty_level": "CERTAIN"}, {"certainty_level": "PROBABLE"}]
-    assert _derive_confidence(issues) == "HIGH"
