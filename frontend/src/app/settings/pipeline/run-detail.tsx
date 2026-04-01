@@ -74,6 +74,8 @@ function renderOutputData(step: StepLogData) {
       return <CitationDetail data={d} />;
     case "date_extraction":
       return <DateExtractionDetail data={d} />;
+    case "concept_resolution":
+      return <ConceptResolutionDetail data={d} />;
     case "version_currency_check":
       return <VersionCurrencyDetail data={d} />;
     case "article_partitioning":
@@ -85,6 +87,64 @@ function renderOutputData(step: StepLogData) {
     default:
       return <GenericDetail data={d} />;
   }
+}
+
+/* --- Step 1c: Concept Resolution --- */
+function ConceptResolutionDetail({ data }: { data: Record<string, unknown> }) {
+  const validated = (data.validated_candidates ?? []) as Array<Record<string, unknown>>;
+  const rejected = (data.rejected_candidates ?? []) as Array<Record<string, unknown>>;
+  const concepts = (data.concept_search_results ?? []) as Array<Record<string, unknown>>;
+  const totalProtected = data.total_protected as number | undefined;
+
+  return (
+    <div className="space-y-1.5">
+      <Row label="Total protected" value={String(totalProtected ?? 0)} />
+
+      {validated.length > 0 && (
+        <div className="mt-2">
+          <div className="font-medium text-green-700 mb-1">Validated Candidates</div>
+          {validated.map((v, i) => (
+            <div key={i} className="ml-2 text-green-600">
+              {String(v.law_key)} art. {String(v.article)} (id={String(v.article_id)})
+            </div>
+          ))}
+        </div>
+      )}
+
+      {rejected.length > 0 && (
+        <div className="mt-2">
+          <div className="font-medium text-red-600 mb-1">Rejected Candidates</div>
+          {rejected.map((r, i) => (
+            <div key={i} className="ml-2 text-red-500">
+              {String(r.law_key)} art. {String(r.article)} — {String(r.status)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {concepts.length > 0 && (
+        <div className="mt-2">
+          <div className="font-medium text-gray-500 mb-1">Concept Search Results</div>
+          {concepts.map((c, i) => (
+            <div key={i} className="ml-2 mb-2 p-2 bg-gray-100 rounded">
+              <div className="font-medium">
+                {String(c.issue_id)} — {String(c.law_key)}
+              </div>
+              <div className="text-gray-500 text-sm italic">
+                &quot;{String(c.concept)}&quot;
+              </div>
+              <div className="mt-0.5">
+                Found: {Array.isArray(c.found) ? (c.found as string[]).join(", ") : "none"}
+                {c.top_distance != null && (
+                  <span className="text-gray-400 ml-2">(dist: {String(c.top_distance)})</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* --- Step 1: Classification --- */
@@ -142,6 +202,30 @@ function ClassificationDetail({ data }: { data: Record<string, unknown> }) {
                   </div>
                 ) : null}
                 <Row label="Priority" value={issue.priority as string} />
+                {/* Candidate Articles */}
+                {Array.isArray(issue.candidate_articles) && (issue.candidate_articles as Array<Record<string, unknown>>).length > 0 && (
+                  <div className="mt-1">
+                    <span className="text-gray-400 text-sm">Candidates: </span>
+                    {(issue.candidate_articles as Array<Record<string, unknown>>).map((ca, j) => (
+                      <span key={j} className="text-sm text-gray-600">
+                        {String(ca.law_key)} art. {String(ca.article)}
+                        {j < (issue.candidate_articles as Array<Record<string, unknown>>).length - 1 ? ", " : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {/* Concept Descriptions */}
+                {Array.isArray(issue.concept_descriptions) && (issue.concept_descriptions as Array<Record<string, unknown>>).length > 0 && (
+                  <div className="mt-1">
+                    <span className="text-gray-400 text-sm">Concepts: </span>
+                    {(issue.concept_descriptions as Array<Record<string, unknown>>).map((cd, j) => (
+                      <span key={j} className="text-sm text-blue-600 italic">
+                        {String(cd.law_key)}: &quot;{String((cd.concept_general as string || "").slice(0, 60))}...&quot;
+                        {j < (issue.concept_descriptions as Array<Record<string, unknown>>).length - 1 ? " | " : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
