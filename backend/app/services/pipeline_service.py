@@ -2507,8 +2507,8 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
     duplicates_removed = 0
 
     tier_limits = tier_limits_override or {
-        "tier1_primary": 30,
-        "tier2_secondary": 15,
+        "tier1_primary": 15,
+        "tier2_secondary": 8,
     }
 
     TIER_TO_ROLE = {
