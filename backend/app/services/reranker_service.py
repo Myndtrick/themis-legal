@@ -114,7 +114,11 @@ def rerank_articles(
                     if f"{a.get('law_number', '')}/{a.get('law_year', '')}" == over_rep_law
                 ]
                 if not victims:
-                    break
+                    # No swap target — expand selection instead of dropping
+                    selected.append(candidate)
+                    selected_set.add(id(candidate))
+                    law_counts[law_key] = law_counts.get(law_key, 0) + 1
+                    continue
                 victim = min(victims, key=lambda a: a.get("reranker_score", 0))
 
                 selected.remove(victim)
