@@ -226,6 +226,13 @@ RESPONSE FORMAT — You must respond with valid JSON only, no other text:
           "reason": "<brief reason why this article applies>"
         }
       ],
+      "concept_descriptions": [
+        {
+          "law_key": "<law_number/law_year>",
+          "concept_general": "<legal concept in precise Romanian legal terminology — REQUIRED>",
+          "concept_specific": "<approximate wording of the provision if known, otherwise null>"
+        }
+      ],
       "fact_dates": [
         {
           "fact_ref": "<fact_id from the facts section, e.g. F1>",
@@ -266,6 +273,42 @@ applicable based on your legal knowledge. Format: law_key and article number.
 These improve retrieval precision — the system also searches broadly,
 so missing an article here is not critical. List only articles you
 are confident about. For SIMPLE questions, use an empty array [].
+
+CONCEPT DESCRIPTIONS (REQUIRED for each applicable law per issue):
+
+For each law listed in an issue's applicable_laws, provide a concept description
+that describes the legal provision you expect to find. This description will be
+used for semantic search within that specific law to locate the correct articles.
+
+Rules:
+- concept_general: Describe the legal norm using precise Romanian legal terminology.
+  Use the language the law itself would use, not general paraphrases.
+  Include specific legal conditions, time periods, or procedural elements if relevant.
+- concept_specific: If you know the approximate wording of the legal provision,
+  reproduce it. If unsure, set to null. Do NOT guess — a wrong specific description
+  is worse than null.
+
+Examples of GOOD concept descriptions (use precise legal language):
+  concept_general: "răspunderea solidară a administratorilor față de societate
+                     pentru îndeplinirea obligațiilor impuse de lege și actul constitutiv"
+  concept_specific: "administratorii sunt solidar răspunzători față de societate pentru
+                     stricta îndeplinire a îndatoririlor pe care legea și actul constitutiv
+                     le impun"
+  → Finds: Art. 73 din Legea 31/1990 (exact match)
+
+  concept_general: "acțiuni pentru anularea actelor sau operațiunilor frauduloase ale
+                     debitorului în dauna creditorilor, în perioada anterioară deschiderii
+                     procedurii de insolvență"
+  concept_specific: "administratorul judiciar poate introduce acțiuni pentru anularea
+                     actelor sau operațiunilor frauduloase ale debitorului în dauna
+                     drepturilor creditorilor, în cei 2 ani anteriori deschiderii procedurii"
+  → Finds: Art. 117 din Legea 85/2014 (exact match)
+
+Examples of BAD concept descriptions (too generic — will return wrong articles):
+  concept_general: "răspunderea administratorilor"
+  → Returns 20+ irrelevant articles
+  concept_general: "acte prejudiciabile în insolvență"
+  → Misses Art. 117 entirely
 
 IMPORTANT:
 - Respond in the same language as the question (Romanian or English)
