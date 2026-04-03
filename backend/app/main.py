@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 def run_update_check():
     """Scheduled job: discover new versions for all laws (metadata only)."""
+    import datetime as _dt
     from app.services.version_discovery import run_daily_discovery
+    from app.database import SessionLocal
+    from app.models.scheduler_settings import SchedulerSetting
 
     logger.info("Running scheduled version discovery...")
     results = run_daily_discovery()
@@ -35,13 +38,39 @@ def run_update_check():
         f"{results['discovered']} new versions discovered, {results['errors']} errors"
     )
 
+    db = SessionLocal()
+    try:
+        setting = db.query(SchedulerSetting).filter(SchedulerSetting.id == "ro").first()
+        if setting:
+            setting.last_run_at = _dt.datetime.now(_dt.timezone.utc)
+            setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
+            setting.last_run_summary = results
+            db.commit()
+    finally:
+        db.close()
+
 
 def run_eu_update_check():
     """Scheduled job: discover new consolidated versions for all EU laws."""
+    import datetime as _dt
     from app.services.eu_version_discovery import run_eu_weekly_discovery
+    from app.database import SessionLocal
+    from app.models.scheduler_settings import SchedulerSetting
+
     logger.info("Running scheduled EU version discovery...")
     results = run_eu_weekly_discovery()
     logger.info(f"EU discovery complete: {results}")
+
+    db = SessionLocal()
+    try:
+        setting = db.query(SchedulerSetting).filter(SchedulerSetting.id == "eu").first()
+        if setting:
+            setting.last_run_at = _dt.datetime.now(_dt.timezone.utc)
+            setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
+            setting.last_run_summary = results
+            db.commit()
+    finally:
+        db.close()
 
 
 def _add_column_if_missing(db: Session, table: str, column: str, col_type: str, default: str | None = None):

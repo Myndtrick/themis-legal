@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -9,6 +10,7 @@ from app.auth import require_admin
 from app.config import NEXTAUTH_SECRET
 from app.database import get_db
 from app.models.user import AllowedEmail, User
+from app.scheduler import scheduler, last_run_results
 from app.services.user_service import ADMIN_EMAILS, verify_and_upsert_user
 
 logger = logging.getLogger(__name__)
@@ -149,3 +151,72 @@ def remove_from_whitelist(
 
     db.commit()
     return {"email": email, "status": "removed"}
+
+
+# --- Scheduler status & manual trigger ---
+
+
+@router.get("/scheduler-status")
+def get_scheduler_status(admin: User = Depends(require_admin)):
+    """Return current scheduler state: running jobs, next run times, last results."""
+    jobs = []
+    for job in scheduler.get_jobs():
+        next_run = job.next_run_time
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_utc": next_run.isoformat() if next_run else None,
+            "last_run": last_run_results.get(job.id),
+        })
+    return {
+        "running": scheduler.running,
+        "jobs": jobs,
+    }
+
+
+@router.post("/trigger-discovery/{job_type}")
+def trigger_discovery(
+    job_type: str,
+    admin: User = Depends(require_admin),
+):
+    """Manually trigger a version discovery check. job_type: 'ro' or 'eu'."""
+    if job_type not in ("ro", "eu"):
+        raise HTTPException(status_code=400, detail="job_type must be 'ro' or 'eu'")
+
+    from app.services.scheduler_config import discovery_progress
+
+    # Prevent concurrent runs
+    progress = discovery_progress.get(job_type)
+    if progress and progress.get("running"):
+        raise HTTPException(status_code=409, detail=f"{job_type} discovery is already running")
+
+    def _run(jtype: str):
+        import datetime as _dt
+        from app.database import SessionLocal
+        from app.models.scheduler_settings import SchedulerSetting
+
+        if jtype == "ro":
+            from app.services.version_discovery import run_daily_discovery
+            results = run_daily_discovery()
+        else:
+            from app.services.eu_version_discovery import run_eu_weekly_discovery
+            results = run_eu_weekly_discovery()
+
+        # Persist run results in scheduler_settings
+        db = SessionLocal()
+        try:
+            setting = db.query(SchedulerSetting).filter(SchedulerSetting.id == jtype).first()
+            if setting:
+                setting.last_run_at = _dt.datetime.now(_dt.timezone.utc)
+                setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
+                setting.last_run_summary = results
+                db.commit()
+        finally:
+            db.close()
+
+    thread = threading.Thread(target=_run, args=(job_type,), name=f"manual_{job_type}_discovery", daemon=True)
+    thread.start()
+
+    label = "Romanian law version discovery" if job_type == "ro" else "EU law version discovery"
+    logger.info("Manually triggered %s", label)
+    return {"status": "started", "job_type": job_type, "label": label}
