@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { api } from "@/lib/api";
 import type { KnownVersionData, LawVersionSummary } from "@/lib/api";
 
 interface ImportedVersionsTableProps {
   lawId: number;
   versions: LawVersionSummary[];
   knownVersions: KnownVersionData[] | null;
+  onVersionDeleted?: (versionId: number) => void;
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -17,8 +19,22 @@ function formatDate(dateStr: string | null): string {
   return `${d.getDate().toString().padStart(2, "0")} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-export default function ImportedVersionsTable({ lawId, versions, knownVersions }: ImportedVersionsTableProps) {
+export default function ImportedVersionsTable({ lawId, versions, knownVersions, onVersionDeleted }: ImportedVersionsTableProps) {
   const [showAll, setShowAll] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  async function handleDeleteVersion(versionId: number, vNum: number) {
+    if (!confirm(`Delete version v${vNum}? This cannot be undone.`)) return;
+    setDeletingId(versionId);
+    try {
+      await api.laws.deleteVersion(lawId, versionId);
+      onVersionDeleted?.(versionId);
+    } catch (e) {
+      alert("Failed to delete version");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   if (versions.length === 0) return null;
 
@@ -60,7 +76,7 @@ export default function ImportedVersionsTable({ lawId, versions, knownVersions }
       </div>
 
       {/* Column headers */}
-      <div className="grid grid-cols-[70px_120px_1fr_150px_160px] gap-2 px-5 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide border-b border-gray-100">
+      <div className="grid grid-cols-[70px_120px_1fr_150px_220px] gap-2 px-5 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide border-b border-gray-100">
         <div>Ver.</div>
         <div>Date</div>
         <div>Changes vs previous version</div>
@@ -75,7 +91,7 @@ export default function ImportedVersionsTable({ lawId, versions, knownVersions }
         return (
           <div
             key={version.id}
-            className={`grid grid-cols-[70px_120px_1fr_150px_160px] gap-2 items-center px-5 py-3 border-b border-gray-50 ${
+            className={`grid grid-cols-[70px_120px_1fr_150px_220px] gap-2 items-center px-5 py-3 border-b border-gray-50 ${
               isOlder ? "opacity-60" : ""
             }`}
           >
@@ -131,6 +147,14 @@ export default function ImportedVersionsTable({ lawId, versions, knownVersions }
               >
                 Compare
               </a>
+              <button
+                onClick={() => handleDeleteVersion(version.id, vNum)}
+                disabled={deletingId === version.id}
+                className="px-2 py-1 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors disabled:opacity-50"
+                title={`Delete v${vNum}`}
+              >
+                {deletingId === version.id ? "…" : "Delete"}
+              </button>
             </div>
           </div>
         );

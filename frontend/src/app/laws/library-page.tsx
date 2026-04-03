@@ -1,13 +1,17 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { api, importAllSuggestionsSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult } from "@/lib/api";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { api, importAllSuggestionsSSE, importLawStreamSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult, ImportProgressEvent, NewVersionEntry } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
 import UnclassifiedSection from "./components/unclassified-section";
 import CategoryModal from "./components/category-modal";
-import CombinedSearch from "./components/combined-search";
+import CombinedSearch, { BackgroundImportInfo } from "./components/combined-search";
+import ImportProgressSection, { ImportingEntry, FailedEntry } from "./components/import-progress-section";
+import NewVersionsSection from "./components/new-versions-section";
+
+let _importIdCounter = 0;
 
 export default function LibraryPage() {
   const [data, setData] = useState<LibraryData | null>(null);
@@ -22,7 +26,7 @@ export default function LibraryPage() {
   // Category modal (for existing laws)
   const [assigningLawId, setAssigningLawId] = useState<number | null>(null);
 
-  // Pending imports: suggestion id → { suggestion, error?, errorCode?, progress? }
+  // Pending imports from suggestions (existing flow for suggestion imports)
   const [pendingImports, setPendingImports] = useState<
     Map<number, {
       suggestion: SuggestedLaw;
@@ -31,6 +35,21 @@ export default function LibraryPage() {
       progress?: { phase: string; current?: number; total?: number; message: string };
     }>
   >(new Map());
+
+  // NEW: Import progress tracking
+  const [importingEntries, setImportingEntries] = useState<ImportingEntry[]>([]);
+  const [failedEntries, setFailedEntries] = useState<FailedEntry[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem("themis_failed_imports");
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+  // Track law_ids currently importing from new versions section
+  const [newVersionImportingIds, setNewVersionImportingIds] = useState<Set<number>>(new Set());
+  const [newVersionsRefreshKey, setNewVersionsRefreshKey] = useState(0);
+  // Keep abort controllers so we can cancel if needed
+  const abortControllers = useRef<Map<string, AbortController>>(new Map());
 
   // Category pick for suggestions without a predetermined category
   const [suggestionCategoryPick, setSuggestionCategoryPick] = useState<{
@@ -65,6 +84,26 @@ export default function LibraryPage() {
     });
   }
 
+  // Persist failed imports to localStorage
+  useEffect(() => {
+    try {
+      if (failedEntries.length > 0) {
+        localStorage.setItem("themis_failed_imports", JSON.stringify(failedEntries));
+      } else {
+        localStorage.removeItem("themis_failed_imports");
+      }
+    } catch { /* localStorage unavailable */ }
+  }, [failedEntries]);
+
+  // Abort all in-flight imports on unmount
+  useEffect(() => {
+    return () => {
+      for (const controller of abortControllers.current.values()) {
+        controller.abort();
+      }
+    };
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
       const result = await api.laws.library();
@@ -88,7 +127,6 @@ export default function LibraryPage() {
       laws = laws.filter((l) => l.category_group_slug === selectedGroup);
     }
     if (selectedCategory) {
-      // Find category id from slug
       const catId = data.groups
         .flatMap((g) => g.categories)
         .find((c) => c.slug === selectedCategory)?.id;
@@ -133,7 +171,7 @@ export default function LibraryPage() {
     return data.suggested_laws.filter((s) => !pendingImports.has(s.id));
   }, [data, pendingImports]);
 
-  // Group pending imports by group_slug
+  // Group pending suggestion imports by group_slug
   const pendingByGroup = useMemo(() => {
     const map = new Map<string, { suggestion: SuggestedLaw; error?: string; errorCode?: string; progress?: { phase: string; current?: number; total?: number; message: string } }[]>();
     for (const [, entry] of pendingImports) {
@@ -173,7 +211,6 @@ export default function LibraryPage() {
     const suggestion = data?.suggested_laws.find((s) => s.id === mappingId);
     if (!suggestion) return;
 
-    // If no predetermined category, ask user to pick one first
     if (!suggestion.category_id) {
       setSuggestionCategoryPick({ suggestion, importHistory });
       return;
@@ -183,14 +220,12 @@ export default function LibraryPage() {
   }
 
   function startImport(suggestion: SuggestedLaw, importHistory: boolean) {
-    // Add to pending immediately (optimistic)
     setPendingImports((prev) => {
       const next = new Map(prev);
       next.set(suggestion.id, { suggestion });
       return next;
     });
 
-    // Fire SSE import in background (not awaited)
     const controller = new AbortController();
     const timeoutMs = importHistory ? 600_000 : 120_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -210,25 +245,24 @@ export default function LibraryPage() {
         fetchData();
       })
       .catch((err) => {
-      clearTimeout(timer);
-      const message =
-        err instanceof DOMException && err.name === "AbortError"
-          ? "Import timed out — try current version only."
-          : err instanceof Error
-            ? err.message
-            : "Import failed";
-      setPendingImports((prev) => {
-        const next = new Map(prev);
-        next.set(suggestion.id, { suggestion, error: message });
-        return next;
+        clearTimeout(timer);
+        const message =
+          err instanceof DOMException && err.name === "AbortError"
+            ? "Import timed out — try current version only."
+            : err instanceof Error
+              ? err.message
+              : "Import failed";
+        setPendingImports((prev) => {
+          const next = new Map(prev);
+          next.set(suggestion.id, { suggestion, error: message });
+          return next;
+        });
       });
-    });
   }
 
   function handleSuggestionCategoryConfirm(categoryId: number) {
     if (!suggestionCategoryPick) return;
     const { suggestion, importHistory } = suggestionCategoryPick;
-    // Override category on the suggestion for display purposes
     const withCategory = { ...suggestion, category_id: categoryId };
     setSuggestionCategoryPick(null);
     startImport(withCategory, importHistory);
@@ -240,6 +274,279 @@ export default function LibraryPage() {
       next.delete(mappingId);
       return next;
     });
+  }
+
+  // === NEW: Background import with streaming progress ===
+
+  function startStreamingImport(entry: ImportingEntry) {
+    const controller = new AbortController();
+    abortControllers.current.set(entry.id, controller);
+
+    // Add to importing list
+    setImportingEntries((prev) => [...prev.filter(e => e.id !== entry.id), entry]);
+
+    // EU imports don't have streaming — use simple fetch
+    if (entry.source === "eu") {
+      api.laws.euImport(entry.verId, entry.importHistory, controller.signal)
+        .then((res) => {
+          // Assign category
+          if (entry.categoryId) {
+            return api.laws.assignCategory(res.law_id, entry.categoryId).then(() => res);
+          }
+          return res;
+        })
+        .then(() => {
+          abortControllers.current.delete(entry.id);
+          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+          fetchData();
+        })
+        .catch((err) => {
+          abortControllers.current.delete(entry.id);
+          const message = err instanceof DOMException && err.name === "AbortError"
+            ? "Import timed out"
+            : err instanceof Error ? err.message : "Import failed";
+          // Move to failed
+          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+          setFailedEntries((prev) => [...prev, {
+            id: entry.id,
+            title: entry.title,
+            lawNumber: entry.lawNumber,
+            verId: entry.verId,
+            source: entry.source,
+            importHistory: entry.importHistory,
+            categoryId: entry.categoryId,
+            groupSlug: entry.groupSlug,
+            error: message,
+          }]);
+        });
+      return;
+    }
+
+    // RO imports — use SSE streaming
+    importLawStreamSSE(
+      entry.verId,
+      entry.importHistory,
+      entry.categoryId,
+      // onProgress
+      (event: ImportProgressEvent) => {
+        setImportingEntries((prev) => prev.map(e => {
+          if (e.id !== entry.id) return e;
+          return {
+            ...e,
+            progress: {
+              phase: event.phase,
+              current: event.current ?? e.progress.current,
+              total: event.total ?? e.progress.total,
+              versionDate: event.version_date,
+              message: event.message,
+            },
+          };
+        }));
+      },
+      // onComplete
+      () => {
+        abortControllers.current.delete(entry.id);
+        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+        fetchData();
+      },
+      // onError
+      (error) => {
+        abortControllers.current.delete(entry.id);
+        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+        setFailedEntries((prev) => [...prev, {
+          id: entry.id,
+          title: entry.title,
+          lawNumber: entry.lawNumber,
+          verId: entry.verId,
+          source: entry.source,
+          importHistory: entry.importHistory,
+          categoryId: entry.categoryId,
+          groupSlug: entry.groupSlug,
+          error: error.message,
+        }]);
+      },
+      controller.signal,
+    ).catch(async (err) => {
+      // Handle network errors that occur during streaming
+      abortControllers.current.delete(entry.id);
+
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+        return; // User navigated away — don't show error
+      }
+
+      // The backend may have completed even though the SSE connection dropped.
+      // Check by refreshing data — if the law appeared, it succeeded.
+      try {
+        const refreshed = await api.laws.library();
+        setData(refreshed);
+        // Check if a law with this verId now exists in the library
+        const found = refreshed.laws.some(l => l.title.includes(entry.title.split(" — ")[0]?.trim() || entry.title));
+        if (found) {
+          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+          return; // Import succeeded despite connection drop
+        }
+      } catch {
+        // Could not check — fall through to error
+      }
+
+      const message = err instanceof Error ? err.message : "Network error during import";
+      setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
+      setFailedEntries((prev) => [...prev, {
+        id: entry.id,
+        title: entry.title,
+        lawNumber: entry.lawNumber,
+        verId: entry.verId,
+        source: entry.source,
+        importHistory: entry.importHistory,
+        categoryId: entry.categoryId,
+        groupSlug: entry.groupSlug,
+        error: message,
+      }]);
+    });
+  }
+
+  function handleBackgroundImport(info: BackgroundImportInfo) {
+    const entryId = `import-${++_importIdCounter}`;
+
+    const entry: ImportingEntry = {
+      id: entryId,
+      title: info.title,
+      lawNumber: "", // Will be populated from search result
+      verId: info.verId,
+      source: info.source,
+      importHistory: info.importHistory,
+      categoryId: info.categoryId,
+      groupSlug: info.groupSlug,
+      progress: {
+        phase: "starting",
+        current: 0,
+        total: info.importHistory ? 0 : 1, // 0 means "unknown yet" for history imports
+        message: "Starting import...",
+      },
+    };
+
+    startStreamingImport(entry);
+  }
+
+  function handleRetry(failedEntry: FailedEntry) {
+    // Remove from failed
+    setFailedEntries((prev) => prev.filter(e => e.id !== failedEntry.id));
+
+    // Create new importing entry from the failed one
+    const newId = `import-${++_importIdCounter}`;
+    const entry: ImportingEntry = {
+      id: newId,
+      title: failedEntry.title,
+      lawNumber: failedEntry.lawNumber,
+      verId: failedEntry.verId,
+      source: failedEntry.source,
+      importHistory: failedEntry.importHistory,
+      categoryId: failedEntry.categoryId,
+      groupSlug: failedEntry.groupSlug,
+      progress: {
+        phase: "starting",
+        current: 0,
+        total: failedEntry.importHistory ? 0 : 1,
+        message: "Retrying import...",
+      },
+    };
+
+    startStreamingImport(entry);
+  }
+
+  function handleDismiss(id: string) {
+    setFailedEntries((prev) => prev.filter(e => e.id !== id));
+    // Refresh new versions list so dismissed items reappear there
+    setNewVersionsRefreshKey((k) => k + 1);
+  }
+
+  function importVersionsForLaw(entry: NewVersionEntry, verIds: string[]) {
+    // Track this law_id as importing so it hides from new versions list
+    setNewVersionImportingIds((prev) => new Set(prev).add(entry.law_id));
+
+    // Import versions sequentially (oldest first for correct diffs)
+    const sortedVerIds = entry.versions
+      .filter((v) => verIds.includes(v.ver_id))
+      .sort((a, b) => a.date_in_force.localeCompare(b.date_in_force))
+      .map((v) => v.ver_id);
+
+    const entryId = `newver-${entry.law_id}`;
+    const importingEntry: ImportingEntry = {
+      id: entryId,
+      title: entry.title,
+      lawNumber: entry.law_number,
+      verId: sortedVerIds[0],
+      source: entry.source as "ro" | "eu",
+      importHistory: false,
+      categoryId: null,
+      groupSlug: null,
+      progress: {
+        phase: "version",
+        current: 0,
+        total: sortedVerIds.length,
+        message: "Importing new version...",
+      },
+    };
+    setImportingEntries((prev) => [...prev, importingEntry]);
+
+    // Import sequentially
+    (async () => {
+      let imported = 0;
+      for (const verId of sortedVerIds) {
+        try {
+          setImportingEntries((prev) => prev.map((e) =>
+            e.id === entryId
+              ? { ...e, verId, progress: { ...e.progress, current: imported, message: `Importing version ${imported + 1}/${sortedVerIds.length}...` } }
+              : e
+          ));
+          await api.laws.importKnownVersion(entry.law_id, verId);
+          imported++;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Import failed";
+          setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
+          setNewVersionImportingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(entry.law_id);
+            return next;
+          });
+          setFailedEntries((prev) => [...prev, {
+            id: entryId,
+            title: entry.title,
+            lawNumber: entry.law_number,
+            verId,
+            source: entry.source as "ro" | "eu",
+            importHistory: false,
+            categoryId: null,
+            groupSlug: null,
+            error: `${message} (imported ${imported}/${sortedVerIds.length})`,
+          }]);
+          fetchData();
+          return;
+        }
+      }
+
+      // All done
+      setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
+      setNewVersionImportingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(entry.law_id);
+        return next;
+      });
+      setNewVersionsRefreshKey((k) => k + 1);
+      fetchData();
+    })();
+  }
+
+  function handleNewVersionImport(entry: NewVersionEntry, selectedVerIds: string[]) {
+    importVersionsForLaw(entry, selectedVerIds);
+  }
+
+  function handleImportAllNewVersions(entries: NewVersionEntry[]) {
+    for (const entry of entries) {
+      const allVerIds = entry.versions.map((v) => v.ver_id);
+      importVersionsForLaw(entry, allVerIds);
+    }
   }
 
   if (loading) {
@@ -308,6 +615,23 @@ export default function LibraryPage() {
         groups={data.groups}
         suggestedLaws={data.suggested_laws}
         onImportComplete={fetchData}
+        onBackgroundImport={handleBackgroundImport}
+      />
+
+      {/* Import progress sections — between search and main list */}
+      <ImportProgressSection
+        importing={importingEntries}
+        failed={failedEntries}
+        onRetry={handleRetry}
+        onDismiss={handleDismiss}
+      />
+
+      {/* New versions available for import */}
+      <NewVersionsSection
+        importingLawIds={newVersionImportingIds}
+        onImport={handleNewVersionImport}
+        onImportAll={handleImportAllNewVersions}
+        refreshKey={newVersionsRefreshKey}
       />
 
       {/* Main layout: sidebar + content */}
@@ -387,7 +711,6 @@ export default function LibraryPage() {
 
           {/* Empty state */}
           {classifiedLaws.length === 0 && unclassifiedLaws.length === 0 && pendingImports.size === 0 &&
-            // Don't show empty state if we're viewing a suggested group with suggestions
             !(selectedGroup && activeSuggestions.some((s) => s.group_slug === selectedGroup)) && (
             <div className="text-center py-12">
               <h3 className="text-lg font-medium text-gray-900 mb-2">No laws found</h3>

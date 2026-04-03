@@ -51,7 +51,8 @@ export default function UpdateBanner({
 }: UpdateBannerProps) {
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [importingVerId, setImportingVerId] = useState<string | null>(null);
+  const [importingAll, setImportingAll] = useState(false);
   const [checkedAt, setCheckedAt] = useState(lastCheckedAt);
 
   // Auto-check on mount if stale
@@ -69,34 +70,74 @@ export default function UpdateBanner({
       .finally(() => setChecking(false));
   }, [lawId, lastCheckedAt, onKnownVersionsLoaded]);
 
-  const unimported = knownVersions
-    ? knownVersions.filter((v) => !importedVerIds.has(v.ver_id))
-    : [];
-
-  // Find the latest unimported version (newest by date)
-  const latestUnimported = unimported.length > 0
-    ? unimported.reduce((a, b) => (a.date_in_force > b.date_in_force ? a : b))
-    : null;
-
-  // Compute the version number for display (ordinal position in all known versions)
+  // Build version number map: ordinal position by date across ALL known versions
   const allSortedAsc = knownVersions
     ? [...knownVersions].sort((a, b) => a.date_in_force.localeCompare(b.date_in_force))
     : [];
-  const latestVersionNumber = latestUnimported
-    ? allSortedAsc.findIndex((v) => v.ver_id === latestUnimported.ver_id) + 1
-    : 0;
+  const versionNumberMap = new Map<string, number>();
+  allSortedAsc.forEach((v, i) => versionNumberMap.set(v.ver_id, i + 1));
 
-  async function handleImportLatest() {
-    if (!latestUnimported) return;
-    setImporting(true);
+  // Find the highest version number that is imported
+  let highestImportedNum = 0;
+  for (const verId of importedVerIds) {
+    const num = versionNumberMap.get(verId) ?? 0;
+    if (num > highestImportedNum) highestImportedNum = num;
+  }
+
+  // Only show versions NEWER than the highest imported version (not historical gaps)
+  const newVersions = knownVersions
+    ? knownVersions.filter((v) => {
+        if (importedVerIds.has(v.ver_id)) return false;
+        const num = versionNumberMap.get(v.ver_id) ?? 0;
+        return num > highestImportedNum;
+      })
+    : [];
+
+  // Sort new versions by date descending (newest first)
+  const newVersionsSorted = [...newVersions].sort((a, b) =>
+    b.date_in_force.localeCompare(a.date_in_force)
+  );
+
+  async function handleCheckNow() {
+    setChecking(true);
     try {
-      const res = await api.laws.importKnownVersion(lawId, latestUnimported.ver_id);
-      onVersionImported(latestUnimported.ver_id, res.law_version_id);
+      await api.laws.checkUpdates(lawId);
+      const data = await api.laws.getKnownVersions(lawId);
+      onKnownVersionsLoaded(data.versions);
+      setCheckedAt(data.last_checked_at);
+    } catch {
+      // silently fail — user can retry
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function handleImportVersion(version: KnownVersionData) {
+    setImportingVerId(version.ver_id);
+    try {
+      const res = await api.laws.importKnownVersion(lawId, version.ver_id);
+      onVersionImported(version.ver_id, res.law_version_id);
     } catch {
       alert("Failed to import version. Please try again.");
     } finally {
-      setImporting(false);
+      setImportingVerId(null);
     }
+  }
+
+  async function handleImportAll() {
+    setImportingAll(true);
+    // Import oldest first so diffs are computed correctly
+    const oldestFirst = [...newVersionsSorted].reverse();
+    for (const version of oldestFirst) {
+      try {
+        const res = await api.laws.importKnownVersion(lawId, version.ver_id);
+        onVersionImported(version.ver_id, res.law_version_id);
+      } catch {
+        alert(`Failed to import v${versionNumberMap.get(version.ver_id) ?? "?"}. Stopping.`);
+        break;
+      }
+    }
+    setImportingAll(false);
   }
 
   const checkedText = formatCheckedTime(checkedAt);
@@ -112,50 +153,96 @@ export default function UpdateBanner({
   }
 
   // Up to date
-  if (unimported.length === 0 || dismissed) {
+  if (newVersions.length === 0 || dismissed) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 flex items-start gap-3">
-        <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <div>
-          <p className="text-sm font-medium text-green-800">No new versions</p>
-          <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div>
+            <p className="text-sm font-medium text-green-800">No new versions</p>
+            <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+          </div>
         </div>
+        <button
+          onClick={handleCheckNow}
+          className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors shrink-0"
+        >
+          Check now
+        </button>
       </div>
     );
   }
 
   // New versions available
+  const isAnyImporting = importingVerId !== null || importingAll;
+
   return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-start justify-between gap-4">
-      <div className="flex items-start gap-3">
-        <svg className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-        </svg>
-        <div>
-          <p className="text-sm font-medium text-amber-800">
-            {unimported.length} new version{unimported.length !== 1 ? "s" : ""} available
-          </p>
-          <p className="text-sm text-amber-700/70">
-            {checkedText} &middot; {unimported.length} version{unimported.length !== 1 ? "s" : ""} not yet imported
-          </p>
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <svg className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <div>
+            <p className="text-sm font-medium text-amber-800">
+              {newVersions.length} new version{newVersions.length !== 1 ? "s" : ""} available
+            </p>
+            <p className="text-sm text-amber-700/70">
+              {checkedText} &middot; {newVersions.length} version{newVersions.length !== 1 ? "s" : ""} not yet imported
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {newVersionsSorted.length > 1 && (
+            <button
+              onClick={handleImportAll}
+              disabled={isAnyImporting}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 disabled:bg-amber-300 transition-colors"
+            >
+              {importingAll ? "Importing..." : `Import all (${newVersionsSorted.length})`}
+            </button>
+          )}
+          <button
+            onClick={() => setDismissed(true)}
+            className="px-3 py-1.5 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 transition-colors"
+          >
+            Dismiss
+          </button>
         </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <button
-          onClick={handleImportLatest}
-          disabled={importing}
-          className="px-3 py-1.5 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 disabled:bg-amber-300 transition-colors"
-        >
-          {importing ? "Importing..." : `Import latest version (v${latestVersionNumber})`}
-        </button>
-        <button
-          onClick={() => setDismissed(true)}
-          className="px-3 py-1.5 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 transition-colors"
-        >
-          Dismiss
-        </button>
+
+      {/* List of individual new versions */}
+      <div className="mt-3 space-y-2">
+        {newVersionsSorted.map((version) => {
+          const vNum = versionNumberMap.get(version.ver_id) ?? 0;
+          const isThisImporting = importingVerId === version.ver_id;
+          return (
+            <div
+              key={version.ver_id}
+              className="flex items-center justify-between bg-white/60 rounded-md px-3 py-2 border border-amber-100"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-bold text-gray-900">v{vNum}</span>
+                <span className="text-sm text-gray-500">
+                  {(() => {
+                    const d = new Date(version.date_in_force);
+                    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                    return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+                  })()}
+                </span>
+              </div>
+              <button
+                onClick={() => handleImportVersion(version)}
+                disabled={isAnyImporting}
+                className="px-3 py-1 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors"
+              >
+                {isThisImporting ? "Importing..." : `Import v${vNum}`}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

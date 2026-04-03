@@ -205,6 +205,22 @@ export interface KnownVersionsResponse {
   unimported_count: number;
 }
 
+export interface NewVersionDetail {
+  ver_id: string;
+  date_in_force: string;
+  is_latest: boolean;
+}
+
+export interface NewVersionEntry {
+  law_id: number;
+  title: string;
+  law_number: string;
+  law_year: number;
+  source: string;
+  version_number_offset: number;
+  versions: NewVersionDetail[];
+}
+
 export interface ArticleData {
   id: number;
   article_number: string;
@@ -849,6 +865,7 @@ export const api = {
         }
       ),
     library: () => apiFetch<LibraryData>("/api/laws/library"),
+    newVersions: () => apiFetch<{ new_versions: NewVersionEntry[] }>("/api/laws/new-versions"),
     localSearch: (q: string) =>
       apiFetch<{ results: LocalSearchResult[] }>(`/api/laws/local-search?q=${encodeURIComponent(q)}`),
     assignCategory: (lawId: number, categoryId: number) =>

@@ -309,6 +309,127 @@ def import_law(req: ImportRequest, db: Session = Depends(get_db)):
         raise ImportFailedError(str(e))
 
 
+class DirectImportStreamRequest(BaseModel):
+    ver_id: str
+    import_history: bool = True
+    category_id: int | None = None
+
+
+@router.post("/import/stream")
+async def import_law_stream(req: DirectImportStreamRequest, db: Session = Depends(get_db)):
+    """SSE endpoint that streams import progress for a direct law import by ver_id."""
+    from app.services.leropa_service import import_law as do_import
+    from app.errors import DuplicateImportError, ImportFailedError, map_exception_to_error
+
+    logger.info(f"[SSE] /import/stream called with ver_id={req.ver_id}, history={req.import_history}, cat={req.category_id}")
+
+    # Extract ver_id from URL if needed
+    ver_id = req.ver_id.strip()
+    url_match = re.search(r"DetaliiDocument/(\d+)", ver_id)
+    if url_match:
+        ver_id = url_match.group(1)
+
+    if not ver_id.isdigit():
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps({"code": "invalid_input", "message": "Invalid ver_id"})}
+        return EventSourceResponse(error_stream())
+
+    # Check duplicates
+    existing = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
+    if existing:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(DuplicateImportError(existing.law.title).to_dict())}
+        return EventSourceResponse(error_stream())
+
+    source_url = f"https://legislatie.just.ro/Public/DetaliiDocument/{ver_id}"
+    existing_law = db.query(Law).filter(Law.source_url == source_url).first()
+    if existing_law:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps(DuplicateImportError(existing_law.title).to_dict())}
+        return EventSourceResponse(error_stream())
+
+    import queue as thread_queue
+
+    category_id = req.category_id
+
+    # Use a thread-safe queue since on_progress is called from asyncio.to_thread
+    tq: thread_queue.Queue = thread_queue.Queue()
+
+    def on_progress(event: dict):
+        tq.put(event)
+
+    async def run_import():
+        try:
+            result = await asyncio.to_thread(
+                do_import, db, ver_id,
+                import_history=req.import_history,
+                on_progress=on_progress,
+            )
+            # Auto-assign category if provided
+            if category_id:
+                law = db.query(Law).filter(Law.id == result["law_id"]).first()
+                if law:
+                    law.category_id = category_id
+                    law.category_confidence = "high"
+                    db.commit()
+
+            # Look up suggested category from law_mappings (same logic as /import)
+            if not category_id:
+                law_number = result.get("law_number")
+                law_year = result.get("law_year")
+                doc_type = result.get("document_type")
+                mapping = None
+                if law_number and law_number != "unknown":
+                    candidates = db.query(LawMapping).filter(
+                        LawMapping.law_number == law_number
+                    ).all()
+                    if len(candidates) == 1:
+                        mapping = candidates[0]
+                    elif candidates:
+                        if doc_type and law_year:
+                            for c in candidates:
+                                if c.document_type == doc_type and c.law_year == law_year:
+                                    mapping = c
+                                    break
+                        if not mapping and law_year:
+                            for c in candidates:
+                                if c.law_year == law_year:
+                                    mapping = c
+                                    break
+                        if not mapping and doc_type:
+                            matches = [c for c in candidates if c.document_type == doc_type]
+                            if len(matches) == 1:
+                                mapping = matches[0]
+                if mapping:
+                    result["suggested_category_id"] = mapping.category_id
+
+            tq.put({"event": "complete", "data": result})
+        except Exception as e:
+            error = map_exception_to_error(e)
+            tq.put({"event": "error", "data": error.to_dict()})
+
+    async def event_generator():
+        task = asyncio.create_task(run_import())
+        try:
+            while True:
+                # Poll the thread-safe queue every 0.5s
+                while tq.empty():
+                    await asyncio.sleep(0.5)
+                event = tq.get_nowait()
+                event_type = event.get("event", "progress")
+                data = event.get("data", event)
+                logger.info(f"[SSE] Yielding event: {event_type}")
+                yield {"event": event_type, "data": json.dumps(data) if isinstance(data, dict) else data}
+                if event_type in ("complete", "error"):
+                    break
+        except asyncio.CancelledError:
+            logger.info("[SSE] Client disconnected (CancelledError)")
+        except Exception as e:
+            logger.error(f"[SSE] Generator error: {e}")
+
+    return EventSourceResponse(event_generator(), ping=15)
+
+
 @router.post("/import-suggestion")
 def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db)):
     """Import a law from a suggestion (LawMapping) by searching legislatie.just.ro."""
@@ -627,6 +748,78 @@ async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = De
     return EventSourceResponse(event_generator())
 
 
+@router.get("/new-versions")
+def get_new_versions(db: Session = Depends(get_db)):
+    """Return laws that have newer KnownVersions than their latest imported LawVersion.
+
+    For each law, returns only the latest unimported version (the newest by date
+    that is more recent than the highest imported version).
+    """
+    from sqlalchemy import func as sa_func
+
+    # Get the max imported date_in_force per law
+    latest_imported = (
+        db.query(
+            LawVersion.law_id,
+            sa_func.max(LawVersion.date_in_force).label("max_date"),
+        )
+        .group_by(LawVersion.law_id)
+        .subquery()
+    )
+
+    # Get all known versions that are newer than the latest imported version
+    newer = (
+        db.query(KnownVersion)
+        .join(latest_imported, KnownVersion.law_id == latest_imported.c.law_id)
+        .filter(KnownVersion.date_in_force > latest_imported.c.max_date)
+        .filter(
+            ~KnownVersion.ver_id.in_(
+                db.query(LawVersion.ver_id)
+            )
+        )
+        .all()
+    )
+
+    # Group by law_id and return all new versions per law
+    from itertools import groupby
+    from operator import attrgetter
+
+    newer_sorted = sorted(newer, key=attrgetter("law_id"))
+    results = []
+    for law_id, group in groupby(newer_sorted, key=attrgetter("law_id")):
+        versions = sorted(group, key=attrgetter("date_in_force"))
+        law = db.query(Law).filter(Law.id == law_id).first()
+        if not law:
+            continue
+        latest_date = max(v.date_in_force for v in versions)
+        # Total known versions for this law (to compute version numbers)
+        total_known = (
+            db.query(KnownVersion)
+            .filter(KnownVersion.law_id == law_id)
+            .count()
+        )
+        # These new versions are the last N in chronological order
+        version_number_offset = total_known - len(versions)
+        results.append({
+            "law_id": law.id,
+            "title": law.title,
+            "law_number": law.law_number,
+            "law_year": law.law_year,
+            "source": getattr(law, "source", "ro"),
+            "version_number_offset": version_number_offset,
+            "versions": [
+                {
+                    "ver_id": v.ver_id,
+                    "date_in_force": str(v.date_in_force),
+                    "is_latest": v.date_in_force == latest_date,
+                }
+                for i, v in enumerate(versions)
+            ],
+        })
+
+    return {"new_versions": results}
+
+
 @router.get("/")
 def list_laws(db: Session = Depends(get_db)):
     """List all stored laws."""
@@ -677,6 +870,17 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
+
+    # Self-heal: fix is_current flags and backfill missing dates from KnownVersion
+    _recalculate_current_version(db, law_id)
+
+    # Backfill missing diff summaries for this law's versions
+    from app.services.diff_summary import compute_diff_summary
+    for v in law.versions:
+        if v.diff_summary is None and v.date_in_force is not None:
+            v.diff_summary = compute_diff_summary(db, v)
+
+    db.commit()
 
     category_info = None
     if law.category_id and law.category:
@@ -798,16 +1002,12 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
         raise HTTPException(status_code=409, detail="This version is already imported")
 
     _ls._stored_article_ids = set()
-    _, new_version = fetch_and_store_version(db, req.ver_id, law=law)
+    _, new_version = fetch_and_store_version(
+        db, req.ver_id, law=law, override_date=kv.date_in_force,
+    )
 
-    # Update is_current flags on LawVersion
-    all_versions = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
-    dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
-    if dated:
-        dated.sort(key=lambda x: x[1], reverse=True)
-        for v in all_versions:
-            v.is_current = False
-        dated[0][0].is_current = True
+    # Update is_current based on KnownVersion source of truth (LegislatieJust)
+    _recalculate_current_version(db, law_id)
 
     db.commit()
 
@@ -869,20 +1069,14 @@ def import_all_missing(law_id: int, db: Session = Depends(get_db)):
     for kv in missing:
         try:
             _ls._stored_article_ids = set()
-            fetch_and_store_version(db, kv.ver_id, law=law)
+            fetch_and_store_version(db, kv.ver_id, law=law, override_date=kv.date_in_force)
             imported_count += 1
         except Exception as e:
             logger.error(f"Failed to import version {kv.ver_id}: {e}")
             errors.append({"ver_id": kv.ver_id, "error": str(e)[:200]})
 
-    # Update is_current flags
-    all_versions = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
-    dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
-    if dated:
-        dated.sort(key=lambda x: x[1], reverse=True)
-        for v in all_versions:
-            v.is_current = False
-        dated[0][0].is_current = True
+    # Update is_current based on KnownVersion source of truth
+    _recalculate_current_version(db, law_id)
 
     db.commit()
 
@@ -1184,6 +1378,47 @@ def _background_delete_law(law_id: int, title: str):
         db.close()
 
 
+def _recalculate_current_version(db: Session, law_id: int):
+    """Set is_current on imported versions based on KnownVersion source of truth.
+
+    Only the imported version whose ver_id matches the KnownVersion that
+    LegislatieJust considers current gets is_current=True.  If that version
+    is not imported, no imported version is marked current.
+
+    Also backfills missing date_in_force from KnownVersion data.
+    """
+    # Build a lookup of KnownVersion data for this law
+    all_known = db.query(KnownVersion).filter(KnownVersion.law_id == law_id).all()
+    known_map = {kv.ver_id: kv for kv in all_known}
+
+    # Find the ver_id that LegislatieJust says is current
+    current_known = next((kv for kv in all_known if kv.is_current), None)
+
+    all_imported = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
+    for v in all_imported:
+        v.is_current = (
+            current_known is not None and v.ver_id == current_known.ver_id
+        )
+        # Backfill missing date_in_force from KnownVersion
+        if v.date_in_force is None and v.ver_id in known_map:
+            v.date_in_force = known_map[v.ver_id].date_in_force
+
+
+def _background_delete_single_version(law_id: int, version_id: int):
+    """Delete a single version in a background thread and recalculate is_current."""
+    db = SessionLocal()
+    try:
+        _bulk_delete_versions(db, [version_id])
+        _recalculate_current_version(db, law_id)
+        db.commit()
+        logger.info(f"Background delete of version id={version_id} completed for law_id={law_id}")
+    except Exception:
+        db.rollback()
+        logger.exception(f"Background delete of version id={version_id} failed for law_id={law_id}")
+    finally:
+        db.close()
+
+
 def _background_delete_old_versions(law_id: int, version_ids: list[int]):
     """Run old-version deletion in a background thread with its own DB session."""
     db = SessionLocal()
@@ -1214,6 +1449,37 @@ async def delete_law(law_id: int, db: Session = Depends(get_db)):
 
     return {
         "message": f"Deleting '{title}' with {version_count} version(s)…",
+    }
+
+
+@router.delete("/{law_id}/versions/{version_id}")
+async def delete_single_version(law_id: int, version_id: int, db: Session = Depends(get_db)):
+    """Delete a single version of a law (runs in background).
+
+    After deletion, is_current is recalculated: only the version whose ver_id
+    matches the KnownVersion marked current by LegislatieJust gets is_current=True.
+    If that version isn't imported, no imported version is marked current.
+    """
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    version = db.query(LawVersion).filter(
+        LawVersion.id == version_id, LawVersion.law_id == law_id
+    ).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    ver_id = version.ver_id
+    t = threading.Thread(
+        target=_background_delete_single_version,
+        args=(law_id, version_id),
+        daemon=True,
+    )
+    t.start()
+
+    return {
+        "message": f"Deleting version '{ver_id}' of '{law.title}'…",
     }
 
 

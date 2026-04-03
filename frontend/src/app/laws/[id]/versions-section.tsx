@@ -39,10 +39,20 @@ export default function VersionsSection({
     setKnownVersions(loaded);
   }, []);
 
-  const handleVersionImported = useCallback((_verId: string, _lawVersionId: number) => {
-    // Refresh the page to get updated versions list with diff_summary from server
-    router.refresh();
-  }, [router]);
+  const handleVersionImported = useCallback(async (_verId: string, _lawVersionId: number) => {
+    // Re-fetch law data to get updated versions list with diff_summary
+    try {
+      const law = await api.laws.get(lawId);
+      setVersions(law.versions);
+    } catch {
+      // Fallback: full page refresh
+      router.refresh();
+    }
+  }, [lawId, router]);
+
+  const handleVersionDeleted = useCallback((versionId: number) => {
+    setVersions((prev) => prev.filter((v) => v.id !== versionId));
+  }, []);
 
   const unimportedVersions = knownVersions
     ? knownVersions.filter((v) => !importedVerIds.has(v.ver_id))
@@ -59,7 +69,7 @@ export default function VersionsSection({
         onKnownVersionsLoaded={handleKnownVersionsLoaded}
       />
 
-      <ImportedVersionsTable lawId={lawId} versions={versions} knownVersions={knownVersions} />
+      <ImportedVersionsTable lawId={lawId} versions={versions} knownVersions={knownVersions} onVersionDeleted={handleVersionDeleted} />
 
       {!loading && knownVersions && unimportedVersions.length > 0 && (
         <UnimportedVersionsTable

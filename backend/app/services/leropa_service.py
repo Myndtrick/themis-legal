@@ -910,8 +910,10 @@ def import_law(
     history = meta["history"]
     date_lookup = meta["date_lookup"]
 
+    total_versions = (len(history) + 1) if import_history and history else 1
+
     if on_progress:
-        on_progress({"event": "progress", "data": {"phase": "metadata", "message": "Fetching law metadata from legislatie.just.ro"}})
+        on_progress({"event": "progress", "data": {"phase": "metadata", "message": "Fetching law metadata from legislatie.just.ro", "total": total_versions}})
 
     # Decide which versions to import.
     #
@@ -947,12 +949,16 @@ def import_law(
             override_date=date_lookup.get(current_ver_id),
         )
         versions_imported = [current_ver_id]
+        if on_progress:
+            on_progress({"event": "progress", "data": {"phase": "version", "current": 1, "total": 1, "message": f"Importing version {current_ver_id}", "version_date": str(date_lookup.get(current_ver_id, ""))}})
     else:
         # Import the forma de baza (original text)
         law, base_version = fetch_and_store_version(
             db, ver_id, override_date=date_lookup.get(ver_id)
         )
         versions_imported = [ver_id]
+        if on_progress:
+            on_progress({"event": "progress", "data": {"phase": "version", "current": 1, "total": total_versions, "message": f"Importing base version {ver_id}", "version_date": str(date_lookup.get(ver_id, ""))}})
 
         # Import all consolidated versions
         if history:
@@ -976,7 +982,8 @@ def import_law(
                         f"{len(versions_imported)}/{len(history) + 1})"
                     )
                     if on_progress:
-                        on_progress({"event": "progress", "data": {"phase": "version", "current": len(versions_imported), "total": len(history) + 1, "message": f"Importing version {hist_ver_id}"}})
+                        version_date = str(date_lookup.get(hist_ver_id, ""))
+                        on_progress({"event": "progress", "data": {"phase": "version", "current": len(versions_imported), "total": len(history) + 1, "message": f"Importing version {hist_ver_id}", "version_date": version_date}})
                 except Exception as e:
                     logger.error(f"Failed to import version {hist_ver_id}: {e}")
                     continue

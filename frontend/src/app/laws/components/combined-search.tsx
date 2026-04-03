@@ -71,13 +71,23 @@ const STATE_COLORS: Record<string, string> = {
   deprecated: "bg-red-100 text-red-800",
 };
 
+export interface BackgroundImportInfo {
+  title: string;
+  verId: string;
+  source: "ro" | "eu";
+  importHistory: boolean;
+  categoryId: number | null;
+  groupSlug: string | null;
+}
+
 interface CombinedSearchProps {
   groups: CategoryGroupData[];
   suggestedLaws: SuggestedLaw[];
   onImportComplete: () => void;
+  onBackgroundImport?: (info: BackgroundImportInfo) => void;
 }
 
-export default function CombinedSearch({ groups, suggestedLaws, onImportComplete }: CombinedSearchProps) {
+export default function CombinedSearch({ groups, suggestedLaws, onImportComplete, onBackgroundImport }: CombinedSearchProps) {
   const router = useRouter();
   const [source, setSource] = useState<"all" | "ro" | "eu">("all");
   const [keyword, setKeyword] = useState("");
@@ -125,11 +135,19 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const [importErrors, setImportErrors] = useState<Record<string, string>>({});
 
-  // Category confirmation after import
+  // Category confirmation after import (legacy sync flow)
   const [importedLawForCategory, setImportedLawForCategory] = useState<{
     lawId: number;
     title: string;
     prefillCategoryId: number | null;
+  } | null>(null);
+
+  // Category pick for background import (before API call starts)
+  const [bgImportPendingCategory, setBgImportPendingCategory] = useState<{
+    verId: string;
+    title: string;
+    source: "ro" | "eu";
+    importHistory: boolean;
   } | null>(null);
 
   // URL detection
@@ -297,80 +315,117 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     }
   }
 
-  async function handleImport(verId: string, importHistory: boolean) {
-    setPendingImportId(null);
-    setImportingIds((prev) => new Set(prev).add(verId));
-    setImportErrors((prev) => { const next = { ...prev }; delete next[verId]; return next; });
+  function startBackgroundImport(verId: string, title: string, source: "ro" | "eu", importHistory: boolean, categoryId: number | null, groupSlug: string | null) {
+    setImportedIds((prev) => new Set(prev).add(verId));
+    // Close search results and clear state
+    setShowResults(false);
+    setKeyword("");
+    setExternalResults([]);
+    setLocalResults([]);
+    onBackgroundImport?.({ title, verId, source, importHistory, categoryId, groupSlug });
+  }
 
-    // EU import path
+  function handleImport(verId: string, importHistory: boolean) {
+    setPendingImportId(null);
+
     const result = externalResults.find(r => r.ver_id === verId);
-    if (result?.source === "eu") {
-      try {
-        const res = await api.laws.euImport(verId, importHistory);
-        setImportedIds((prev) => new Set(prev).add(verId));
-        // EU laws are auto-categorized on the backend — skip category modal
-        onImportComplete();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Import failed";
-        setImportErrors((prev) => ({ ...prev, [verId]: msg }));
-      } finally {
-        setImportingIds((prev) => { const next = new Set(prev); next.delete(verId); return next; });
+    if (!result) return;
+
+    // If background import callback is available, use the new async flow
+    if (onBackgroundImport) {
+      const resultSource = result.source || "ro";
+      const title = result.description || result.title;
+
+      // Try to auto-match category from suggestedLaws
+      const desc = (result.description || "").toLowerCase();
+      const match = suggestedLaws.find(
+        (s) =>
+          (s.law_number && s.law_number === result.number) ||
+          (desc.length > 10 && s.title.toLowerCase().includes(desc))
+      );
+
+      if (match?.category_id) {
+        // Auto-matched — start background import immediately
+        startBackgroundImport(verId, title, resultSource, importHistory, match.category_id, match.group_slug);
+      } else {
+        // No auto-match — ask user to pick category
+        setBgImportPendingCategory({ verId, title, source: resultSource, importHistory });
       }
       return;
     }
 
-    try {
-      // History imports can take minutes — use a 10-minute timeout
-      const controller = new AbortController();
-      const timeoutMs = importHistory ? 600_000 : 120_000;
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const token = await getAuthToken();
-      const res = await fetch(`${API_BASE}/api/laws/import`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Import failed");
-      setImportedIds((prev) => new Set(prev).add(verId));
-      // Find the external result to get title/number info
-      const r = externalResults.find((x) => x.ver_id === verId);
-      if (r) {
-        // Use backend-provided category suggestion first, fall back to suggestedLaws match
-        let prefillId: number | null = data.suggested_category_id ?? null;
-        if (!prefillId) {
-          const match = suggestedLaws.find(
-            (s) =>
-              s.law_number === r.number ||
-              s.title.toLowerCase().includes((r.description || "").toLowerCase())
-          );
-          prefillId = match?.category_id ?? null;
+    // Fallback: legacy synchronous import flow
+    setImportingIds((prev) => new Set(prev).add(verId));
+    setImportErrors((prev) => { const next = { ...prev }; delete next[verId]; return next; });
+
+    // EU import path
+    if (result?.source === "eu") {
+      (async () => {
+        try {
+          await api.laws.euImport(verId, importHistory);
+          setImportedIds((prev) => new Set(prev).add(verId));
+          onImportComplete();
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Import failed";
+          setImportErrors((prev) => ({ ...prev, [verId]: msg }));
+        } finally {
+          setImportingIds((prev) => { const next = new Set(prev); next.delete(verId); return next; });
         }
-        setImportedLawForCategory({
-          lawId: data.law_id,
-          title: r.description || r.title,
-          prefillCategoryId: prefillId,
-        });
-      } else {
-        onImportComplete();
-      }
-    } catch (err) {
-      const msg = err instanceof DOMException && err.name === "AbortError"
-        ? "Import timed out — the law may have too many versions. Try importing current version only."
-        : err instanceof Error ? err.message : "Import failed";
-      setImportErrors((prev) => ({ ...prev, [verId]: msg }));
-    } finally {
-      setImportingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(verId);
-        return next;
-      });
+      })();
+      return;
     }
+
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutMs = importHistory ? 600_000 : 120_000;
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const token = await getAuthToken();
+        const res = await fetch(`${API_BASE}/api/laws/import`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ ver_id: verId, import_history: importHistory }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Import failed");
+        setImportedIds((prev) => new Set(prev).add(verId));
+        const r = externalResults.find((x) => x.ver_id === verId);
+        if (r) {
+          let prefillId: number | null = data.suggested_category_id ?? null;
+          if (!prefillId) {
+            const match = suggestedLaws.find(
+              (s) =>
+                s.law_number === r.number ||
+                s.title.toLowerCase().includes((r.description || "").toLowerCase())
+            );
+            prefillId = match?.category_id ?? null;
+          }
+          setImportedLawForCategory({
+            lawId: data.law_id,
+            title: r.description || r.title,
+            prefillCategoryId: prefillId,
+          });
+        } else {
+          onImportComplete();
+        }
+      } catch (err) {
+        const msg = err instanceof DOMException && err.name === "AbortError"
+          ? "Import timed out — the law may have too many versions. Try importing current version only."
+          : err instanceof Error ? err.message : "Import failed";
+        setImportErrors((prev) => ({ ...prev, [verId]: msg }));
+      } finally {
+        setImportingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(verId);
+          return next;
+        });
+      }
+    })();
   }
 
   // URL import state
@@ -380,6 +435,20 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
   async function handleUrlImport(importHistory: boolean) {
     if (!detectedUrl) return;
     const verId = detectedUrl[1];
+    setPendingImportId(null);
+
+    if (onBackgroundImport) {
+      // Use background import — ask for category first
+      setBgImportPendingCategory({
+        verId,
+        title: `Imported law (ver ${verId})`,
+        source: "ro",
+        importHistory,
+      });
+      return;
+    }
+
+    // Fallback: legacy synchronous flow
     setUrlImporting(true);
     setUrlImportError(null);
     try {
@@ -733,6 +802,28 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
           onConfirm={handleImportCategoryConfirm}
           onSkip={handleImportCategorySkip}
           onCancel={handleImportCategoryCancel}
+        />
+      )}
+
+      {bgImportPendingCategory && (
+        <CategoryModal
+          lawTitle={bgImportPendingCategory.title}
+          groups={groups}
+          onConfirm={(categoryId) => {
+            const { verId, title, source, importHistory } = bgImportPendingCategory;
+            // Find the group_slug for the selected category
+            const group = groups.find(g => g.categories.some(c => c.id === categoryId));
+            setBgImportPendingCategory(null);
+            startBackgroundImport(verId, title, source, importHistory, categoryId, group?.slug ?? null);
+          }}
+          onSkip={() => {
+            const { verId, title, source, importHistory } = bgImportPendingCategory;
+            setBgImportPendingCategory(null);
+            startBackgroundImport(verId, title, source, importHistory, null, "__unclassified__");
+          }}
+          onCancel={() => {
+            setBgImportPendingCategory(null);
+          }}
         />
       )}
     </div>
