@@ -544,6 +544,33 @@ export interface HealthStats {
   most_common_warnings: string[];
 }
 
+// --- Settings: Scheduler types ---
+
+export interface SchedulerSettingData {
+  id: string;
+  enabled: boolean;
+  frequency: string;
+  time_hour: number;
+  time_minute: number;
+  last_run_at: string | null;
+  last_run_status: string | null;
+  last_run_summary: { checked: number; discovered: number; errors: number } | null;
+  next_run_utc: string | null;
+}
+
+export interface SchedulerSettingsUpdate {
+  ro: { enabled: boolean; frequency: string; time_hour: number; time_minute: number };
+  eu: { enabled: boolean; frequency: string; time_hour: number; time_minute: number };
+}
+
+export interface DiscoveryProgress {
+  running: boolean;
+  current: number;
+  total: number;
+  current_law: string;
+  results: { checked: number; discovered: number; errors: number } | null;
+}
+
 export async function importSuggestionSSE(
   mappingId: number,
   importHistory: boolean,
@@ -596,6 +623,103 @@ export async function importSuggestionSSE(
         }
       }
     }
+  }
+}
+
+export interface ImportProgressEvent {
+  phase: string;
+  current?: number;
+  total?: number;
+  message: string;
+  version_date?: string;
+}
+
+export interface ImportCompleteEvent {
+  law_id: number;
+  title: string;
+  law_number: string;
+  law_year: number;
+  document_type: string;
+  suggested_category_id?: number;
+}
+
+export interface ImportErrorEvent {
+  code: string;
+  message: string;
+}
+
+export async function importLawStreamSSE(
+  verId: string,
+  importHistory: boolean,
+  categoryId: number | null,
+  onProgress: (event: ImportProgressEvent) => void,
+  onComplete: (data: ImportCompleteEvent) => void,
+  onError: (error: ImportErrorEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = await getAuthToken();
+  console.log("[SSE] Connecting to /api/laws/import/stream", { verId, importHistory, categoryId, hasToken: !!token });
+  const res = await fetch(`${API_BASE}/api/laws/import/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      ver_id: verId,
+      import_history: importHistory,
+      category_id: categoryId,
+    }),
+    signal,
+  });
+  console.log("[SSE] Response status:", res.status, "body:", !!res.body);
+
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    console.log("[SSE] Error response:", body);
+    onError({ code: body.code || "import_failed", message: body.message || "Import failed" });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  console.log("[SSE] Starting to read stream...");
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        console.log("[SSE] Stream done");
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      let currentEvent = "progress";
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          try {
+            const data = JSON.parse(line.slice(5).trim());
+            console.log("[SSE] Event:", currentEvent, data);
+            if (currentEvent === "progress") onProgress(data);
+            else if (currentEvent === "complete") onComplete(data);
+            else if (currentEvent === "error") onError(data);
+          } catch {
+            // Skip malformed data lines
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[SSE] Stream error:", err);
+    // Network error during streaming
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    onError({ code: "network_error", message: err instanceof Error ? err.message : "Connection lost during import" });
   }
 }
 
@@ -686,6 +810,11 @@ export const api = {
     deleteOldVersions: (id: number) =>
       apiFetch<{ message: string; deleted_count: number }>(
         `/api/laws/${id}/versions/old`,
+        { method: "DELETE" }
+      ),
+    deleteVersion: (lawId: number, versionId: number) =>
+      apiFetch<{ message: string }>(
+        `/api/laws/${lawId}/versions/${versionId}`,
         { method: "DELETE" }
       ),
     checkUpdates: (id: number) =>
@@ -875,6 +1004,20 @@ export const api = {
           method: "PUT",
           body: JSON.stringify({ task, model_id: modelId }),
         }),
+    },
+    schedulers: {
+      list: () => apiFetch<SchedulerSettingData[]>("/api/admin/scheduler-settings"),
+      save: (update: SchedulerSettingsUpdate) =>
+        apiFetch<{ status: string }>("/api/admin/scheduler-settings", {
+          method: "PUT",
+          body: JSON.stringify(update),
+        }),
+      triggerDiscovery: (jobType: "ro" | "eu") =>
+        apiFetch<{ status: string; job_type: string }>(`/api/admin/trigger-discovery/${jobType}`, {
+          method: "POST",
+        }),
+      progress: (jobType: "ro" | "eu") =>
+        apiFetch<DiscoveryProgress>(`/api/admin/discovery-progress/${jobType}`),
     },
   },
 };
