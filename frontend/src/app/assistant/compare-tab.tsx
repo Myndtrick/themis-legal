@@ -60,7 +60,7 @@ export function CompareTab() {
     models.find((m) => m.id === modelId)?.provider || "openai";
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 h-full overflow-y-auto">
       {/* Question Input */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Legal Question</label>

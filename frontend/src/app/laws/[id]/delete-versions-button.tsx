@@ -24,7 +24,8 @@ export default function DeleteVersionsButton({
       const res = await api.laws.deleteOldVersions(lawId);
       setResult(res.message);
       setConfirming(false);
-      router.refresh();
+      // Small delay to let the background deletion finish before refreshing
+      setTimeout(() => router.refresh(), 500);
     } catch {
       alert("Failed to delete old versions. Please try again.");
     } finally {

@@ -44,26 +44,27 @@ function issuerColor(issuer: string): string {
 
 export default function LawCard({ law, showAssignButton, onAssign, onDelete }: LawCardProps) {
   const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [deleting, setDeleting] = useState<"all" | "old" | false>(false);
+  const [hidden, setHidden] = useState(false);
   const state = law.current_version?.state;
   const colorClass = state ? STATE_COLORS[state] || "bg-gray-100 text-gray-600" : "";
   const prefix = DOC_TYPE_PREFIX[law.document_type] || "Legea";
 
   async function handleDelete() {
-    setDeleting(true);
+    setDeleting("all");
     try {
       await api.laws.delete(law.id);
+      setHidden(true);
       onDelete?.();
     } catch {
       alert("Failed to delete law.");
-    } finally {
       setDeleting(false);
       setConfirming(false);
     }
   }
 
   async function handleDeleteOldVersions() {
-    setDeleting(true);
+    setDeleting("old");
     try {
       await api.laws.deleteOldVersions(law.id);
       onDelete?.();
@@ -75,8 +76,10 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
     }
   }
 
+  if (hidden) return null;
+
   return (
-    <div className="border border-gray-200 rounded-lg bg-white p-3 flex justify-between items-center hover:bg-gray-50 transition-colors">
+    <div className={`border border-gray-200 rounded-lg bg-white p-3 flex justify-between items-center transition-colors ${deleting ? "opacity-50 pointer-events-none" : "hover:bg-gray-50"}`}>
       <Link href={`/laws/${law.id}`} className="flex-1 min-w-0">
         <div className="font-semibold text-sm text-gray-900 line-clamp-2">
           {law.title}
@@ -130,26 +133,28 @@ export default function LawCard({ law, showAssignButton, onAssign, onDelete }: L
           <div className="flex items-center gap-1.5" onClick={(e) => e.preventDefault()}>
             <button
               onClick={handleDelete}
-              disabled={deleting}
+              disabled={!!deleting}
               className="px-2 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:bg-gray-300"
             >
-              {deleting ? "..." : "Delete all"}
+              {deleting === "all" ? "Deleting…" : "Delete all"}
             </button>
             {law.version_count > 1 && (
               <button
                 onClick={handleDeleteOldVersions}
-                disabled={deleting}
+                disabled={!!deleting}
                 className="px-2 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 disabled:bg-gray-300"
               >
-                {deleting ? "..." : "Old only"}
+                {deleting === "old" ? "Deleting…" : "Old only"}
               </button>
             )}
-            <button
-              onClick={(e) => { e.preventDefault(); setConfirming(false); }}
-              className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
-            >
-              Cancel
-            </button>
+            {!deleting && (
+              <button
+                onClick={(e) => { e.preventDefault(); setConfirming(false); }}
+                className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         ) : (
           <button

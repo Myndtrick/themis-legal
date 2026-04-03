@@ -4,6 +4,7 @@ import difflib
 import json
 import logging
 import re
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,8 +16,9 @@ from sse_starlette.sse import EventSourceResponse
 from app.auth import get_current_user
 from app.database import get_db
 from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
-from app.models.law import Annex, Article, KnownVersion, Law, LawVersion, Paragraph, StructuralElement
+from app.models.law import AmendmentNote, Annex, Article, KnownVersion, Law, LawVersion, Paragraph, StructuralElement, Subparagraph
 from app.models.category import LawMapping
+from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -1107,9 +1109,98 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Update check failed: {str(e)}")
 
 
+def _bulk_delete_versions(db: Session, version_ids: list[int]):
+    """Bulk-delete law versions and all children using raw SQL (leaf tables first)."""
+    if not version_ids:
+        return
+
+    # Subparagraphs (leaf) — via paragraph → article → version
+    db.query(Subparagraph).filter(
+        Subparagraph.paragraph_id.in_(
+            db.query(Paragraph.id).filter(
+                Paragraph.article_id.in_(
+                    db.query(Article.id).filter(Article.law_version_id.in_(version_ids))
+                )
+            )
+        )
+    ).delete(synchronize_session=False)
+
+    # AmendmentNotes — via article → version
+    db.query(AmendmentNote).filter(
+        AmendmentNote.article_id.in_(
+            db.query(Article.id).filter(Article.law_version_id.in_(version_ids))
+        )
+    ).delete(synchronize_session=False)
+
+    # Paragraphs — via article → version
+    db.query(Paragraph).filter(
+        Paragraph.article_id.in_(
+            db.query(Article.id).filter(Article.law_version_id.in_(version_ids))
+        )
+    ).delete(synchronize_session=False)
+
+    # Articles
+    db.query(Article).filter(Article.law_version_id.in_(version_ids)).delete(synchronize_session=False)
+
+    # StructuralElements — null out self-referential FK, then delete all
+    db.query(StructuralElement).filter(
+        StructuralElement.law_version_id.in_(version_ids)
+    ).update({StructuralElement.parent_id: None}, synchronize_session=False)
+    db.query(StructuralElement).filter(StructuralElement.law_version_id.in_(version_ids)).delete(synchronize_session=False)
+
+    # Annexes
+    db.query(Annex).filter(Annex.law_version_id.in_(version_ids)).delete(synchronize_session=False)
+
+    # LawVersions themselves
+    db.query(LawVersion).filter(LawVersion.id.in_(version_ids)).delete(synchronize_session=False)
+
+
+def _background_delete_law(law_id: int, title: str):
+    """Run full law deletion in a background thread with its own DB session."""
+    db = SessionLocal()
+    try:
+        # ChromaDB cleanup
+        try:
+            from app.services.chroma_service import remove_law_articles
+            remove_law_articles(db, law_id)
+        except Exception as e:
+            logger.warning(f"ChromaDB cleanup failed (non-fatal): {e}")
+
+        version_ids = [v.id for v in db.query(LawVersion.id).filter(LawVersion.law_id == law_id).all()]
+        _bulk_delete_versions(db, version_ids)
+
+        # KnownVersions
+        db.query(KnownVersion).filter(KnownVersion.law_id == law_id).delete(synchronize_session=False)
+
+        # The law itself
+        db.query(Law).filter(Law.id == law_id).delete(synchronize_session=False)
+
+        db.commit()
+        logger.info(f"Background delete completed for law '{title}' (id={law_id})")
+    except Exception:
+        db.rollback()
+        logger.exception(f"Background delete failed for law '{title}' (id={law_id})")
+    finally:
+        db.close()
+
+
+def _background_delete_old_versions(law_id: int, version_ids: list[int]):
+    """Run old-version deletion in a background thread with its own DB session."""
+    db = SessionLocal()
+    try:
+        _bulk_delete_versions(db, version_ids)
+        db.commit()
+        logger.info(f"Background delete of {len(version_ids)} old version(s) completed for law_id={law_id}")
+    except Exception:
+        db.rollback()
+        logger.exception(f"Background delete of old versions failed for law_id={law_id}")
+    finally:
+        db.close()
+
+
 @router.delete("/{law_id}")
-def delete_law(law_id: int, db: Session = Depends(get_db)):
-    """Delete a law and all its versions."""
+async def delete_law(law_id: int, db: Session = Depends(get_db)):
+    """Delete a law and all its versions (runs in background)."""
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
@@ -1117,24 +1208,18 @@ def delete_law(law_id: int, db: Session = Depends(get_db)):
     title = law.title
     version_count = len(law.versions)
 
-    # Clean up ChromaDB index
-    try:
-        from app.services.chroma_service import remove_law_articles
+    # Fire off deletion in background thread so it survives client disconnect
+    t = threading.Thread(target=_background_delete_law, args=(law_id, title), daemon=True)
+    t.start()
 
-        remove_law_articles(db, law_id)
-    except Exception as e:
-        logger.warning(f"ChromaDB cleanup failed (non-fatal): {e}")
-
-    db.delete(law)
-    db.commit()
     return {
-        "message": f"Deleted '{title}' with {version_count} version(s)",
+        "message": f"Deleting '{title}' with {version_count} version(s)…",
     }
 
 
 @router.delete("/{law_id}/versions/old")
-def delete_old_versions(law_id: int, db: Session = Depends(get_db)):
-    """Delete all non-current versions of a law, keeping only the current one."""
+async def delete_old_versions(law_id: int, db: Session = Depends(get_db)):
+    """Delete all non-current versions of a law (runs in background)."""
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
@@ -1143,13 +1228,16 @@ def delete_old_versions(law_id: int, db: Session = Depends(get_db)):
     if not old_versions:
         return {"message": "No old versions to delete", "deleted_count": 0}
 
-    for version in old_versions:
-        db.delete(version)
-    db.commit()
+    version_ids = [v.id for v in old_versions]
+    count = len(version_ids)
+
+    # Fire off deletion in background thread so it survives client disconnect
+    t = threading.Thread(target=_background_delete_old_versions, args=(law_id, version_ids), daemon=True)
+    t.start()
 
     return {
-        "message": f"Deleted {len(old_versions)} old version(s) of '{law.title}'",
-        "deleted_count": len(old_versions),
+        "message": f"Deleting {count} old version(s) of '{law.title}'…",
+        "deleted_count": count,
     }
 
 
