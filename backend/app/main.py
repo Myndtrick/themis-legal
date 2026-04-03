@@ -17,6 +17,7 @@ from app.routers import settings_categories, settings_pipeline, settings_prompts
 from app.routers import settings_models
 from app.routers import compare
 from app.routers import admin as admin_router
+from app.routers import settings_schedulers
 from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -105,35 +106,24 @@ async def lifespan(app: FastAPI):
         if seeded:
             logger.info(f"Seeded {seeded} KnownVersion rows from existing imports")
 
+        from app.services.scheduler_config import seed_scheduler_settings
+        seed_scheduler_settings(db)
+
         # Diff summary backfill skipped on startup (too slow with many versions).
         # Run manually via /api/admin/backfill-diffs if needed.
     finally:
         db.close()
 
-    # Schedule daily update check at 3:00 AM UTC
-    # misfire_grace_time=43200 (12h): if the server restarts and the job was
-    # missed within the last 12 hours, run it immediately instead of skipping.
-    scheduler.add_job(
-        run_update_check,
-        "cron",
-        hour=3,
-        minute=0,
-        id="daily_law_update",
-        replace_existing=True,
-        misfire_grace_time=43200,
-    )
-    scheduler.add_job(
-        run_eu_update_check,
-        "cron",
-        day_of_week="sun",
-        hour=4,
-        minute=0,
-        id="weekly_eu_discovery",
-        replace_existing=True,
-        misfire_grace_time=43200,
-    )
+    # Load scheduler settings from DB and register jobs
+    from app.services.scheduler_config import schedule_jobs
+    from app.database import SessionLocal as _SessionLocal
+    _sched_db = _SessionLocal()
+    try:
+        schedule_jobs(_sched_db)
+    finally:
+        _sched_db.close()
     scheduler.start()
-    logger.info("Scheduler started — daily RO check at 03:00 UTC, weekly EU check Sun 04:00 UTC")
+    logger.info("Scheduler started with DB-configured jobs")
 
     yield
 
@@ -202,6 +192,7 @@ app.include_router(settings_categories.router)
 app.include_router(settings_models.router)
 app.include_router(compare.router)
 app.include_router(admin_router.router)
+app.include_router(settings_schedulers.router)
 
 
 @app.get("/api/health")
