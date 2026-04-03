@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.law import Law, KnownVersion
 from app.services.eu_cellar_service import fetch_consolidated_versions, parse_celex
+from app.services.scheduler_config import discovery_progress
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,12 @@ def run_eu_weekly_discovery(rate_limit_delay: float = 2.0) -> dict:
         checked = 0
         discovered = 0
         errors = 0
+        total = len(eu_laws)
+        discovery_progress["eu"] = {"running": True, "current": 0, "total": total, "current_law": "", "results": None}
 
-        for law in eu_laws:
+        for i, law in enumerate(eu_laws):
+            discovery_progress["eu"]["current"] = i + 1
+            discovery_progress["eu"]["current_law"] = law.title or f"Law {law.id}"
             try:
                 new = discover_eu_versions_for_law(db, law)
                 discovered += new
@@ -86,6 +91,8 @@ def run_eu_weekly_discovery(rate_limit_delay: float = 2.0) -> dict:
                 db.rollback()
 
         logger.info(f"EU weekly discovery: checked={checked}, discovered={discovered}, errors={errors}")
-        return {"checked": checked, "discovered": discovered, "errors": errors}
+        results = {"checked": checked, "discovered": discovered, "errors": errors}
+        discovery_progress["eu"] = {"running": False, "current": total, "total": total, "current_law": "", "results": results}
+        return results
     finally:
         db.close()

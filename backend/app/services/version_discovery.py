@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.law import KnownVersion, Law, LawVersion
 from app.services.fetcher import fetch_document
+from app.services.scheduler_config import discovery_progress
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,12 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
         laws = db.query(Law).all()
         logger.info("Starting daily version discovery for %d law(s)", len(laws))
 
-        for law in laws:
+        total = len(laws)
+        discovery_progress["ro"] = {"running": True, "current": 0, "total": total, "current_law": "", "results": None}
+
+        for i, law in enumerate(laws):
+            discovery_progress["ro"]["current"] = i + 1
+            discovery_progress["ro"]["current_law"] = law.title or f"Law {law.id}"
             results["checked"] += 1
 
             try:
@@ -203,9 +209,11 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
         )
         db.add(audit)
         db.commit()
+        discovery_progress["ro"] = {"running": False, "current": total, "total": total, "current_law": "", "results": results}
 
     except Exception:
         logger.exception("run_daily_discovery failed")
+        discovery_progress["ro"] = {"running": False, "current": 0, "total": 0, "current_law": "", "results": results}
         db.rollback()
     finally:
         db.close()
