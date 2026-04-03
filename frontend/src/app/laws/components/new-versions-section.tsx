@@ -66,7 +66,7 @@ function LawRow({
           <button
             onClick={handleImport}
             disabled={isImporting}
-            className="px-3 py-1.5 text-xs font-medium rounded-md border border-amber-300 text-amber-700 bg-white hover:bg-amber-50 disabled:opacity-50 transition-colors shrink-0"
+            className="px-3 py-1.5 text-xs font-medium rounded-full text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors shrink-0"
           >
             Import
           </button>
@@ -88,14 +88,14 @@ function LawRow({
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setShowVersions(!showVersions)}
-            className="px-3 py-1.5 text-xs font-medium rounded-md border border-indigo-300 text-indigo-700 bg-white hover:bg-indigo-50 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors"
           >
             {showVersions ? "Hide versions" : "Show versions"}
           </button>
           <button
             onClick={handleImport}
             disabled={isImporting || checkedCount === 0}
-            className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-full text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 transition-colors"
           >
             Import {checkedCount} version{checkedCount !== 1 ? "s" : ""}
           </button>
@@ -179,14 +179,14 @@ export default function NewVersionsSection({
   const totalVersionCount = visible.reduce((sum, e) => sum + e.versions.length, 0);
 
   return (
-    <div className="border border-amber-200 rounded-lg bg-white overflow-hidden mb-5">
+    <div className="border border-pink-200 rounded-lg bg-white overflow-hidden mb-5">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-200">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-pink-50 border-b border-pink-200">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold tracking-wider text-amber-700 uppercase">
+          <span className="text-xs font-bold tracking-wider text-rose-800 uppercase">
             New versions available
           </span>
-          <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-amber-600 text-white text-[11px] font-bold">
+          <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full border border-rose-300 text-rose-700 text-[11px] font-bold">
             {visible.length}
           </span>
         </div>
@@ -194,16 +194,16 @@ export default function NewVersionsSection({
           {hasMore && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="text-xs text-amber-600 hover:text-amber-800 font-medium"
+              className="text-xs text-rose-600 hover:text-rose-800 font-medium"
             >
               {expanded ? "Show less" : `Show all ${visible.length}`}
             </button>
           )}
           <button
             onClick={() => onImportAll(visible)}
-            className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors"
           >
-            Import all ({totalVersionCount})
+            Import all
           </button>
         </div>
       </div>
