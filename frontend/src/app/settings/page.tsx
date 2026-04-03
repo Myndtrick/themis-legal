@@ -10,6 +10,7 @@ import { VersionHistory } from "./versions/version-history";
 import { CategoriesTable } from "./categories/categories-table";
 import { ModelsTable } from "./models/models-table";
 import { UsersTable } from "./users/users-table";
+import { SchedulerSettings } from "./schedulers/scheduler-settings";
 
 function SettingsContent() {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -60,6 +61,10 @@ function SettingsContent() {
 
           if (activeTab === "users") {
             return <UsersTable />;
+          }
+
+          if (activeTab === "schedulers") {
+            return <SchedulerSettings />;
           }
 
           return null;
