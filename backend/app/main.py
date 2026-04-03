@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category, user  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
+from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.routers import assistant as assistant_router
 from app.routers import categories, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
@@ -109,7 +110,9 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    # Schedule daily update check at 3:00 AM
+    # Schedule daily update check at 3:00 AM UTC
+    # misfire_grace_time=43200 (12h): if the server restarts and the job was
+    # missed within the last 12 hours, run it immediately instead of skipping.
     scheduler.add_job(
         run_update_check,
         "cron",
@@ -117,6 +120,7 @@ async def lifespan(app: FastAPI):
         minute=0,
         id="daily_law_update",
         replace_existing=True,
+        misfire_grace_time=43200,
     )
     scheduler.add_job(
         run_eu_update_check,
@@ -126,9 +130,10 @@ async def lifespan(app: FastAPI):
         minute=0,
         id="weekly_eu_discovery",
         replace_existing=True,
+        misfire_grace_time=43200,
     )
     scheduler.start()
-    logger.info("Scheduler started — daily law update check at 03:00")
+    logger.info("Scheduler started — daily RO check at 03:00 UTC, weekly EU check Sun 04:00 UTC")
 
     yield
 
