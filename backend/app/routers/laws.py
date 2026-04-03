@@ -720,7 +720,7 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
                 "is_current": v.is_current,
                 "diff_summary": v.diff_summary,
             }
-            for v in sorted(law.versions, key=lambda v: v.date_in_force or "", reverse=True)
+            for v in sorted(law.versions, key=lambda v: str(v.date_in_force) if v.date_in_force else "", reverse=True)
         ],
     }
 
