@@ -23,6 +23,11 @@ export default function LibraryPage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
 
+  // Favorites
+  const [favorites, setFavorites] = useState<Set<number>>(new Set());
+  const [selectedView, setSelectedView] = useState<"all" | "favorites">("all");
+  const [favoriteCategoryFilter, setFavoriteCategoryFilter] = useState<string | null>(null);
+
   // Category modal (for existing laws)
   const [assigningLawId, setAssigningLawId] = useState<number | null>(null);
 
@@ -108,6 +113,7 @@ export default function LibraryPage() {
     try {
       const result = await api.laws.library();
       setData(result);
+      setFavorites(new Set(result.favorite_law_ids));
       setError(null);
     } catch {
       setError("Could not connect to the backend. Make sure the API server is running.");
@@ -117,6 +123,47 @@ export default function LibraryPage() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const toggleFavorite = useCallback(async (lawId: number) => {
+    const wasFavorite = favorites.has(lawId);
+    // Optimistic update
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (wasFavorite) {
+        next.delete(lawId);
+      } else {
+        next.add(lawId);
+      }
+      return next;
+    });
+    try {
+      if (wasFavorite) {
+        await api.laws.favoriteRemove(lawId);
+      } else {
+        await api.laws.favoriteAdd(lawId);
+      }
+    } catch {
+      // Revert on error
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (wasFavorite) {
+          next.add(lawId);
+        } else {
+          next.delete(lawId);
+        }
+        return next;
+      });
+    }
+  }, [favorites]);
+
+  function handleSelectFavorites(groupSlug: string | null) {
+    setSelectedView("favorites");
+    setFavoriteCategoryFilter(groupSlug);
+    // Clear regular filters
+    setSelectedGroup(null);
+    setSelectedCategory(null);
+    setSelectedStatus(null);
+  }
 
   // Filter laws
   const filteredLaws = useMemo(() => {
@@ -189,6 +236,18 @@ export default function LibraryPage() {
   const classifiedLaws = useMemo(() => {
     return filteredLaws.filter((l) => l.category_id);
   }, [filteredLaws]);
+
+  // Compute favorite counts by group slug for sidebar
+  const favoriteCounts = useMemo(() => {
+    if (!data) return new Map<string, number>();
+    const counts = new Map<string, number>();
+    for (const law of data.laws) {
+      if (favorites.has(law.id) && law.category_group_slug) {
+        counts.set(law.category_group_slug, (counts.get(law.category_group_slug) || 0) + 1);
+      }
+    }
+    return counts;
+  }, [data, favorites]);
 
   // Category assignment
   const assigningLaw = data?.laws.find((l) => l.id === assigningLawId);
@@ -642,9 +701,13 @@ export default function LibraryPage() {
           selectedGroup={selectedGroup}
           selectedCategory={selectedCategory}
           selectedStatus={selectedStatus}
-          onSelectGroup={setSelectedGroup}
-          onSelectCategory={setSelectedCategory}
-          onSelectStatus={setSelectedStatus}
+          onSelectGroup={(slug) => { setSelectedView("all"); setSelectedGroup(slug); }}
+          onSelectCategory={(slug) => { setSelectedView("all"); setSelectedCategory(slug); }}
+          onSelectStatus={(status) => { setSelectedView("all"); setSelectedStatus(status); }}
+          favoriteCounts={favoriteCounts}
+          selectedView={selectedView}
+          favoriteCategoryFilter={favoriteCategoryFilter}
+          onSelectFavorites={handleSelectFavorites}
         />
 
         {/* Main content */}
@@ -655,6 +718,55 @@ export default function LibraryPage() {
             lastImported={filteredStats.last_imported}
           />
 
+          {selectedView === "favorites" ? (
+            /* FAVORITES VIEW */
+            <>
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-pink-500">
+                    <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
+                  </svg>
+                  Favorites
+                </h2>
+                <p className="text-sm text-gray-500">
+                  Showing {favorites.size} favorited law{favorites.size !== 1 ? "s" : ""}
+                </p>
+              </div>
+              {favorites.size === 0 ? (
+                <div className="text-center py-12">
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No favorited laws yet</h3>
+                  <p className="text-gray-600">Click the heart icon on any law to add it here.</p>
+                </div>
+              ) : (
+                data.groups
+                  .filter((g) => {
+                    if (favoriteCategoryFilter && g.slug !== favoriteCategoryFilter) return false;
+                    return data.laws.some((l) => favorites.has(l.id) && l.category_group_slug === g.slug);
+                  })
+                  .map((g) => {
+                    const favLaws = data.laws.filter(
+                      (l) => favorites.has(l.id) && l.category_group_slug === g.slug
+                    );
+                    return (
+                      <CategoryGroupSection
+                        key={g.slug}
+                        groupSlug={g.slug}
+                        groupName={g.name_en}
+                        colorHex={g.color_hex}
+                        laws={favLaws}
+                        suggestedLaws={[]}
+                        pendingImports={[]}
+                        defaultExpanded={true}
+                        onDelete={fetchData}
+                        favoriteIds={favorites}
+                        onToggleFavorite={toggleFavorite}
+                      />
+                    );
+                  })
+              )}
+            </>
+          ) : (
+            <>
           {/* Grouped law sections (groups with imported laws or pending imports) */}
           {data.groups
             .filter((g) =>
@@ -679,6 +791,8 @@ export default function LibraryPage() {
                   onDelete={fetchData}
                   onImportSuggestion={handleImportSuggestion}
                   onDismissPendingError={dismissPendingError}
+                  favoriteIds={favorites}
+                  onToggleFavorite={toggleFavorite}
                 />
               );
             })}
@@ -705,6 +819,8 @@ export default function LibraryPage() {
                   defaultExpanded={true}
                   onImportSuggestion={handleImportSuggestion}
                   onDismissPendingError={dismissPendingError}
+                  favoriteIds={favorites}
+                  onToggleFavorite={toggleFavorite}
                 />
               );
             })}
@@ -727,7 +843,11 @@ export default function LibraryPage() {
             laws={unclassifiedLaws}
             onAssign={setAssigningLawId}
             onDelete={fetchData}
+            favoriteIds={favorites}
+            onToggleFavorite={toggleFavorite}
           />
+            </>
+          )}
         </div>
       </div>
 
