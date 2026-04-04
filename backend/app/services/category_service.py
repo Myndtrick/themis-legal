@@ -537,7 +537,7 @@ def backfill_law_mapping_fields(db: Session) -> None:
     logger.info("Backfilled %d law mappings with law_year and document_type.", updated)
 
 
-def get_library_data(db: Session) -> dict:
+def get_library_data(db: Session, user_id: int | None = None) -> dict:
     """Assemble all data needed for the Legal Library page."""
     from sqlalchemy import text
     from app.models.law import LawVersion
@@ -634,6 +634,16 @@ def get_library_data(db: Session) -> dict:
             if m.law_number:
                 seen_keys.add(key)
 
+    # 5. Favorites for the current user
+    favorite_law_ids = []
+    if user_id is not None:
+        from app.models.favorite import LawFavorite
+        favorite_law_ids = [
+            r[0] for r in db.query(LawFavorite.law_id)
+            .filter(LawFavorite.user_id == user_id)
+            .all()
+        ]
+
     return {
         "groups": groups_out, "laws": laws_out,
         "stats": {
@@ -641,6 +651,7 @@ def get_library_data(db: Session) -> dict:
             "last_imported": str(last_imported.date()) if last_imported else None,
         },
         "suggested_laws": suggested,
+        "favorite_law_ids": favorite_law_ids,
     }
 
 
