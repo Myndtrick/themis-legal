@@ -12,6 +12,10 @@ interface SidebarProps {
   onSelectGroup: (slug: string | null) => void;
   onSelectCategory: (slug: string | null) => void;
   onSelectStatus: (status: string | null) => void;
+  favoriteCounts: Map<string, number>;
+  selectedView: "all" | "favorites";
+  favoriteCategoryFilter: string | null;
+  onSelectFavorites: (groupSlug: string | null) => void;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -30,6 +34,10 @@ export default function Sidebar({
   onSelectGroup,
   onSelectCategory,
   onSelectStatus,
+  favoriteCounts,
+  selectedView,
+  favoriteCategoryFilter,
+  onSelectFavorites,
 }: SidebarProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [showSuggested, setShowSuggested] = useState(false);
@@ -197,6 +205,42 @@ export default function Sidebar({
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* FAVORITES */}
+      {favoriteCounts.size > 0 && (
+        <div className="border-t border-gray-200 mt-3 pt-3">
+          <div className="text-[10px] font-bold text-gray-500 tracking-wider mb-2">
+            FAVORITES
+          </div>
+          {Array.from(favoriteCounts.entries()).map(([groupSlug, count]) => {
+            const group = groups.find((g) => g.slug === groupSlug);
+            if (!group) return null;
+            const isSelected = selectedView === "favorites" && favoriteCategoryFilter === groupSlug;
+            return (
+              <button
+                key={groupSlug}
+                onClick={() => onSelectFavorites(groupSlug)}
+                className={`w-full text-left px-2 py-1.5 rounded flex justify-between items-center ${
+                  isSelected ? "font-semibold text-gray-900 bg-pink-50" : "hover:bg-gray-50 text-gray-700"
+                }`}
+              >
+                <span>{group.name_en}</span>
+                <span className="text-xs text-gray-400">{count}</span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => onSelectFavorites(null)}
+            className={`w-full text-left px-2 py-1.5 text-xs rounded ${
+              selectedView === "favorites" && !favoriteCategoryFilter
+                ? "font-semibold text-pink-700 bg-pink-50"
+                : "text-pink-600 hover:text-pink-700 hover:bg-pink-50"
+            }`}
+          >
+            Show all favorites
+          </button>
         </div>
       )}
     </div>
