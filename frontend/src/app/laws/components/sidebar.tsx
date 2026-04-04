@@ -176,38 +176,6 @@ export default function Sidebar({
         })}
       </div>
 
-      {/* SUGGESTED CATEGORIES */}
-      {suggestedGroups.length > 0 && (
-        <div className="border-t border-gray-200 mt-3 pt-3">
-          <button
-            onClick={() => setShowSuggested(!showSuggested)}
-            className="w-full text-left px-2 py-1.5 text-xs text-gray-400 italic hover:text-gray-600"
-          >
-            {showSuggested ? "▾" : "▸"} Sugestii neimportate ({suggestedGroups.length})
-          </button>
-          {showSuggested && (
-            <div className="pl-4">
-              {suggestedGroups.map((g) => {
-                const isSelected = selectedGroup === g.slug;
-                return (
-                  <button
-                    key={g.slug}
-                    onClick={() => { onSelectGroup(g.slug); onSelectCategory(null); }}
-                    className={`w-full text-left px-2 py-1 text-xs italic rounded ${
-                      isSelected
-                        ? "font-semibold text-gray-700 bg-gray-100"
-                        : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
-                    }`}
-                  >
-                    {g.name_en}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* FAVORITES */}
       {favoriteCounts.size > 0 && (
         <div className="border-t border-gray-200 mt-3 pt-3">
@@ -241,6 +209,38 @@ export default function Sidebar({
           >
             Show all favorites
           </button>
+        </div>
+      )}
+
+      {/* SUGGESTED CATEGORIES */}
+      {suggestedGroups.length > 0 && (
+        <div className="border-t border-gray-200 mt-3 pt-3">
+          <button
+            onClick={() => setShowSuggested(!showSuggested)}
+            className="w-full text-left px-2 py-1.5 text-xs text-gray-400 italic hover:text-gray-600"
+          >
+            {showSuggested ? "▾" : "▸"} Sugestii neimportate ({suggestedGroups.length})
+          </button>
+          {showSuggested && (
+            <div className="pl-4">
+              {suggestedGroups.map((g) => {
+                const isSelected = selectedGroup === g.slug;
+                return (
+                  <button
+                    key={g.slug}
+                    onClick={() => { onSelectGroup(g.slug); onSelectCategory(null); }}
+                    className={`w-full text-left px-2 py-1 text-xs italic rounded ${
+                      isSelected
+                        ? "font-semibold text-gray-700 bg-gray-100"
+                        : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {g.name_en}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -729,7 +729,13 @@ export default function LibraryPage() {
                   Favorites
                 </h2>
                 <p className="text-sm text-gray-500">
-                  Showing {favorites.size} favorited law{favorites.size !== 1 ? "s" : ""}
+                  Showing {
+                    favoriteCategoryFilter
+                      ? data.laws.filter((l) => favorites.has(l.id) && l.category_group_slug === favoriteCategoryFilter).length
+                      : favorites.size
+                  } favorited law{(favoriteCategoryFilter
+                      ? data.laws.filter((l) => favorites.has(l.id) && l.category_group_slug === favoriteCategoryFilter).length
+                      : favorites.size) !== 1 ? "s" : ""}
                 </p>
               </div>
               {favorites.size === 0 ? (
