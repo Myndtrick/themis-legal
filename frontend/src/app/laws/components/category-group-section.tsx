@@ -187,9 +187,15 @@ export default function CategoryGroupSection({
               const catLaws = visibleLaws.filter((l) => l.category_id === cat.id);
               return (
                 <div key={cat.id}>
-                  <div className="text-xs font-medium text-gray-500 mb-1 pl-1">
+                  <div
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold mb-1"
+                    style={{ backgroundColor: `${colorHex}15`, color: colorHex }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colorHex }} />
                     {cat.name_en}
-                    <span className="text-gray-400 ml-1">({catLaws.length})</span>
+                    <span className="font-normal opacity-70">
+                      · {catLaws.length} law{catLaws.length !== 1 ? "s" : ""}
+                    </span>
                   </div>
                   <div className="space-y-1.5">
                     {catLaws.map((law) => (
