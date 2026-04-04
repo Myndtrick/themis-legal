@@ -759,6 +759,7 @@ export default function LibraryPage() {
                         groupSlug={g.slug}
                         groupName={g.name_en}
                         colorHex={g.color_hex}
+                        categories={g.categories}
                         laws={favLaws}
                         suggestedLaws={[]}
                         pendingImports={[]}
@@ -789,6 +790,7 @@ export default function LibraryPage() {
                   groupSlug={g.slug}
                   groupName={g.name_en}
                   colorHex={g.color_hex}
+                  categories={g.categories}
                   laws={laws}
                   suggestedLaws={suggestions}
                   pendingImports={pending}
@@ -819,6 +821,7 @@ export default function LibraryPage() {
                   groupSlug={g.slug}
                   groupName={g.name_en}
                   colorHex={g.color_hex}
+                  categories={g.categories}
                   laws={[]}
                   suggestedLaws={suggestions}
                   pendingImports={[]}

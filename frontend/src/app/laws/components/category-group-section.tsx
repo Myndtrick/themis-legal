@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { LibraryLaw, SuggestedLaw } from "@/lib/api";
+import { CategoryData, LibraryLaw, SuggestedLaw } from "@/lib/api";
 import LawCard from "./law-card";
 
 interface PendingImportEntry {
@@ -26,6 +26,7 @@ interface CategoryGroupSectionProps {
   groupSlug: string;
   groupName: string;
   colorHex: string;
+  categories?: CategoryData[];
   laws: LibraryLaw[];
   suggestedLaws: SuggestedLaw[];
   pendingImports?: PendingImportEntry[];
@@ -44,6 +45,7 @@ export default function CategoryGroupSection({
   groupSlug,
   groupName,
   colorHex,
+  categories,
   laws,
   suggestedLaws,
   pendingImports = [],
@@ -176,19 +178,66 @@ export default function CategoryGroupSection({
         </div>
       )}
 
-      {/* Law cards */}
-      <div className="space-y-1.5">
-        {visibleLaws.map((law) => (
-          <LawCard
-            key={law.id}
-            law={law}
-            onAssign={onAssign}
-            onDelete={onDelete}
-            isFavorite={favoriteIds.has(law.id)}
-            onToggleFavorite={onToggleFavorite}
-          />
-        ))}
-      </div>
+      {/* Law cards — grouped by subcategory if categories are provided */}
+      {categories && categories.length > 1 ? (
+        <div className="space-y-3">
+          {categories
+            .filter((cat) => visibleLaws.some((l) => l.category_id === cat.id))
+            .map((cat) => {
+              const catLaws = visibleLaws.filter((l) => l.category_id === cat.id);
+              return (
+                <div key={cat.id}>
+                  <div className="text-xs font-medium text-gray-500 mb-1 pl-1">
+                    {cat.name_en}
+                    <span className="text-gray-400 ml-1">({catLaws.length})</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {catLaws.map((law) => (
+                      <LawCard
+                        key={law.id}
+                        law={law}
+                        onAssign={onAssign}
+                        onDelete={onDelete}
+                        isFavorite={favoriteIds.has(law.id)}
+                        onToggleFavorite={onToggleFavorite}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          {/* Laws without a matching subcategory */}
+          {visibleLaws.filter((l) => !categories.some((c) => c.id === l.category_id)).length > 0 && (
+            <div className="space-y-1.5">
+              {visibleLaws
+                .filter((l) => !categories.some((c) => c.id === l.category_id))
+                .map((law) => (
+                  <LawCard
+                    key={law.id}
+                    law={law}
+                    onAssign={onAssign}
+                    onDelete={onDelete}
+                    isFavorite={favoriteIds.has(law.id)}
+                    onToggleFavorite={onToggleFavorite}
+                  />
+                ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {visibleLaws.map((law) => (
+            <LawCard
+              key={law.id}
+              law={law}
+              onAssign={onAssign}
+              onDelete={onDelete}
+              isFavorite={favoriteIds.has(law.id)}
+              onToggleFavorite={onToggleFavorite}
+            />
+          ))}
+        </div>
+      )}
 
       {expanded && hasMore && (
         <button
