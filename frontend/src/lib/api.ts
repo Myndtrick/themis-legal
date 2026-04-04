@@ -137,6 +137,7 @@ export interface LibraryData {
     last_imported: string | null;
   };
   suggested_laws: SuggestedLaw[];
+  favorite_law_ids: number[];
 }
 
 export interface LocalSearchResult {
@@ -904,6 +905,10 @@ export const api = {
         }
       ),
     euFilterOptions: () => apiFetch<EUFilterOptions>("/api/laws/eu/filter-options"),
+    favoriteAdd: (lawId: number) =>
+      apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "POST" }),
+    favoriteRemove: (lawId: number) =>
+      apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "DELETE" }),
   },
   notifications: {
     list: (unreadOnly = false) =>
