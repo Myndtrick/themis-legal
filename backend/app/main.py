@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
-from app.models import assistant, pipeline, prompt, category, user  # noqa: F401 — register models
+from app.models import assistant, pipeline, prompt, category, user, favorite  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.routers import assistant as assistant_router
