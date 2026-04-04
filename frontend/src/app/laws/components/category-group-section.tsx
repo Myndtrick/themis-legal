@@ -34,6 +34,8 @@ interface CategoryGroupSectionProps {
   onDelete?: () => void;
   onImportSuggestion?: (mappingId: number, importHistory: boolean) => void;
   onDismissPendingError?: (mappingId: number) => void;
+  favoriteIds?: Set<number>;
+  onToggleFavorite?: (lawId: number) => void;
 }
 
 const PREVIEW_COUNT = 3;
@@ -50,6 +52,8 @@ export default function CategoryGroupSection({
   onDelete,
   onImportSuggestion,
   onDismissPendingError,
+  favoriteIds = new Set<number>(),
+  onToggleFavorite,
 }: CategoryGroupSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [pickingId, setPickingId] = useState<number | null>(null);
@@ -72,8 +76,18 @@ export default function CategoryGroupSection({
     onImportSuggestion?.(id, importHistory);
   }
   const totalCount = laws.length + pendingImports.length;
-  const visibleLaws = expanded ? laws : laws.slice(0, PREVIEW_COUNT);
-  const hasMore = laws.length > PREVIEW_COUNT;
+
+  // Sort: favorited laws first (stable sort preserves original order within groups)
+  const sortedLaws = favoriteIds.size > 0
+    ? [...laws].sort((a, b) => {
+        const aFav = favoriteIds.has(a.id) ? 0 : 1;
+        const bFav = favoriteIds.has(b.id) ? 0 : 1;
+        return aFav - bFav;
+      })
+    : laws;
+
+  const visibleLaws = expanded ? sortedLaws : sortedLaws.slice(0, PREVIEW_COUNT);
+  const hasMore = sortedLaws.length > PREVIEW_COUNT;
 
   return (
     <div className="mb-5">
@@ -165,7 +179,14 @@ export default function CategoryGroupSection({
       {/* Law cards */}
       <div className="space-y-1.5">
         {visibleLaws.map((law) => (
-          <LawCard key={law.id} law={law} onAssign={onAssign} onDelete={onDelete} />
+          <LawCard
+            key={law.id}
+            law={law}
+            onAssign={onAssign}
+            onDelete={onDelete}
+            isFavorite={favoriteIds.has(law.id)}
+            onToggleFavorite={onToggleFavorite}
+          />
         ))}
       </div>
 
