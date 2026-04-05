@@ -373,7 +373,16 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
 
     meta = fetch_eu_metadata(celex)
     if not meta:
-        raise RuntimeError(f"Could not fetch metadata for CELEX {celex}")
+        # Consolidated CELEX (sector 0, e.g. 02024R1689-20240712) may not exist
+        # in CELLAR — fall back to the base CELEX (sector 3, e.g. 32024R1689)
+        parsed_fallback = parse_celex(celex)
+        base_celex = None
+        if parsed_fallback and parsed_fallback["sector"] == "0":
+            base_celex = f"3{parsed_fallback['year']}{parsed_fallback['type_code']}{parsed_fallback['number']}"
+            logger.info(f"Consolidated CELEX {celex} not found, falling back to base CELEX {base_celex}")
+            meta = fetch_eu_metadata(base_celex)
+        if not meta:
+            raise RuntimeError(f"Could not fetch metadata for CELEX {celex}")
 
     doc_type = celex_to_document_type(celex)
     category_slug = celex_to_category_slug(celex)
