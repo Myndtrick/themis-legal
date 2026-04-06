@@ -18,6 +18,7 @@ from app.database import get_db
 from app.errors import NoLawNumberError, DuplicateImportError, SearchFailedError, ImportFailedError
 from app.models.law import AmendmentNote, Annex, Article, KnownVersion, Law, LawVersion, Paragraph, StructuralElement, Subparagraph
 from app.models.category import LawMapping
+from app.models.user import User
 from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -868,11 +869,10 @@ def list_laws(db: Session = Depends(get_db)):
 def get_law(
     law_id: int,
     db: Session = Depends(get_db),
-    current_user: "User" = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """Get a law with all its versions."""
     from app.models.favorite import LawFavorite
-    from app.models.user import User  # noqa: F401
 
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
