@@ -178,6 +178,7 @@ export interface LawDetail {
     group_color_hex: string;
   } | null;
   category_confidence: string | null;
+  is_favorite: boolean;
 }
 
 export interface LawVersionSummary {
