@@ -865,11 +865,23 @@ def list_laws(db: Session = Depends(get_db)):
 
 
 @router.get("/{law_id}")
-def get_law(law_id: int, db: Session = Depends(get_db)):
+def get_law(
+    law_id: int,
+    db: Session = Depends(get_db),
+    current_user: "User" = Depends(get_current_user),
+):
     """Get a law with all its versions."""
+    from app.models.favorite import LawFavorite
+    from app.models.user import User  # noqa: F401
+
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
+
+    is_favorite = db.query(LawFavorite).filter(
+        LawFavorite.user_id == current_user.id,
+        LawFavorite.law_id == law_id,
+    ).first() is not None
 
     # Self-heal: fix is_current flags and backfill missing dates from KnownVersion
     _recalculate_current_version(db, law_id)
@@ -909,6 +921,7 @@ def get_law(law_id: int, db: Session = Depends(get_db)):
         "status_override": law.status_override,
         "category": category_info,
         "category_confidence": law.category_confidence,
+        "is_favorite": is_favorite,
         "last_checked_at": str(law.last_checked_at) if law.last_checked_at else None,
         "unimported_version_count": db.query(KnownVersion).filter(
             KnownVersion.law_id == law.id,
