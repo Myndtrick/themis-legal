@@ -2,9 +2,12 @@
 import difflib
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.services.article_tokenizer import AtomicUnit
 from app.services.structured_diff import _diff_alineat_items, diff_article, diff_articles, word_diff_html
+
+_DIFF_FIXTURES = Path(__file__).parent / "fixtures" / "diff"
 
 
 # --- word_diff_html (kept from the previous version) ---
@@ -245,3 +248,54 @@ def test_diff_article_falls_back_when_tokenizer_returns_empty(monkeypatch):
     assert result["change_type"] == "modified"
     assert "diff_html" in result
     assert result["units"] == []
+
+
+# --- Real-data regression test: art 5 v517 vs v529 ---
+
+
+def test_art5_v517_to_v529_regression():
+    """The original bug: 17+ duplicate-labeled subparagraph rows in art 5 §(1)
+    were collapsed under dict-based matching, producing fake 'modified' leaves
+    comparing unrelated definitions. The new tokenizer + content-based matching
+    must produce structurally correct output.
+    """
+    text_a = (_DIFF_FIXTURES / "art5-v517-fulltext.txt").read_text(encoding="utf-8")
+    text_b = (_DIFF_FIXTURES / "art5-v529-fulltext.txt").read_text(encoding="utf-8")
+
+    art_a = FakeArt("5", text_a, label="Definiții")
+    art_b = FakeArt("5", text_b, label="Definiții")
+    result = diff_article(art_a, art_b)
+
+    assert result["change_type"] == "modified", \
+        "art 5 differs between v517 and v529, must be modified"
+    assert result["units"], "must have at least one non-unchanged unit"
+
+    # 1. The new definition 42^2. must appear as an `added` unit in alineat (1).
+    added_42_2 = [
+        u for u in result["units"]
+        if u["change_type"] == "added"
+        and u["label"] == "42^2."
+        and u["alineat_label"] == "(1)"
+    ]
+    assert len(added_42_2) == 1, \
+        f"expected exactly one added 42^2. unit, got {len(added_42_2)}"
+
+    # 2. The original bug: there must be ZERO 'modified' units in §(1) whose
+    #    text_a and text_b are completely unrelated. We assert that for every
+    #    `modified` unit in §(1), the SequenceMatcher ratio between its
+    #    text_a and text_b is >= 0.5 (the same threshold used for replace
+    #    pairing). The old code emitted units with ratio near zero.
+    bad_modifications = []
+    for u in result["units"]:
+        if u["change_type"] != "modified":
+            continue
+        if u["alineat_label"] != "(1)":
+            continue
+        ratio = difflib.SequenceMatcher(None, u["text_a"], u["text_b"]).ratio()
+        if ratio < 0.5:
+            bad_modifications.append((u["label"], ratio))
+    assert not bad_modifications, (
+        f"Found {len(bad_modifications)} 'modified' units in §(1) with "
+        f"text similarity < 0.5 (this is the original bug): "
+        f"{bad_modifications[:5]}"
+    )
