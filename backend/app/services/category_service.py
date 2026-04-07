@@ -296,13 +296,24 @@ def seed_categories(db: Session) -> None:
         # eu.caselaw — empty per source spec
     ]
     for cat_slug, title, law_number, law_year, document_type in mappings_data:
+        cat_id = cat_map[cat_slug]
+        # Skip if a matching mapping already exists — so re-seeding
+        # never clobbers user edits or creates duplicates.
+        existing = db.query(LawMapping).filter(
+            LawMapping.category_id == cat_id,
+            LawMapping.law_number == law_number,
+            LawMapping.law_year == law_year,
+            LawMapping.document_type == document_type,
+        ).first()
+        if existing:
+            continue
         m = LawMapping(
             title=title,
             law_number=law_number,
             law_year=law_year,
             document_type=document_type,
-            category_id=cat_map[cat_slug],
-            source="seed",
+            category_id=cat_id,
+            source="system",
         )
         db.add(m)
 
