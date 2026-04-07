@@ -8,6 +8,7 @@ from app.database import SessionLocal
 from app.models.law import Law, KnownVersion
 from app.services.eu_cellar_service import fetch_consolidated_versions, parse_celex
 from app.services.scheduler_config import discovery_progress
+from app.services.version_state import recalculate_current_version
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,26 @@ def discover_eu_versions_for_law(db: Session, law: Law) -> int:
         db.add(kv)
         new_count += 1
 
-    if new_count:
-        all_known = db.query(KnownVersion).filter_by(law_id=law.id).order_by(KnownVersion.date_in_force.desc()).all()
-        for i, kv in enumerate(all_known):
-            kv.is_current = (i == 0)
-        law.last_checked_at = datetime.datetime.utcnow()
-        db.commit()
+    db.flush()
+
+    # Recompute KnownVersion.is_current on every successful run, not just
+    # when new versions were found. This is what makes EU discovery
+    # self-heal a dead state where existing rows have stale is_current.
+    all_known = (
+        db.query(KnownVersion)
+        .filter_by(law_id=law.id)
+        .order_by(KnownVersion.date_in_force.desc())
+        .all()
+    )
+    for i, kv in enumerate(all_known):
+        kv.is_current = (i == 0)
+
+    # Re-derive LawVersion.is_current from the freshly-authoritative
+    # KnownVersion.is_current — same self-heal mechanism the RO discovery uses.
+    recalculate_current_version(db, law.id)
+
+    law.last_checked_at = datetime.datetime.utcnow()
+    db.commit()
 
     return new_count
 
