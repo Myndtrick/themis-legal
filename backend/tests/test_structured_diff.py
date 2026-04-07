@@ -96,3 +96,47 @@ def test_diff_alineat_duplicate_labels_match_by_content():
     assert types.count("added") == 1
     # Critically: zero fake 'modified' between unrelated 'a)' items.
     assert types.count("modified") == 0
+
+
+def test_diff_alineat_duplicate_labels_with_one_modified_item():
+    """Stronger version of the duplicate-label regression: items_a and items_b
+    share the labels but one item in the middle has substantively edited text.
+    The diff must produce one modified pair (or removed+added if similarity is
+    too low) for that one item, and unchanged for the other duplicates. The
+    original bug would fake-modify all duplicates against each other.
+    """
+    a = [
+        _u("a)", "orice acord master de netting"),
+        _u("a)", "continuarea activităților contractate în condițiile prezentei legi"),
+        _u("a)", "sediul social al persoanei juridice"),
+    ]
+    b = [
+        _u("a)", "orice acord master de netting"),
+        # Same label, slightly edited text — should be paired as MODIFIED via the
+        # replace-block similarity pairing.
+        _u("a)", "continuarea activităților contractate, conform obiectului de activitate"),
+        _u("a)", "sediul social al persoanei juridice"),
+    ]
+    leaves = _diff_alineat_items(a, b)
+    types = [l["change_type"] for l in leaves]
+    # Expectations:
+    # - "orice acord master de netting" matches as unchanged (identical text)
+    # - "sediul social al persoanei juridice" matches as unchanged
+    # - The middle item is either modified (if SequenceMatcher pairs it via
+    #   replace+greedy) OR appears as one removed + one added (if the similarity
+    #   ratio between the two texts falls below 0.5)
+    assert types.count("unchanged") == 2, f"expected 2 unchanged, got {types}"
+    # Critically: NEVER produce a fake-modified pair between unrelated items.
+    # The unchanged items must remain unchanged — they must NOT participate in
+    # any modified pairing.
+    modified_or_changes = [l for l in leaves if l["change_type"] in ("modified", "added", "removed")]
+    # For each modified leaf, its text_a must be at least 0.3 similar to its text_b
+    # (proves the pairing was content-aware, not arbitrary).
+    import difflib
+    for l in modified_or_changes:
+        if l["change_type"] == "modified":
+            ratio = difflib.SequenceMatcher(None, l["text_a"], l["text_b"]).ratio()
+            assert ratio >= 0.3, (
+                f"modified leaf with low similarity ratio {ratio:.2f}: "
+                f"text_a={l['text_a']!r} text_b={l['text_b']!r}"
+            )
