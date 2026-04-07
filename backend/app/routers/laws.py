@@ -1242,79 +1242,29 @@ def serialize_article(article: Article, law: Law) -> dict:
 
 @router.post("/{law_id}/check-updates")
 def check_law_updates(law_id: int, db: Session = Depends(get_db)):
-    """Check a single law for new versions on legislatie.just.ro."""
-    from app.services.fetcher import fetch_document
-    from app.services.leropa_service import fetch_and_store_version
-    import app.services.leropa_service as _ls
+    """Refresh KnownVersion entries for a single law from legislatie.just.ro.
+
+    Discovery only: writes/updates KnownVersion rows and re-derives
+    LawVersion.is_current. Does NOT import any version text — that's the
+    user's job via the Import buttons in the law-detail page.
+    """
+    from app.services.version_discovery import discover_versions_for_law
 
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
 
-    current = (
-        db.query(LawVersion)
-        .filter(LawVersion.law_id == law.id, LawVersion.is_current == True)
-        .first()
-    )
-    if not current:
-        raise HTTPException(status_code=400, detail="No current version found for this law")
-
     try:
-        result = fetch_document(current.ver_id, use_cache=False)
-        doc = result["document"]
-
-        next_ver = doc.get("next_ver")
-        if next_ver:
-            existing = db.query(LawVersion).filter(LawVersion.ver_id == next_ver).first()
-            if existing:
-                law.last_checked_at = datetime.datetime.utcnow()
-                db.commit()
-                return {"has_update": False, "message": "This law is up to date."}
-
-            _ls._stored_article_ids = set()
-            _, new_version = fetch_and_store_version(db, next_ver, law=law)
-
-        else:
-            history = doc.get("history", [])
-            stored_ver_ids = {
-                v.ver_id
-                for v in db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
-            }
-            new_versions = [h for h in history if h["ver_id"] not in stored_ver_ids]
-
-            if not new_versions:
-                law.last_checked_at = datetime.datetime.utcnow()
-                db.commit()
-                return {"has_update": False, "message": "This law is up to date."}
-
-            for entry in new_versions:
-                _ls._stored_article_ids = set()
-                fetch_and_store_version(db, entry["ver_id"], law=law)
-
-        # Update is_current flags
-        all_versions = (
-            db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
-        )
-        dated = [(v, v.date_in_force) for v in all_versions if v.date_in_force]
-        if dated:
-            dated.sort(key=lambda x: x[1], reverse=True)
-            for v in all_versions:
-                v.is_current = False
-            dated[0][0].is_current = True
-
-        # Re-evaluate law status if not manually overridden
-        if not law.status_override:
-            from app.services.leropa_service import detect_law_status
-            law.status = detect_law_status(db, law)
-
-        law.last_checked_at = datetime.datetime.utcnow()
-        db.commit()
-        return {"has_update": True, "message": "New version found and imported!"}
-
+        new_count = discover_versions_for_law(db, law)
     except Exception as e:
         logger.exception(f"Error checking updates for law {law_id}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Update check failed: {str(e)}")
+
+    return {
+        "discovered": new_count,
+        "last_checked_at": str(law.last_checked_at) if law.last_checked_at else None,
+    }
 
 
 def _bulk_delete_versions(db: Session, version_ids: list[int]):
