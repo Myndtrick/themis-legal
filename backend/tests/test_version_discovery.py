@@ -143,3 +143,69 @@ def test_discover_versions_uses_next_ver():
     ver_ids = {kv.ver_id for kv in known}
     assert "300000" in ver_ids
     assert "267625" in ver_ids
+
+
+def test_probe_ver_id_prefers_is_current_law_version():
+    """When a LawVersion is marked is_current, the probe helper returns its ver_id."""
+    db = _make_db()
+    law = Law(title="Test", law_number="100", law_year=2020)
+    db.add(law)
+    db.flush()
+
+    db.add(LawVersion(law_id=law.id, ver_id="OLD",
+                      date_in_force=datetime.date(2020, 1, 1), is_current=False))
+    db.add(LawVersion(law_id=law.id, ver_id="CURRENT",
+                      date_in_force=datetime.date(2024, 6, 1), is_current=True))
+    db.commit()
+
+    from app.services.version_discovery import _get_probe_ver_id
+    assert _get_probe_ver_id(db, law) == "CURRENT"
+
+
+def test_probe_ver_id_falls_back_to_newest_law_version_by_date():
+    """When no LawVersion is_current, the probe helper returns the newest by date_in_force."""
+    db = _make_db()
+    law = Law(title="Test", law_number="100", law_year=2020)
+    db.add(law)
+    db.flush()
+
+    db.add(LawVersion(law_id=law.id, ver_id="OLDEST",
+                      date_in_force=datetime.date(2020, 1, 1), is_current=False))
+    db.add(LawVersion(law_id=law.id, ver_id="NEWEST",
+                      date_in_force=datetime.date(2024, 6, 1), is_current=False))
+    db.add(LawVersion(law_id=law.id, ver_id="MIDDLE",
+                      date_in_force=datetime.date(2022, 3, 1), is_current=False))
+    db.commit()
+
+    from app.services.version_discovery import _get_probe_ver_id
+    assert _get_probe_ver_id(db, law) == "NEWEST"
+
+
+def test_probe_ver_id_falls_back_to_newest_known_version_when_no_imports():
+    """When no LawVersions exist at all, the probe helper returns the newest KnownVersion."""
+    db = _make_db()
+    law = Law(title="Test", law_number="100", law_year=2020)
+    db.add(law)
+    db.flush()
+
+    db.add(KnownVersion(law_id=law.id, ver_id="KV_OLD",
+                        date_in_force=datetime.date(2020, 1, 1),
+                        is_current=False, discovered_at=datetime.datetime.utcnow()))
+    db.add(KnownVersion(law_id=law.id, ver_id="KV_NEW",
+                        date_in_force=datetime.date(2024, 6, 1),
+                        is_current=True, discovered_at=datetime.datetime.utcnow()))
+    db.commit()
+
+    from app.services.version_discovery import _get_probe_ver_id
+    assert _get_probe_ver_id(db, law) == "KV_NEW"
+
+
+def test_probe_ver_id_returns_none_when_truly_empty():
+    """A law with no LawVersions and no KnownVersions returns None."""
+    db = _make_db()
+    law = Law(title="Test", law_number="100", law_year=2020)
+    db.add(law)
+    db.commit()
+
+    from app.services.version_discovery import _get_probe_ver_id
+    assert _get_probe_ver_id(db, law) is None

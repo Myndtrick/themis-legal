@@ -27,6 +27,56 @@ def _parse_date(date_str: str) -> datetime.date:
         return datetime.date(1900, 1, 1)
 
 
+def _get_probe_ver_id(db: Session, law: Law) -> str | None:
+    """Pick a ver_id we can use as an entry point when fetching upstream history.
+
+    Order of preference:
+      1. The is_current=True LawVersion (when the law is up to date).
+      2. The newest LawVersion by date_in_force (we have imports but none are current).
+      3. The newest KnownVersion by date_in_force (discovery has run but nothing is imported).
+      4. None (genuine empty state — the law has no versions at all).
+
+    Safe because legislatie.just.ro returns the same `history` list regardless of
+    which version's page you fetch.
+    """
+    current_lv = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id, LawVersion.is_current == True)  # noqa: E712
+        .first()
+    )
+    if current_lv:
+        return current_lv.ver_id
+
+    newest_lv = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id, LawVersion.date_in_force.is_not(None))
+        .order_by(LawVersion.date_in_force.desc())
+        .first()
+    )
+    if newest_lv:
+        return newest_lv.ver_id
+
+    # Last-resort fallback: any LawVersion at all (date may be NULL)
+    any_lv = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id)
+        .first()
+    )
+    if any_lv:
+        return any_lv.ver_id
+
+    newest_kv = (
+        db.query(KnownVersion)
+        .filter(KnownVersion.law_id == law.id)
+        .order_by(KnownVersion.date_in_force.desc())
+        .first()
+    )
+    if newest_kv:
+        return newest_kv.ver_id
+
+    return None
+
+
 def discover_versions_for_law(db: Session, law: Law) -> int:
     """Discover versions for a single law and populate KnownVersion.
 
