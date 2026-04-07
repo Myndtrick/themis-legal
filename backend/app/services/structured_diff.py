@@ -264,6 +264,109 @@ def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
     }
 
 
+from app.services.article_tokenizer import AtomicUnit, MarkerKind, tokenize_article
+
+
+REPLACE_PAIRING_THRESHOLD = 0.5
+
+
+def _normalize_for_key(text: str) -> str:
+    """Lowercase + collapse whitespace for SequenceMatcher key matching."""
+    return " ".join(text.lower().split())
+
+
+def _item_key(item: AtomicUnit) -> tuple[str, str]:
+    """Hashable key used by SequenceMatcher to align items by content."""
+    return (item.label, _normalize_for_key(item.text)[:200])
+
+
+def _greedy_pair_by_text_ratio(
+    items_a: list[AtomicUnit],
+    items_b: list[AtomicUnit],
+    threshold: float,
+) -> tuple[
+    list[tuple[AtomicUnit, AtomicUnit]],
+    list[AtomicUnit],
+    list[AtomicUnit],
+]:
+    """For items inside a SequenceMatcher 'replace' opcode, greedily pair
+    them by text-ratio similarity. Returns (pairs, leftover_a, leftover_b).
+    """
+    used_b: set[int] = set()
+    pairs: list[tuple[AtomicUnit, AtomicUnit]] = []
+    for ra in items_a:
+        best_idx = -1
+        best_ratio = 0.0
+        for j, rb in enumerate(items_b):
+            if j in used_b:
+                continue
+            ratio = difflib.SequenceMatcher(None, ra.text, rb.text).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_idx = j
+        if best_idx >= 0 and best_ratio >= threshold:
+            used_b.add(best_idx)
+            pairs.append((ra, items_b[best_idx]))
+    leftover_a = [a for a in items_a if all(a is not pa for pa, _ in pairs)]
+    leftover_b = [b for j, b in enumerate(items_b) if j not in used_b]
+    return pairs, leftover_a, leftover_b
+
+
+def _leaf(item: AtomicUnit, change_type: str, **extra: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "alineat_label": item.alineat_label,
+        "marker_kind": item.marker_kind,
+        "label": item.label,
+        "change_type": change_type,
+    }
+    base.update(extra)
+    return base
+
+
+def _diff_alineat_items(
+    items_a: list[AtomicUnit], items_b: list[AtomicUnit]
+) -> list[dict[str, Any]]:
+    """Content-based diff of two flat item lists belonging to one alineat
+    (or one pre-alineat group). Uses difflib.SequenceMatcher over
+    (label, normalized text prefix) keys for primary alignment, then
+    greedy text-ratio pairing inside replace opcodes.
+    """
+    keys_a = [_item_key(i) for i in items_a]
+    keys_b = [_item_key(i) for i in items_b]
+    matcher = difflib.SequenceMatcher(a=keys_a, b=keys_b, autojunk=False)
+
+    out: list[dict[str, Any]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                out.append(_leaf(items_b[j1 + k], "unchanged"))
+        elif tag == "delete":
+            for k in range(i1, i2):
+                out.append(_leaf(items_a[k], "removed", text_a=items_a[k].text))
+        elif tag == "insert":
+            for k in range(j1, j2):
+                out.append(_leaf(items_b[k], "added", text_b=items_b[k].text))
+        elif tag == "replace":
+            block_a = items_a[i1:i2]
+            block_b = items_b[j1:j2]
+            pairs, left_a, left_b = _greedy_pair_by_text_ratio(
+                block_a, block_b, REPLACE_PAIRING_THRESHOLD
+            )
+            for ra, rb in pairs:
+                out.append(_leaf(
+                    rb,
+                    "modified",
+                    text_a=ra.text,
+                    text_b=rb.text,
+                    diff_html=word_diff_html(ra.text, rb.text),
+                ))
+            for ra in left_a:
+                out.append(_leaf(ra, "removed", text_a=ra.text))
+            for rb in left_b:
+                out.append(_leaf(rb, "added", text_b=rb.text))
+    return out
+
+
 RENUMBER_SIMILARITY_THRESHOLD = 0.85
 
 
