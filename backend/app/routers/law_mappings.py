@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, joinedload
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin
 from app.database import get_db
 from app.models.category import Category, CategoryGroup, LawMapping
 from app.models.law import Law
@@ -26,7 +26,6 @@ from app.services.suggestion_service import (
 router = APIRouter(
     prefix="/api/law-mappings",
     tags=["law-mappings"],
-    dependencies=[Depends(get_current_user)],
 )
 
 
@@ -86,12 +85,12 @@ class ProbeUrlRequest(BaseModel):
     url: str
 
 
-@router.post("/probe-url")
+@router.post("/probe-url", dependencies=[Depends(require_admin)])
 def probe_url_endpoint(req: ProbeUrlRequest):
     return _probe_url(req.url)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(get_current_user)])
 def list_mappings(
     group_slug: str | None = None,
     category_id: int | None = None,
@@ -151,7 +150,7 @@ def list_mappings(
     return [_serialize_mapping(m, is_imported(m)) for m in mappings]
 
 
-@router.post("", response_model=MappingResponse)
+@router.post("", response_model=MappingResponse, dependencies=[Depends(require_admin)])
 def create_mapping(
     req: CreateMappingRequest,
     response: Response,
@@ -176,7 +175,7 @@ def create_mapping(
     return mapping
 
 
-@router.put("/{mapping_id}", response_model=MappingResponse)
+@router.put("/{mapping_id}", response_model=MappingResponse, dependencies=[Depends(require_admin)])
 def update_mapping(
     mapping_id: int,
     req: UpdateMappingRequest,
@@ -206,7 +205,7 @@ def update_mapping(
     return mapping
 
 
-@router.delete("/{mapping_id}", status_code=204)
+@router.delete("/{mapping_id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_mapping(mapping_id: int, db: Session = Depends(get_db)):
     mapping = (
         db.query(LawMapping).filter(LawMapping.id == mapping_id).first()

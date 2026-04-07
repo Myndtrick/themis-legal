@@ -33,7 +33,7 @@ def client_and_db():
             db.close()
 
     def override_get_current_user():
-        return User(id=1, email="test@example.com")
+        return User(id=1, email="test@example.com", role="admin")
 
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_current_user] = override_get_current_user
@@ -346,3 +346,85 @@ def test_probe_known_host_no_identifier(client_and_db):
     assert body["kind"] == "eu"
     assert body["identifier"] is None
     assert body["error"] == "Could not extract identifier"
+
+
+# ---------- Auth: admin gating ----------
+
+@pytest.fixture
+def client_and_db_as_member():
+    """Same as client_and_db but the current user is a non-admin member."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def override_get_current_user():
+        return User(id=2, email="member@example.com", role="member")
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[get_current_user] = override_get_current_user
+    db = TestingSessionLocal()
+    yield TestClient(fastapi_app), db
+    db.close()
+    fastapi_app.dependency_overrides.clear()
+
+
+def test_member_cannot_create(client_and_db_as_member):
+    client, db = client_and_db_as_member
+    cat = _seed_category(db)
+    resp = client.post(
+        "/api/law-mappings",
+        json={
+            "url": "https://legislatie.just.ro/Public/DetaliiDocument/267625",
+            "category_id": cat.id,
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_member_cannot_update(client_and_db_as_member):
+    client, db = client_and_db_as_member
+    cat = _seed_category(db)
+    m = LawMapping(title="x", category_id=cat.id, source="user")
+    db.add(m); db.commit()
+    resp = client.put(f"/api/law-mappings/{m.id}", json={"title": "y"})
+    assert resp.status_code == 403
+
+
+def test_member_cannot_delete(client_and_db_as_member):
+    client, db = client_and_db_as_member
+    cat = _seed_category(db)
+    m = LawMapping(title="x", category_id=cat.id, source="user")
+    db.add(m); db.commit()
+    resp = client.delete(f"/api/law-mappings/{m.id}")
+    assert resp.status_code == 403
+
+
+def test_member_cannot_probe(client_and_db_as_member):
+    client, _ = client_and_db_as_member
+    resp = client.post(
+        "/api/law-mappings/probe-url",
+        json={"url": "https://legislatie.just.ro/Public/DetaliiDocument/109884"},
+    )
+    assert resp.status_code == 403
+
+
+def test_member_can_list(client_and_db_as_member):
+    """Reading the suggestions list is OK for any logged-in user."""
+    client, db = client_and_db_as_member
+    cat = _seed_category(db)
+    db.add(LawMapping(title="visible", category_id=cat.id, source="user"))
+    db.commit()
+    resp = client.get("/api/law-mappings")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
