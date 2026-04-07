@@ -109,6 +109,9 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
 
     Returns the count of newly discovered versions.
     """
+    if law.source == "eu":
+        return _discover_eu_versions(db, law)
+
     # Pick any usable ver_id as the upstream probe entry point. We do NOT
     # require an is_current LawVersion — see _get_probe_ver_id docstring.
     entry_ver_id = _get_probe_ver_id(db, law)
@@ -244,6 +247,115 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
 
     logger.info(
         "Discovered %d new version(s) for law %s (%s)",
+        new_count,
+        law.id,
+        law.title,
+    )
+    return new_count
+
+
+def _discover_eu_versions(db: Session, law: Law) -> int:
+    """EU equivalent of discover_versions_for_law.
+
+    Fetches the list of consolidated versions from CELLAR via SPARQL and
+    upserts KnownVersion rows. Mirrors the RO branch's contract:
+      - returns count of newly-discovered versions,
+      - updates is_current flags by newest date_in_force,
+      - updates law.last_checked_at only on success,
+      - on fetch error: logs warning, returns 0, leaves last_checked_at alone.
+
+    The base CELEX (e.g. 32022R2065) is the original act and is treated as a
+    KnownVersion too — it's how _get_probe_ver_id-style logic stays consistent.
+    """
+    from app.services.eu_cellar_service import fetch_consolidated_versions
+
+    if not law.celex_number:
+        logger.warning(
+            "EU law %s (%s) has no celex_number — skipping discovery", law.id, law.title
+        )
+        return 0
+
+    try:
+        consol = fetch_consolidated_versions(law.celex_number)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to fetch CELLAR consolidated versions for law %s (%s): %s",
+            law.id,
+            law.title,
+            exc,
+        )
+        return 0
+
+    # fetch_consolidated_versions swallows errors and returns []. Distinguish
+    # "no results" from "fetch failed" is impossible here, but an empty list
+    # for an EU law that previously had versions is suspicious. We treat empty
+    # as a soft failure: don't update last_checked_at, don't wipe state.
+    if not consol:
+        logger.info(
+            "CELLAR returned no consolidated versions for law %s (%s) — skipping",
+            law.id,
+            law.title,
+        )
+        return 0
+
+    existing_kvs: dict[str, KnownVersion] = {
+        kv.ver_id: kv
+        for kv in db.query(KnownVersion).filter(KnownVersion.law_id == law.id).all()
+    }
+    imported_ver_ids: set[str] = {
+        lv.ver_id
+        for lv in db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+    }
+    pre_known_ver_ids = set(existing_kvs.keys()) | imported_ver_ids
+
+    new_count = 0
+    for cv in consol:
+        ver_id = cv.get("celex")
+        if not ver_id:
+            continue
+        date_in_force = _parse_date(cv.get("date", ""))
+
+        existing_kv = existing_kvs.get(ver_id)
+        if existing_kv is None:
+            kv = KnownVersion(
+                law_id=law.id,
+                ver_id=ver_id,
+                date_in_force=date_in_force,
+                is_current=False,  # set properly below
+                discovered_at=datetime.datetime.utcnow(),
+            )
+            db.add(kv)
+            existing_kvs[ver_id] = kv
+            if ver_id not in pre_known_ver_ids:
+                new_count += 1
+        else:
+            # Heal sentinel-only — never overwrite a real date with a sentinel
+            if (
+                existing_kv.date_in_force == SENTINEL_DATE
+                and date_in_force != SENTINEL_DATE
+            ):
+                existing_kv.date_in_force = date_in_force
+
+    db.flush()
+
+    # Recompute is_current: newest date_in_force wins
+    all_known = (
+        db.query(KnownVersion).filter(KnownVersion.law_id == law.id).all()
+    )
+    all_known_sorted = sorted(
+        all_known,
+        key=lambda kv: kv.date_in_force or SENTINEL_DATE,
+        reverse=True,
+    )
+    for i, kv in enumerate(all_known_sorted):
+        kv.is_current = i == 0
+
+    _recalculate_current_version(db, law.id)
+    law.last_checked_at = datetime.datetime.utcnow()
+    db.commit()
+
+    logger.info(
+        "Discovered %d new EU version(s) for law %s (%s)",
         new_count,
         law.id,
         law.title,

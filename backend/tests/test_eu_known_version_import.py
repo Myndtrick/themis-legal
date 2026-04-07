@@ -168,6 +168,64 @@ def test_router_eu_returns_structured_error_when_fetch_content_fails(client_and_
     assert body["code"] == "eu_content_unavailable"
 
 
+def test_check_updates_discovers_eu_versions_via_cellar(client_and_db):
+    """POST /laws/{id}/check-updates on an EU law should query CELLAR (not legislatie.just.ro)
+    and write KnownVersion rows for any consolidated versions it finds."""
+    client, db = client_and_db
+    law = _seed_eu_law(db)
+
+    # CELLAR returns three consolidated versions; one matches an already-known KV,
+    # the other two are new.
+    consol = [
+        {
+            "celex": "02022R2065-20221027",  # already in KnownVersion from _seed_eu_law
+            "cellar_uri": "http://publications.europa.eu/resource/cellar/cv1",
+            "date": "2022-10-27",
+        },
+        {
+            "celex": "02022R2065-20240101",
+            "cellar_uri": "http://publications.europa.eu/resource/cellar/cv2",
+            "date": "2024-01-01",
+        },
+        {
+            "celex": "02022R2065-20250601",
+            "cellar_uri": "http://publications.europa.eu/resource/cellar/cv3",
+            "date": "2025-06-01",
+        },
+    ]
+
+    with patch("app.services.eu_cellar_service.fetch_consolidated_versions", return_value=consol):
+        resp = client.post(f"/api/laws/{law.id}/check-updates")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["discovered"] == 2  # only the two NEW celexes
+    assert body["last_checked_at"] is not None
+
+    from app.models.law import KnownVersion as KV
+    kvs = {kv.ver_id: kv for kv in db.query(KV).filter_by(law_id=law.id).all()}
+    assert "02022R2065-20221027" in kvs
+    assert "02022R2065-20240101" in kvs
+    assert "02022R2065-20250601" in kvs
+    # Newest date_in_force should be marked current
+    assert kvs["02022R2065-20250601"].is_current is True
+    assert kvs["02022R2065-20240101"].is_current is False
+
+
+def test_check_updates_eu_does_not_call_legislatie_fetcher(client_and_db):
+    """Regression: EU laws must NOT fall through to fetch_document (legislatie.just.ro)."""
+    client, db = client_and_db
+    law = _seed_eu_law(db)
+
+    with patch("app.services.eu_cellar_service.fetch_consolidated_versions", return_value=[]) as mock_cellar, \
+         patch("app.services.fetcher.fetch_document") as mock_ro:
+        resp = client.post(f"/api/laws/{law.id}/check-updates")
+
+    assert resp.status_code == 200, resp.text
+    mock_cellar.assert_called_once()
+    mock_ro.assert_not_called()
+
+
 def test_router_import_all_missing_eu(client_and_db):
     """import-all should also handle EU laws via the new helper."""
     client, db = client_and_db
