@@ -1781,18 +1781,12 @@ def diff_versions(
     articles_a = (
         db.query(Article)
         .filter(Article.law_version_id == version_a)
-        .options(
-            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs)
-        )
         .order_by(Article.order_index)
         .all()
     )
     articles_b = (
         db.query(Article)
         .filter(Article.law_version_id == version_b)
-        .options(
-            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs)
-        )
         .order_by(Article.order_index)
         .all()
     )

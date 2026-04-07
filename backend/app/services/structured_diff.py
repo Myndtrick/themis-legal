@@ -1,8 +1,12 @@
 """Structural diff between two parsed law versions.
 
-Compares the existing Article → Paragraph → Subparagraph tree by label
-and produces a tree of changes suitable for the /api/laws/{id}/diff endpoint.
-All functions are pure (no DB access) so they can be unit-tested in isolation.
+Compares articles by tokenizing each Article.full_text into a flat list of
+AtomicUnits (see article_tokenizer.py) and aligning the units within each
+alineat using difflib.SequenceMatcher over content keys. Greedy similarity
+pairing inside `replace` opcodes catches genuinely-edited items vs. unrelated
+add+remove. Falls back to a coarse word-level diff if tokenization fails or
+yields no units. All functions are pure (no DB access) so they can be
+unit-tested in isolation. Suitable for the /api/laws/{id}/diff endpoint.
 """
 from __future__ import annotations
 

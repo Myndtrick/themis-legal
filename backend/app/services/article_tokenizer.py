@@ -45,7 +45,7 @@ class MarkerKind:
 # Each entry: (kind, compiled_regex). The regex MUST have one capture group
 # returning the marker label as it should appear in the output (e.g. "(1)",
 # "32.", "a)"). Order matters only for tie-breaking when two patterns match
-# at the same start position — see _resolve_overlaps.
+# at the same start position — _kind_priority breaks the tie.
 _MARKER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (MarkerKind.ALINEAT, re.compile(r"\(\s*(\d+(?:\^\d+)?)\s*\)")),
     # Numbered: digit(s) [+ ^N suffix] + dot + space. The trailing \s avoids
@@ -122,12 +122,15 @@ def _is_false_positive(full_text: str, match_start: int, kind: str) -> bool:
 
 
 def _find_all_markers(full_text: str) -> list[_Match]:
-    """Scan full_text for every marker candidate, deduplicating overlaps.
+    """Scan full_text for every marker candidate, filter false positives,
+    and return matches sorted by start offset.
 
-    Returns matches sorted by start offset. Overlapping matches at the same
-    start position are resolved by _MARKER_PATTERNS order (earlier wins).
-    Matches whose start offset falls inside an already-accepted match's body
-    are dropped to prevent nested false positives.
+    Overlapping matches at the same start position are deduplicated by
+    _kind_priority order (alineat > numbered > upper_litera > litera > bullet).
+    The marker regexes are designed to be mutually exclusive at any given
+    position in real Romanian legal text, so no nested-overlap suppression
+    is currently necessary; if a future regex change introduces overlaps,
+    add an `accepted/last_end` walk after the sort to drop nested matches.
     """
     candidates: list[_Match] = []
     for kind, pattern in _MARKER_PATTERNS:
