@@ -108,3 +108,55 @@ def test_litera_caret_variant():
         AtomicUnit(None, "alineat", "(1)", ""),
         AtomicUnit("(1)", "litera", "a^1)", "variantă a literei a;"),
     ]
+
+
+def test_false_positive_alineat_in_alin_reference():
+    units = tokenize_article(
+        "(1) Conform art. 90 alin. (1) și (2) se aplică prevederile."
+    )
+    # Only ONE alineat unit — the leading (1). The (1) and (2) inside
+    # 'alin. (1) și (2)' are references and must NOT spawn extra alineat units.
+    assert len(units) == 1
+    assert units[0].marker_kind == "alineat"
+    assert units[0].label == "(1)"
+
+
+def test_false_positive_numbered_in_art_reference():
+    units = tokenize_article("(1) Conform art. 125. din lege.")
+    # Only the (1) alineat — '125.' must NOT become a numbered marker because
+    # it follows 'art. '.
+    assert len(units) == 1
+    assert units[0].label == "(1)"
+
+
+def test_false_positive_numbered_in_nr_reference():
+    units = tokenize_article("(1) Decizie HP nr. 19/2020 publicată.")
+    assert len(units) == 1
+    assert units[0].label == "(1)"
+
+
+def test_false_positive_numbered_in_pct_reference():
+    units = tokenize_article("(1) Conform pct. 8. din alineatul anterior.")
+    assert len(units) == 1
+    assert units[0].label == "(1)"
+
+
+def test_false_positive_litera_in_lit_reference():
+    units = tokenize_article("(1) Conform lit. a) din alineatul anterior.")
+    # 'a)' here is a reference, not a litera.
+    assert len(units) == 1
+    assert units[0].label == "(1)"
+
+
+def test_real_marker_after_reference_still_recognized():
+    units = tokenize_article(
+        "(1) Conform art. 90 alin. (1) se aplică: a) prima literă; b) a doua;"
+    )
+    # The (1) inside 'alin. (1)' is rejected, but the leading (1) and the
+    # a) / b) literae must still be recognized.
+    labels = [(u.marker_kind, u.label) for u in units]
+    assert ("alineat", "(1)") in labels
+    assert ("litera", "a)") in labels
+    assert ("litera", "b)") in labels
+    # No second alineat from the reference:
+    assert sum(1 for k, _ in labels if k == "alineat") == 1

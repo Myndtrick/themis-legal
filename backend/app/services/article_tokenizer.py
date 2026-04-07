@@ -70,6 +70,38 @@ class _Match:
     label: str        # rendered label as it will appear in the AtomicUnit
 
 
+_FP_LOOKBACK = 20  # characters of context to inspect before each candidate
+
+# Substrings that, when present in the lookback window, mark the marker
+# as a false-positive reference rather than a real structural marker.
+# Each tuple is (substring, list of marker kinds it disqualifies).
+_FALSE_POSITIVE_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("art. ",   (MarkerKind.NUMBERED, MarkerKind.ALINEAT)),
+    ("alin. ",  (MarkerKind.ALINEAT,)),
+    ("alin.(",  (MarkerKind.ALINEAT,)),  # tolerate missing space
+    ("pct. ",   (MarkerKind.NUMBERED,)),
+    ("pct.",    (MarkerKind.NUMBERED,)),
+    ("lit. ",   (MarkerKind.LITERA, MarkerKind.UPPER_LITERA)),
+    ("lit.",    (MarkerKind.LITERA, MarkerKind.UPPER_LITERA)),
+    ("nr. ",    (MarkerKind.NUMBERED,)),
+    ("nr.",     (MarkerKind.NUMBERED,)),
+    ("Legea ",  (MarkerKind.NUMBERED,)),
+    ("legii ",  (MarkerKind.NUMBERED,)),
+]
+
+
+def _is_false_positive(full_text: str, match_start: int, kind: str) -> bool:
+    """Return True if a marker candidate at `match_start` should be dropped
+    because it falls inside a legal reference like 'art. 90 alin. (1)'.
+    """
+    window_start = max(0, match_start - _FP_LOOKBACK)
+    window = full_text[window_start:match_start]
+    for needle, disqualified_kinds in _FALSE_POSITIVE_RULES:
+        if kind in disqualified_kinds and needle in window:
+            return True
+    return False
+
+
 def _find_all_markers(full_text: str) -> list[_Match]:
     """Scan full_text for every marker candidate, deduplicating overlaps.
 
@@ -81,6 +113,8 @@ def _find_all_markers(full_text: str) -> list[_Match]:
     candidates: list[_Match] = []
     for kind, pattern in _MARKER_PATTERNS:
         for m in pattern.finditer(full_text):
+            if _is_false_positive(full_text, m.start(), kind):
+                continue
             label = _format_label(kind, m.group(1))
             candidates.append(_Match(start=m.start(), end=m.end(), kind=kind, label=label))
     candidates.sort(key=lambda c: (c.start, _kind_priority(c.kind)))
