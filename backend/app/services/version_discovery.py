@@ -33,8 +33,9 @@ def _get_probe_ver_id(db: Session, law: Law) -> str | None:
     Order of preference:
       1. The is_current=True LawVersion (when the law is up to date).
       2. The newest LawVersion by date_in_force (we have imports but none are current).
-      3. The newest KnownVersion by date_in_force (discovery has run but nothing is imported).
-      4. None (genuine empty state — the law has no versions at all).
+      3. Any LawVersion for the law (last-resort fallback for rows with NULL date_in_force).
+      4. The newest KnownVersion by date_in_force (discovery has run but nothing is imported).
+      5. None (genuine empty state — the law has no versions at all).
 
     Safe because legislatie.just.ro returns the same `history` list regardless of
     which version's page you fetch.

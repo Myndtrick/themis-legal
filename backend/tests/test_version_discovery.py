@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models.law import Law, LawVersion, KnownVersion
+from app.services.version_discovery import _get_probe_ver_id
 import app.models.category  # register categories table
 
 
@@ -158,7 +159,6 @@ def test_probe_ver_id_prefers_is_current_law_version():
                       date_in_force=datetime.date(2024, 6, 1), is_current=True))
     db.commit()
 
-    from app.services.version_discovery import _get_probe_ver_id
     assert _get_probe_ver_id(db, law) == "CURRENT"
 
 
@@ -177,7 +177,6 @@ def test_probe_ver_id_falls_back_to_newest_law_version_by_date():
                       date_in_force=datetime.date(2022, 3, 1), is_current=False))
     db.commit()
 
-    from app.services.version_discovery import _get_probe_ver_id
     assert _get_probe_ver_id(db, law) == "NEWEST"
 
 
@@ -196,7 +195,6 @@ def test_probe_ver_id_falls_back_to_newest_known_version_when_no_imports():
                         is_current=True, discovered_at=datetime.datetime.utcnow()))
     db.commit()
 
-    from app.services.version_discovery import _get_probe_ver_id
     assert _get_probe_ver_id(db, law) == "KV_NEW"
 
 
@@ -207,5 +205,18 @@ def test_probe_ver_id_returns_none_when_truly_empty():
     db.add(law)
     db.commit()
 
-    from app.services.version_discovery import _get_probe_ver_id
     assert _get_probe_ver_id(db, law) is None
+
+
+def test_probe_ver_id_falls_back_to_any_law_version_with_null_date():
+    """When a LawVersion exists but has no date_in_force, the last-resort branch returns it."""
+    db = _make_db()
+    law = Law(title="Test", law_number="100", law_year=2020)
+    db.add(law)
+    db.flush()
+
+    db.add(LawVersion(law_id=law.id, ver_id="NO_DATE",
+                      date_in_force=None, is_current=False))
+    db.commit()
+
+    assert _get_probe_ver_id(db, law) == "NO_DATE"
