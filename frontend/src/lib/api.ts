@@ -141,6 +141,32 @@ export interface LawMappingResponse {
   document_type: string | null;
 }
 
+export interface LawMappingRow {
+  id: number;
+  title: string;
+  law_number: string | null;
+  law_year: number | null;
+  document_type: string | null;
+  celex_number: string | null;
+  source_url: string | null;
+  source_ver_id: string | null;
+  category_id: number;
+  category_name: string | null;
+  category_slug: string | null;
+  group_slug: string | null;
+  group_name: string | null;
+  group_color: string | null;
+  source: "system" | "user";
+  is_imported: boolean;
+}
+
+export interface ProbeUrlResult {
+  kind: "ro" | "eu" | "unknown";
+  identifier: string | null;
+  title: string | null;
+  error: string | null;
+}
+
 export interface LibraryData {
   groups: CategoryGroupData[];
   laws: LibraryLaw[];
@@ -945,6 +971,22 @@ export const api = {
       apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "DELETE" }),
   },
   lawMappings: {
+    list: (params: {
+      group_slug?: string;
+      category_id?: number;
+      source?: "system" | "user" | "all";
+      pinned?: "true" | "false" | "all";
+      q?: string;
+    } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.group_slug) qs.set("group_slug", params.group_slug);
+      if (params.category_id != null) qs.set("category_id", String(params.category_id));
+      if (params.source) qs.set("source", params.source);
+      if (params.pinned) qs.set("pinned", params.pinned);
+      if (params.q) qs.set("q", params.q);
+      const suffix = qs.toString() ? `?${qs}` : "";
+      return apiFetch<LawMappingRow[]>(`/api/law-mappings${suffix}`);
+    },
     create: (url: string, categoryId: number, title?: string) =>
       apiFetch<LawMappingResponse>("/api/law-mappings", {
         method: "POST",
@@ -957,6 +999,11 @@ export const api = {
       }),
     remove: (id: number) =>
       apiFetch<void>(`/api/law-mappings/${id}`, { method: "DELETE" }),
+    probeUrl: (url: string) =>
+      apiFetch<ProbeUrlResult>("/api/law-mappings/probe-url", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      }),
   },
   notifications: {
     list: (unreadOnly = false) =>
