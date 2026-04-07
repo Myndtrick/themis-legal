@@ -292,3 +292,57 @@ def test_list_filter_by_search_query(client_and_db):
     body = resp.json()
     assert len(body) == 1
     assert body[0]["title"] == "Codul Civil"
+
+
+# ---------- POST /api/law-mappings/probe-url ----------
+
+def test_probe_ro_url(client_and_db):
+    client, _ = client_and_db
+    resp = client.post(
+        "/api/law-mappings/probe-url",
+        json={"url": "https://legislatie.just.ro/Public/DetaliiDocument/109884"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "ro"
+    assert body["identifier"] == "109884"
+    assert body["error"] is None
+
+
+def test_probe_eu_url(client_and_db):
+    client, _ = client_and_db
+    resp = client.post(
+        "/api/law-mappings/probe-url",
+        json={"url": "https://eur-lex.europa.eu/legal-content/RO/TXT/?uri=CELEX:32016R0679"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "eu"
+    assert body["identifier"] == "32016R0679"
+    assert body["error"] is None
+
+
+def test_probe_unknown_host(client_and_db):
+    client, _ = client_and_db
+    resp = client.post(
+        "/api/law-mappings/probe-url",
+        json={"url": "https://example.com/foo"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "unknown"
+    assert body["identifier"] is None
+    assert body["error"] == "URL host not recognized"
+
+
+def test_probe_known_host_no_identifier(client_and_db):
+    client, _ = client_and_db
+    resp = client.post(
+        "/api/law-mappings/probe-url",
+        json={"url": "https://eur-lex.europa.eu/homepage.html"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "eu"
+    assert body["identifier"] is None
+    assert body["error"] == "Could not extract identifier"

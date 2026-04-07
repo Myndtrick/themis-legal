@@ -17,6 +17,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models.category import Category, CategoryGroup, LawMapping
 from app.models.law import Law
+from app.services.source_url import probe_url as _probe_url
 from app.services.suggestion_service import (
     create_user_mapping_from_url,
     fork_to_user_if_needed,
@@ -79,6 +80,15 @@ def _serialize_mapping(m: LawMapping, is_imported: bool) -> dict:
         "source": m.source,
         "is_imported": is_imported,
     }
+
+
+class ProbeUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/probe-url")
+def probe_url_endpoint(req: ProbeUrlRequest):
+    return _probe_url(req.url)
 
 
 @router.get("")
