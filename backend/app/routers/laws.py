@@ -194,7 +194,11 @@ def eu_search(
 
 @router.post("/eu/import")
 def eu_import(req: EUImportRequest, db: Session = Depends(get_db)):
-    """Import an EU law by CELEX number."""
+    """Import an EU law by CELEX number (legacy synchronous endpoint).
+
+    Kept for callers that don't yet use the job-based variant. New UI flows
+    should use POST /eu/import/job below — it survives page navigation.
+    """
     from app.services.eu_cellar_service import import_eu_law
     existing = db.query(Law).filter(Law.celex_number == req.celex_number).first()
     if existing:
@@ -207,6 +211,106 @@ def eu_import(req: EUImportRequest, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"EU import failed for {req.celex_number}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class EUImportJobRequest(BaseModel):
+    celex_number: str
+    import_history: bool = True
+    category_id: int | None = None
+
+
+@router.post("/eu/import/job")
+def eu_import_as_job(req: EUImportJobRequest, db: Session = Depends(get_db)):
+    """Start an EU law import as a background job.
+
+    Mirrors `/api/laws/import/job` but for CELLAR. Returns `{job_id}` and
+    runs the import in the JobService thread pool, so a page refresh in the
+    middle of importing a 12-version regulation is no longer destructive.
+    """
+    from app.services import job_service
+
+    celex = req.celex_number.strip()
+    if not celex:
+        raise HTTPException(status_code=400, detail="celex_number is required")
+
+    existing = db.query(Law).filter(Law.celex_number == celex).first()
+    if existing:
+        raise DuplicateImportError(existing.title)
+
+    if job_service.has_active(
+        db, kind="import_eu_law", entity_kind="law_pending", entity_id=celex
+    ):
+        raise HTTPException(
+            status_code=409, detail="Import already in progress for this CELEX"
+        )
+
+    job_id = job_service.submit(
+        kind="import_eu_law",
+        params={
+            "celex_number": celex,
+            "import_history": req.import_history,
+            "category_id": req.category_id,
+        },
+        runner=_run_import_eu_law_job,
+        entity_kind="law_pending",
+        entity_id=celex,
+        db=db,
+    )
+    return {"job_id": job_id}
+
+
+def _run_import_eu_law_job(db: Session, job_id: str, params: dict):
+    """JobService runner for EU law imports.
+
+    Wraps eu_cellar_service.import_eu_law and bridges its on_progress events
+    to update_progress() so the frontend polling effect can show phase /
+    current / total. Final result (law_id, etc.) goes into result_json.
+    """
+    from app.services.eu_cellar_service import import_eu_law
+    from app.services import job_service
+
+    celex: str = params["celex_number"]
+    import_history: bool = params.get("import_history", True)
+    category_id: int | None = params.get("category_id")
+
+    def _on_progress(event: dict):
+        try:
+            job_service.update_progress(
+                db,
+                job_id,
+                phase=event.get("message") or event.get("phase"),
+                current=event.get("current"),
+                total=event.get("total"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to push progress for job %s", job_id)
+
+    result = import_eu_law(
+        db,
+        celex,
+        import_history=import_history,
+        on_progress=_on_progress,
+    )
+
+    # Auto-assign category if explicitly provided.
+    if category_id and isinstance(result, dict) and result.get("law_id"):
+        law = db.query(Law).filter(Law.id == result["law_id"]).first()
+        if law:
+            law.category_id = category_id
+            law.category_confidence = "high"
+            db.commit()
+
+    # Re-tag the job to point at the law that was just created so the law
+    # detail page can find this job by entity_id afterwards.
+    if isinstance(result, dict) and result.get("law_id"):
+        job_service.update_progress(
+            db,
+            job_id,
+            phase="done",
+            entity_kind="law",
+            entity_id=result["law_id"],
+        )
+    return result
 
 
 @router.get("/eu/filter-options")

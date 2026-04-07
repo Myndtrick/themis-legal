@@ -826,6 +826,24 @@ export const api = {
           signal,
         }
       ),
+    /**
+     * Start an EU law import as a background job. Returns the job_id
+     * immediately. Caller polls /api/jobs/{job_id} for progress and result.
+     * EU equivalent of startImport — survives page navigation.
+     */
+    startEuImport: (
+      celexNumber: string,
+      importHistory: boolean,
+      categoryId: number | null
+    ) =>
+      apiFetch<{ job_id: string }>("/api/laws/eu/import/job", {
+        method: "POST",
+        body: JSON.stringify({
+          celex_number: celexNumber,
+          import_history: importHistory,
+          category_id: categoryId,
+        }),
+      }),
     euFilterOptions: () => apiFetch<EUFilterOptions>("/api/laws/eu/filter-options"),
     favoriteAdd: (lawId: number) =>
       apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "POST" }),

@@ -617,45 +617,18 @@ export default function LibraryPage() {
       return next;
     });
 
-    // EU suggestions still use the synchronous euImport endpoint — migrating
-    // EU imports to jobs is a separate change.
-    if (suggestion.celex_number) {
-      const controller = new AbortController();
-      const timeoutMs = importHistory ? 600_000 : 120_000;
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      api.laws
-        .euImport(suggestion.celex_number, importHistory, controller.signal)
-        .then(() => {
-          clearTimeout(timer);
-          setPendingImports((prev) => {
-            const next = new Map(prev);
-            next.delete(suggestion.id);
-            return next;
-          });
-          fetchData();
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          const message =
-            err instanceof DOMException && err.name === "AbortError"
-              ? "Import timed out — try current version only."
-              : err instanceof Error
-                ? err.message
-                : "Import failed";
-          setPendingImports((prev) => {
-            const next = new Map(prev);
-            next.set(suggestion.id, { suggestion, error: message });
-            return next;
-          });
-        });
-      return;
-    }
+    // Both EU and RO suggestions kick off a backend job. The polling effect
+    // on suggestionImportJobs below drives the pending entry to a terminal
+    // state, so a page refresh mid-import is safe for both sources.
+    //
+    // EU goes through /api/laws/eu/import/job (no LawMapping involved — we
+    // key the job state by suggestion.id locally, the same way RO does, so
+    // the existing pendingImports / suggestionImportJobs maps stay uniform).
+    const startPromise = suggestion.celex_number
+      ? api.laws.startEuImport(suggestion.celex_number, importHistory, suggestion.category_id ?? null)
+      : api.laws.startImportSuggestion(suggestion.id, importHistory);
 
-    // RO suggestion: kick off a backend job. The polling effect on
-    // suggestionImportJobs below transitions the pending entry on terminal
-    // states, so a page refresh mid-import is safe.
-    api.laws
-      .startImportSuggestion(suggestion.id, importHistory)
+    startPromise
       .then(({ job_id }) => {
         setSuggestionImportJobs((prev) => {
           const next = new Map(prev);
@@ -689,58 +662,23 @@ export default function LibraryPage() {
     });
   }
 
-  // === Background import — job-based for RO, sync for EU ===
+  // === Background import — job-based for both RO and EU ===
   //
-  // RO imports go through POST /api/laws/import/job → {job_id} and the
-  // polling effect below picks them up. This is what makes the import
-  // resumable across page refreshes — the work runs entirely on the backend.
+  // Both sources go through a job endpoint and the centralized polling effect
+  // below picks them up by jobId. The work runs entirely on the backend, so a
+  // page refresh mid-import is safe — the polling effect re-attaches via the
+  // jobId stored in the entry (which we mirror to localStorage).
 
   function startStreamingImport(entry: ImportingEntry) {
     // Add to importing list immediately so the user sees it.
     setImportingEntries((prev) => [...prev.filter(e => e.id !== entry.id), entry]);
 
-    // EU imports don't have streaming — use simple fetch (still tied to the
-    // request lifecycle, but with no progress to lose). Migrating EU imports
-    // to jobs would be a separate change.
-    if (entry.source === "eu") {
-      const controller = new AbortController();
-      abortControllers.current.set(entry.id, controller);
-      api.laws.euImport(entry.verId, entry.importHistory, controller.signal)
-        .then((res) => {
-          if (entry.categoryId) {
-            return api.laws.assignCategory(res.law_id, entry.categoryId).then(() => res);
-          }
-          return res;
-        })
-        .then(() => {
-          abortControllers.current.delete(entry.id);
-          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-          fetchData();
-        })
-        .catch((err) => {
-          abortControllers.current.delete(entry.id);
-          const message = err instanceof DOMException && err.name === "AbortError"
-            ? "Import timed out"
-            : err instanceof Error ? err.message : "Import failed";
-          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-          setFailedEntries((prev) => [...prev, {
-            id: entry.id,
-            title: entry.title,
-            lawNumber: entry.lawNumber,
-            verId: entry.verId,
-            source: entry.source,
-            importHistory: entry.importHistory,
-            categoryId: entry.categoryId,
-            groupSlug: entry.groupSlug,
-            error: message,
-          }]);
-        });
-      return;
-    }
+    const startPromise =
+      entry.source === "eu"
+        ? api.laws.startEuImport(entry.verId, entry.importHistory, entry.categoryId)
+        : api.laws.startImport(entry.verId, entry.importHistory, entry.categoryId);
 
-    // RO import: kick off a backend job and remember its id on the entry.
-    api.laws
-      .startImport(entry.verId, entry.importHistory, entry.categoryId)
+    startPromise
       .then(({ job_id }) => {
         setImportingEntries((prev) =>
           prev.map((e) => (e.id === entry.id ? { ...e, jobId: job_id } : e))

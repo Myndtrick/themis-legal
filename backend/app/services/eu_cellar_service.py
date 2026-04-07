@@ -6,6 +6,7 @@ import datetime
 import requests
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -365,12 +366,32 @@ SELECT ?work ?celex ?date WHERE {{
 # --- Task 10: EU Import Orchestration ---
 
 
-def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_limit_delay: float = 2.0) -> dict:
-    """Import an EU law by CELEX number."""
+def import_eu_law(
+    db: Session,
+    celex: str,
+    import_history: bool = True,
+    rate_limit_delay: float = 2.0,
+    on_progress: "Callable[[dict], None] | None" = None,
+) -> dict:
+    """Import an EU law by CELEX number.
+
+    `on_progress` is invoked with `{"phase", "current", "total", "message"}`
+    dicts at known checkpoints. Optional so existing call sites (e.g. legacy
+    sync endpoint, scheduled jobs) can ignore it.
+    """
+    def _emit(phase: str, message: str, current: int | None = None, total: int | None = None) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress({"phase": phase, "message": message, "current": current, "total": total})
+        except Exception:  # noqa: BLE001
+            logger.exception("EU import on_progress raised; continuing")
+
     existing = db.query(Law).filter(Law.celex_number == celex).first()
     if existing:
         raise ValueError(f"Law with CELEX {celex} already imported (law_id={existing.id})")
 
+    _emit("metadata", f"Fetching metadata for {celex}")
     meta = fetch_eu_metadata(celex)
     if not meta:
         raise RuntimeError(f"Could not fetch metadata for CELEX {celex}")
@@ -403,6 +424,7 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
     db.flush()
 
     # Try the newest consolidated version first (includes annexes), fall back to base
+    _emit("version", f"Importing base version of {celex}", current=1, total=1)
     content, lang, used_celex = _fetch_best_content(celex, meta["cellar_uri"], rate_limit_delay)
     version = _store_eu_version(db, law, used_celex, meta["date"], content, lang, is_current=True)
     versions_imported = 1
@@ -412,7 +434,14 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
 
     if import_history:
         consol_versions = fetch_consolidated_versions(celex)
-        for cv in consol_versions:
+        total = len(consol_versions) + 1  # +1 for the base version already imported
+        for idx, cv in enumerate(consol_versions):
+            _emit(
+                "version",
+                f"Importing consolidated version {cv['celex']}",
+                current=idx + 2,
+                total=total,
+            )
             if db.query(LawVersion).filter_by(ver_id=cv["celex"]).first():
                 continue
             try:
