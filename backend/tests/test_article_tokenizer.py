@@ -87,3 +87,24 @@ def test_bullet_marker():
         AtomicUnit("(1)", "bullet", "–", "primul;"),
         AtomicUnit("(1)", "bullet", "–", "al doilea;"),
     ]
+
+
+def test_alineat_caret_variant():
+    units = tokenize_article("(4^1) Conținut.")
+    assert units == [AtomicUnit(None, "alineat", "(4^1)", "Conținut.")]
+
+
+def test_numbered_caret_variant():
+    units = tokenize_article("(1) 42^2. punct nou.")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", ""),
+        AtomicUnit("(1)", "numbered", "42^2.", "punct nou."),
+    ]
+
+
+def test_litera_caret_variant():
+    units = tokenize_article("(1) a^1) variantă a literei a;")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", ""),
+        AtomicUnit("(1)", "litera", "a^1)", "variantă a literei a;"),
+    ]
