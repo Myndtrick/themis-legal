@@ -221,6 +221,29 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
     return results
 
 
+def _recalculate_current_version(db: Session, law_id: int) -> None:
+    """Set is_current on imported versions based on KnownVersion source of truth.
+
+    Only the imported version whose ver_id matches the KnownVersion that
+    LegislatieJust considers current gets is_current=True. If that version
+    is not imported, no imported version is marked current.
+
+    Also backfills missing date_in_force from KnownVersion data.
+    """
+    all_known = db.query(KnownVersion).filter(KnownVersion.law_id == law_id).all()
+    known_map = {kv.ver_id: kv for kv in all_known}
+
+    current_known = next((kv for kv in all_known if kv.is_current), None)
+
+    all_imported = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
+    for v in all_imported:
+        v.is_current = (
+            current_known is not None and v.ver_id == current_known.ver_id
+        )
+        if v.date_in_force is None and v.ver_id in known_map:
+            v.date_in_force = known_map[v.ver_id].date_in_force
+
+
 def seed_known_versions_from_imported(db: Session) -> int:
     """Backfill KnownVersion from existing LawVersion rows.
 

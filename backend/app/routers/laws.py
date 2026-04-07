@@ -20,6 +20,7 @@ from app.models.law import AmendmentNote, Annex, Article, KnownVersion, Law, Law
 from app.models.category import LawMapping
 from app.models.user import User
 from app.database import SessionLocal
+from app.services.version_discovery import _recalculate_current_version
 
 logger = logging.getLogger(__name__)
 
@@ -1389,32 +1390,6 @@ def _background_delete_law(law_id: int, title: str):
         logger.exception(f"Background delete failed for law '{title}' (id={law_id})")
     finally:
         db.close()
-
-
-def _recalculate_current_version(db: Session, law_id: int):
-    """Set is_current on imported versions based on KnownVersion source of truth.
-
-    Only the imported version whose ver_id matches the KnownVersion that
-    LegislatieJust considers current gets is_current=True.  If that version
-    is not imported, no imported version is marked current.
-
-    Also backfills missing date_in_force from KnownVersion data.
-    """
-    # Build a lookup of KnownVersion data for this law
-    all_known = db.query(KnownVersion).filter(KnownVersion.law_id == law_id).all()
-    known_map = {kv.ver_id: kv for kv in all_known}
-
-    # Find the ver_id that LegislatieJust says is current
-    current_known = next((kv for kv in all_known if kv.is_current), None)
-
-    all_imported = db.query(LawVersion).filter(LawVersion.law_id == law_id).all()
-    for v in all_imported:
-        v.is_current = (
-            current_known is not None and v.ver_id == current_known.ver_id
-        )
-        # Backfill missing date_in_force from KnownVersion
-        if v.date_in_force is None and v.ver_id in known_map:
-            v.date_in_force = known_map[v.ver_id].date_in_force
 
 
 def _background_delete_single_version(law_id: int, version_id: int):
