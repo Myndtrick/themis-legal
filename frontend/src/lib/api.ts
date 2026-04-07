@@ -307,12 +307,32 @@ export interface NotificationData {
   created_at: string;
 }
 
-export interface DiffChange {
+export interface DiffSubparagraph {
+  label: string | null;
+  change_type: "added" | "removed" | "modified" | "unchanged";
+  text_a?: string;
+  text_b?: string;
+  diff_html?: string;
+  renumbered_from?: string | null;
+}
+
+export interface DiffParagraph {
+  label: string | null;
+  change_type: "added" | "removed" | "modified" | "unchanged";
+  text_a?: string;
+  text_b?: string;
+  diff_html?: string;
+  subparagraphs: DiffSubparagraph[];
+}
+
+export interface DiffArticle {
   article_number: string;
   change_type: "added" | "removed" | "modified" | "unchanged";
-  text_a: string | null;
-  text_b: string | null;
-  diff_html: string | null;
+  title?: string | null;
+  text_a?: string;
+  text_b?: string;
+  paragraphs: DiffParagraph[];
+  renumbered_from: string | null;
 }
 
 export interface DiffResult {
@@ -325,7 +345,7 @@ export interface DiffResult {
     modified: number;
     unchanged: number;
   };
-  changes: DiffChange[];
+  changes: DiffArticle[];
 }
 
 export interface AdvancedSearchResult {
