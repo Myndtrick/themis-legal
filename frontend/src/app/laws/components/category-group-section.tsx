@@ -58,8 +58,14 @@ export default function CategoryGroupSection({
   onToggleFavorite,
 }: CategoryGroupSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [suggestionsExpanded, setSuggestionsExpanded] = useState(false);
   const [pickingId, setPickingId] = useState<number | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Sync expansion when the parent forces it open (e.g. user picks a category filter)
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true);
+  }, [defaultExpanded]);
 
   // Close version picker on outside click
   useEffect(() => {
@@ -257,10 +263,21 @@ export default function CategoryGroupSection({
       {/* Per-category suggestions */}
       {suggestedLaws.length > 0 && expanded && (
         <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
-          <div className="text-xs text-gray-400 mb-2 italic">
-            Sugestii pentru această categorie
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-gray-400 italic">
+              Sugestii pentru această categorie
+              <span className="ml-1 not-italic">· {suggestedLaws.length}</span>
+            </div>
+            {suggestedLaws.length > PREVIEW_COUNT && !suggestionsExpanded && (
+              <button
+                onClick={() => setSuggestionsExpanded(true)}
+                className="text-xs text-amber-700 hover:text-amber-900"
+              >
+                See all →
+              </button>
+            )}
           </div>
-          {suggestedLaws.map((s) => (
+          {(suggestionsExpanded ? suggestedLaws : suggestedLaws.slice(0, PREVIEW_COUNT)).map((s) => (
             <div key={s.id} className="relative border border-dashed border-gray-200 rounded-lg p-3 mb-1.5" style={{ zIndex: pickingId === s.id ? 50 : 0 }}>
               <div className="flex justify-between items-center">
                 <div className="text-sm text-gray-400">{s.title}</div>
@@ -298,6 +315,14 @@ export default function CategoryGroupSection({
               </div>
             </div>
           ))}
+          {suggestionsExpanded && suggestedLaws.length > PREVIEW_COUNT && (
+            <button
+              onClick={() => setSuggestionsExpanded(false)}
+              className="text-xs text-gray-400 hover:text-gray-600 mt-1"
+            >
+              Show less
+            </button>
+          )}
         </div>
       )}
     </div>

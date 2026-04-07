@@ -21,11 +21,16 @@ def test_import_law_on_progress_default_is_none():
     assert param.default is None
 
 
-def test_sse_endpoint_exists():
-    """The SSE endpoint should be registered on the app."""
+def test_suggestion_import_job_endpoint_exists():
+    """The job-based suggestion-import endpoint should be registered.
+
+    This used to be /api/laws/import-suggestion/{id}/stream (SSE). It moved to
+    a job-based endpoint so imports survive page navigation — the test is kept
+    around as a smoke check that the route is mounted.
+    """
     from app.main import app
     routes = [r.path for r in app.routes]
-    assert "/api/laws/import-suggestion/{mapping_id}/stream" in routes
+    assert "/api/laws/import-suggestion/{mapping_id}/job" in routes
 
 
 def test_import_law_calls_progress_callback(monkeypatch):

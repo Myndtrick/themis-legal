@@ -54,11 +54,16 @@ export default function UpdateBanner({
   const [importingVerId, setImportingVerId] = useState<string | null>(null);
   const [importingAll, setImportingAll] = useState(false);
   const [checkedAt, setCheckedAt] = useState(lastCheckedAt);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  // Per-version error state. Versions whose ver_id maps to permanent: true are
+  // those CELLAR has no published text for — we hide their Import button.
+  const [versionErrors, setVersionErrors] = useState<Map<string, { message: string; permanent: boolean }>>(new Map());
 
   // Auto-check on mount if stale
   useEffect(() => {
     if (!shouldAutoCheck(lastCheckedAt)) return;
     setChecking(true);
+    setCheckError(null);
     api.laws
       .checkUpdates(lawId)
       .then(() => api.laws.getKnownVersions(lawId))
@@ -66,7 +71,9 @@ export default function UpdateBanner({
         onKnownVersionsLoaded(data.versions);
         setCheckedAt(data.last_checked_at);
       })
-      .catch(() => {})
+      .catch((e: unknown) => {
+        setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
+      })
       .finally(() => setChecking(false));
   }, [lawId, lastCheckedAt, onKnownVersionsLoaded]);
 
@@ -100,13 +107,18 @@ export default function UpdateBanner({
 
   async function handleCheckNow() {
     setChecking(true);
+    setCheckError(null);
+    // Clear any prior dismissal — the user is explicitly asking for a fresh
+    // check, so if new versions are found they should surface again even if
+    // the user had dismissed the banner earlier in this session.
+    setDismissed(false);
     try {
       await api.laws.checkUpdates(lawId);
       const data = await api.laws.getKnownVersions(lawId);
       onKnownVersionsLoaded(data.versions);
       setCheckedAt(data.last_checked_at);
-    } catch {
-      // silently fail — user can retry
+    } catch (e: unknown) {
+      setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
     } finally {
       setChecking(false);
     }
@@ -114,11 +126,22 @@ export default function UpdateBanner({
 
   async function handleImportVersion(version: KnownVersionData) {
     setImportingVerId(version.ver_id);
+    setVersionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(version.ver_id);
+      return next;
+    });
     try {
       const res = await api.laws.importKnownVersion(lawId, version.ver_id);
       onVersionImported(version.ver_id, res.law_version_id);
-    } catch {
-      alert("Failed to import version. Please try again.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to import version";
+      const code = (err as { code?: string } | null)?.code;
+      setVersionErrors((prev) => {
+        const next = new Map(prev);
+        next.set(version.ver_id, { message, permanent: code === "eu_content_unavailable" });
+        return next;
+      });
     } finally {
       setImportingVerId(null);
     }
@@ -129,12 +152,24 @@ export default function UpdateBanner({
     // Import oldest first so diffs are computed correctly
     const oldestFirst = [...newVersionsSorted].reverse();
     for (const version of oldestFirst) {
+      // Skip versions we already know are permanently unavailable
+      if (versionErrors.get(version.ver_id)?.permanent) continue;
       try {
         const res = await api.laws.importKnownVersion(lawId, version.ver_id);
         onVersionImported(version.ver_id, res.law_version_id);
-      } catch {
-        alert(`Failed to import v${versionNumberMap.get(version.ver_id) ?? "?"}. Stopping.`);
-        break;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to import version";
+        const code = (err as { code?: string } | null)?.code;
+        const isPermanent = code === "eu_content_unavailable";
+        setVersionErrors((prev) => {
+          const next = new Map(prev);
+          next.set(version.ver_id, { message, permanent: isPermanent });
+          return next;
+        });
+        if (!isPermanent) {
+          break; // transient — stop and let the user retry
+        }
+        // permanent — skip this one and keep going
       }
     }
     setImportingAll(false);
@@ -155,22 +190,29 @@ export default function UpdateBanner({
   // Up to date
   if (newVersions.length === 0 || dismissed) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-green-800">No new versions</p>
-            <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-green-800">No new versions</p>
+              <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+              {checkError && (
+                <p className="text-sm text-red-600 mt-1">
+                  Check failed: {checkError}
+                </p>
+              )}
+            </div>
           </div>
+          <button
+            onClick={handleCheckNow}
+            className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors shrink-0"
+          >
+            {checkError ? "Retry" : "Check now"}
+          </button>
         </div>
-        <button
-          onClick={handleCheckNow}
-          className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors shrink-0"
-        >
-          Check now
-        </button>
       </div>
     );
   }
@@ -192,6 +234,11 @@ export default function UpdateBanner({
             <p className="text-sm text-amber-700/70">
               {checkedText} &middot; {newVersions.length} version{newVersions.length !== 1 ? "s" : ""} not yet imported
             </p>
+            {checkError && (
+              <p className="text-sm text-red-600 mt-1">
+                Check failed: {checkError}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -218,28 +265,42 @@ export default function UpdateBanner({
         {newVersionsSorted.map((version) => {
           const vNum = versionNumberMap.get(version.ver_id) ?? 0;
           const isThisImporting = importingVerId === version.ver_id;
+          const verError = versionErrors.get(version.ver_id);
           return (
             <div
               key={version.ver_id}
-              className="flex items-center justify-between bg-white/60 rounded-md px-3 py-2 border border-amber-100"
+              className="flex flex-col gap-1 bg-white/60 rounded-md px-3 py-2 border border-amber-100"
             >
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-bold text-gray-900">v{vNum}</span>
-                <span className="text-sm text-gray-500">
-                  {(() => {
-                    const d = new Date(version.date_in_force);
-                    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                    return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
-                  })()}
-                </span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-gray-900">v{vNum}</span>
+                  <span className="text-sm text-gray-500">
+                    {(() => {
+                      const d = new Date(version.date_in_force);
+                      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                      return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+                    })()}
+                  </span>
+                </div>
+                {verError?.permanent ? (
+                  <span className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-amber-700 bg-amber-100 rounded">
+                    Not available on CELLAR
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => handleImportVersion(version)}
+                    disabled={isAnyImporting}
+                    className="px-3 py-1 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors"
+                  >
+                    {isThisImporting ? "Importing..." : `Import v${vNum}`}
+                  </button>
+                )}
               </div>
-              <button
-                onClick={() => handleImportVersion(version)}
-                disabled={isAnyImporting}
-                className="px-3 py-1 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors"
-              >
-                {isThisImporting ? "Importing..." : `Import v${vNum}`}
-              </button>
+              {verError && (
+                <p className={`text-xs ${verError.permanent ? "text-amber-700" : "text-red-600"}`}>
+                  {verError.message}
+                </p>
+              )}
             </div>
           );
         })}

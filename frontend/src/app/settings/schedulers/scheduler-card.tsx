@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type SchedulerSettingData } from "@/lib/api";
 import { DiscoveryProgressPanel } from "./discovery-progress";
 
@@ -21,24 +21,49 @@ interface Props {
 }
 
 export function SchedulerCard({ setting, label, emoji, source, onChange, onRefresh }: Props) {
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
   const jobType = setting.id as "ro" | "eu";
 
+  // On mount: check if a discovery is already running for this kind. This is
+  // what makes the "Running..." state survive a page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    api.jobs
+      .list({ kind: `discover_${jobType}`, active: true, limit: 1 })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.jobs.length > 0) {
+          setActiveJobId(res.jobs[0].id);
+          setRunning(true);
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobType]);
+
   const handleRunNow = async () => {
     setRunError(null);
     try {
-      await api.settings.schedulers.triggerDiscovery(jobType);
+      const res = await api.settings.schedulers.triggerDiscovery(jobType);
+      setActiveJobId(res.job_id);
       setRunning(true);
-    } catch (e: any) {
-      setRunError(e.message || "Failed to start");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to start";
+      setRunError(msg);
       setTimeout(() => setRunError(null), 3000);
     }
   };
 
   const handleComplete = useCallback(() => {
     setRunning(false);
+    setActiveJobId(null);
     onRefresh();
   }, [onRefresh]);
 
@@ -153,7 +178,11 @@ export function SchedulerCard({ setting, label, emoji, source, onChange, onRefre
 
       {/* Progress panel */}
       {running && (
-        <DiscoveryProgressPanel jobType={jobType} onComplete={handleComplete} />
+        <DiscoveryProgressPanel
+          jobType={jobType}
+          jobId={activeJobId}
+          onComplete={handleComplete}
+        />
       )}
     </div>
   );

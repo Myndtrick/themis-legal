@@ -2,12 +2,16 @@
 import logging
 import time
 import datetime
+from typing import Callable
+
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.law import Law, KnownVersion
 from app.services.eu_cellar_service import fetch_consolidated_versions, parse_celex
-from app.services.scheduler_config import discovery_progress
+from app.services.version_state import recalculate_current_version
+
+ProgressCallback = Callable[[int, int, str], None]
 
 logger = logging.getLogger(__name__)
 
@@ -55,18 +59,39 @@ def discover_eu_versions_for_law(db: Session, law: Law) -> int:
         db.add(kv)
         new_count += 1
 
-    if new_count:
-        all_known = db.query(KnownVersion).filter_by(law_id=law.id).order_by(KnownVersion.date_in_force.desc()).all()
-        for i, kv in enumerate(all_known):
-            kv.is_current = (i == 0)
-        law.last_checked_at = datetime.datetime.utcnow()
-        db.commit()
+    db.flush()
+
+    # Recompute KnownVersion.is_current on every successful run, not just
+    # when new versions were found. This is what makes EU discovery
+    # self-heal a dead state where existing rows have stale is_current.
+    all_known = (
+        db.query(KnownVersion)
+        .filter_by(law_id=law.id)
+        .order_by(KnownVersion.date_in_force.desc())
+        .all()
+    )
+    for i, kv in enumerate(all_known):
+        kv.is_current = (i == 0)
+
+    # Re-derive LawVersion.is_current from the freshly-authoritative
+    # KnownVersion.is_current — same self-heal mechanism the RO discovery uses.
+    recalculate_current_version(db, law.id)
+
+    law.last_checked_at = datetime.datetime.utcnow()
+    db.commit()
 
     return new_count
 
 
-def run_eu_weekly_discovery(rate_limit_delay: float = 2.0) -> dict:
-    """Run version discovery for all EU laws. Called by scheduler."""
+def run_eu_weekly_discovery(
+    rate_limit_delay: float = 2.0,
+    on_progress: ProgressCallback | None = None,
+) -> dict:
+    """Run version discovery for all EU laws. Called by scheduler.
+
+    `on_progress(current, total, current_law)` lets a Job-backed caller stream
+    progress to a DB row. Optional so the cron call site can ignore it.
+    """
     db = SessionLocal()
     try:
         eu_laws = db.query(Law).filter(Law.source == "eu").all()
@@ -74,11 +99,13 @@ def run_eu_weekly_discovery(rate_limit_delay: float = 2.0) -> dict:
         discovered = 0
         errors = 0
         total = len(eu_laws)
-        discovery_progress["eu"] = {"running": True, "current": 0, "total": total, "current_law": "", "results": None}
 
         for i, law in enumerate(eu_laws):
-            discovery_progress["eu"]["current"] = i + 1
-            discovery_progress["eu"]["current_law"] = law.title or f"Law {law.id}"
+            if on_progress is not None:
+                try:
+                    on_progress(i + 1, total, law.title or f"Law {law.id}")
+                except Exception:  # noqa: BLE001
+                    logger.exception("on_progress callback raised; continuing")
             try:
                 new = discover_eu_versions_for_law(db, law)
                 discovered += new
@@ -91,8 +118,6 @@ def run_eu_weekly_discovery(rate_limit_delay: float = 2.0) -> dict:
                 db.rollback()
 
         logger.info(f"EU weekly discovery: checked={checked}, discovered={discovered}, errors={errors}")
-        results = {"checked": checked, "discovered": discovered, "errors": errors}
-        discovery_progress["eu"] = {"running": False, "current": total, "total": total, "current_law": "", "results": results}
-        return results
+        return {"checked": checked, "discovered": discovered, "errors": errors}
     finally:
         db.close()

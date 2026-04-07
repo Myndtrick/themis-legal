@@ -6,6 +6,7 @@ import datetime
 import requests
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -365,12 +366,32 @@ SELECT ?work ?celex ?date WHERE {{
 # --- Task 10: EU Import Orchestration ---
 
 
-def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_limit_delay: float = 2.0) -> dict:
-    """Import an EU law by CELEX number."""
+def import_eu_law(
+    db: Session,
+    celex: str,
+    import_history: bool = True,
+    rate_limit_delay: float = 2.0,
+    on_progress: "Callable[[dict], None] | None" = None,
+) -> dict:
+    """Import an EU law by CELEX number.
+
+    `on_progress` is invoked with `{"phase", "current", "total", "message"}`
+    dicts at known checkpoints. Optional so existing call sites (e.g. legacy
+    sync endpoint, scheduled jobs) can ignore it.
+    """
+    def _emit(phase: str, message: str, current: int | None = None, total: int | None = None) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress({"phase": phase, "message": message, "current": current, "total": total})
+        except Exception:  # noqa: BLE001
+            logger.exception("EU import on_progress raised; continuing")
+
     existing = db.query(Law).filter(Law.celex_number == celex).first()
     if existing:
         raise ValueError(f"Law with CELEX {celex} already imported (law_id={existing.id})")
 
+    _emit("metadata", f"Fetching metadata for {celex}")
     meta = fetch_eu_metadata(celex)
     if not meta:
         raise RuntimeError(f"Could not fetch metadata for CELEX {celex}")
@@ -403,6 +424,7 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
     db.flush()
 
     # Try the newest consolidated version first (includes annexes), fall back to base
+    _emit("version", f"Importing base version of {celex}", current=1, total=1)
     content, lang, used_celex = _fetch_best_content(celex, meta["cellar_uri"], rate_limit_delay)
     version = _store_eu_version(db, law, used_celex, meta["date"], content, lang, is_current=True)
     versions_imported = 1
@@ -412,7 +434,14 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
 
     if import_history:
         consol_versions = fetch_consolidated_versions(celex)
-        for cv in consol_versions:
+        total = len(consol_versions) + 1  # +1 for the base version already imported
+        for idx, cv in enumerate(consol_versions):
+            _emit(
+                "version",
+                f"Importing consolidated version {cv['celex']}",
+                current=idx + 2,
+                total=total,
+            )
             if db.query(LawVersion).filter_by(ver_id=cv["celex"]).first():
                 continue
             try:
@@ -457,6 +486,51 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
         "document_type": doc_type,
         "versions_imported": versions_imported,
     }
+
+
+def import_eu_known_version(db: Session, law: Law, ver_celex: str) -> LawVersion:
+    """Import a single missing consolidated version of an already-imported EU law.
+
+    Looks up the cellar_uri for the requested CELEX via SPARQL, fetches its
+    XHTML content, and stores it as a new LawVersion. Caller is responsible for
+    committing and recalculating is_current.
+
+    Raises EUContentUnavailableError when the consolidation exists in CELLAR's
+    metadata but has no readable XHTML in any language — that's a permanent,
+    non-retriable failure until the EU publications office releases the text.
+    """
+    from app.errors import EUContentUnavailableError
+
+    if not law.celex_number:
+        raise RuntimeError(f"Law {law.id} has no celex_number — cannot import EU version")
+
+    consol_versions = fetch_consolidated_versions(law.celex_number)
+    match = next((cv for cv in consol_versions if cv.get("celex") == ver_celex), None)
+    if not match:
+        # SPARQL doesn't know about this CELEX — also permanent until CELLAR publishes it.
+        raise EUContentUnavailableError(ver_celex)
+
+    try:
+        cv_content, cv_lang = fetch_eu_content(match["cellar_uri"], ver_celex)
+    except RuntimeError as e:
+        # fetch_eu_content raises RuntimeError("Could not fetch content for X in any language")
+        logger.info(f"EU content unavailable for {ver_celex}: {e}")
+        raise EUContentUnavailableError(ver_celex)
+
+    # Skip versions with empty/shallow content (CELLAR returns empty XHTML for some)
+    arts = cv_content.get("articles", {})
+    has_real_content = any(
+        len(a.get("paragraphs", [])) > 0
+        and any(p.get("text", "").strip() for p in a.get("paragraphs", []))
+        for a in arts.values()
+    ) if arts else False
+    if not has_real_content:
+        raise EUContentUnavailableError(ver_celex)
+
+    # _store_eu_version handles the empty-preamble case by copying from a sibling
+    return _store_eu_version(
+        db, law, ver_celex, match.get("date", ""), cv_content, cv_lang, is_current=False
+    )
 
 
 def _store_eu_version(db, law, ver_celex, date_str, content, language, is_current):

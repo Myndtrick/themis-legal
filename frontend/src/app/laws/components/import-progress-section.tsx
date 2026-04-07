@@ -4,6 +4,8 @@ import { useState } from "react";
 
 export interface ImportingEntry {
   id: string;
+  /** Backend Job id once the import has been submitted (null = not yet submitted, e.g. EU sync path). */
+  jobId: string | null;
   title: string;
   lawNumber: string;
   verId: string;
@@ -30,6 +32,8 @@ export interface FailedEntry {
   categoryId: number | null;
   groupSlug: string | null;
   error: string;
+  /** When true, retrying will not help (e.g. CELLAR has no published text yet). */
+  permanent?: boolean;
 }
 
 const PREVIEW_COUNT = 3;
@@ -173,15 +177,22 @@ function FailedSection({
                   <span className="text-gray-500 font-normal"> — Legea {entry.lawNumber}</span>
                 )}
               </div>
-              <div className="text-xs text-red-500 mt-0.5">{entry.error}</div>
+              <div className={`text-xs mt-0.5 ${entry.permanent ? "text-amber-700" : "text-red-500"}`}>
+                {entry.permanent && (
+                  <span className="font-semibold uppercase tracking-wide mr-1.5">Not retriable —</span>
+                )}
+                {entry.error}
+              </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => onRetry(entry)}
-                className="px-3 py-1.5 text-xs font-medium rounded-md border border-red-300 text-red-700 hover:bg-red-50 transition-colors"
-              >
-                Retry
-              </button>
+              {!entry.permanent && (
+                <button
+                  onClick={() => onRetry(entry)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md border border-red-300 text-red-700 hover:bg-red-50 transition-colors"
+                >
+                  Retry
+                </button>
+              )}
               <button
                 onClick={() => onDismiss(entry.id)}
                 className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"

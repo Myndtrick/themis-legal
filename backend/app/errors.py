@@ -63,6 +63,29 @@ class ImportFailedError(ThemisError):
         super().__init__(msg)
 
 
+class EUContentUnavailableError(ThemisError):
+    """Raised when CELLAR has metadata for an EU consolidated version but no
+    downloadable text. Permanent until the EU publications office publishes it,
+    so the frontend should not offer Retry."""
+
+    code = "eu_content_unavailable"
+    status_code = 502
+
+    def __init__(self, ver_celex: str = ""):
+        if ver_celex:
+            msg = (
+                f"Consolidated version {ver_celex} isn't published as readable "
+                "text on CELLAR yet. Try again once the EU publications office "
+                "releases it."
+            )
+        else:
+            msg = (
+                "This consolidated version isn't published as readable text on "
+                "CELLAR yet. Try again once the EU publications office releases it."
+            )
+        super().__init__(msg)
+
+
 def with_sqlite_retry(max_retries: int = 3):
     """Decorator that retries on SQLite 'database is locked' errors with exponential backoff."""
 

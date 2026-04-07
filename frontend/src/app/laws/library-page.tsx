@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { api, importAllSuggestionsSSE, importLawStreamSSE, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult, ImportProgressEvent, NewVersionEntry } from "@/lib/api";
+import { api, LibraryData, LibraryLaw, SuggestedLaw, BulkImportProgress, BulkImportResult, NewVersionEntry } from "@/lib/api";
 import Sidebar from "./components/sidebar";
 import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
@@ -41,8 +41,23 @@ export default function LibraryPage() {
     }>
   >(new Map());
 
-  // NEW: Import progress tracking
-  const [importingEntries, setImportingEntries] = useState<ImportingEntry[]>([]);
+  // Active job-backed suggestion imports. Keyed by mapping_id so the existing
+  // pendingImports map (which the UI already keys off) stays the source of
+  // truth for display state — this map only tracks which job to poll.
+  const [suggestionImportJobs, setSuggestionImportJobs] = useState<
+    Map<number, { jobId: string; suggestion: SuggestedLaw }>
+  >(new Map());
+
+  // Import progress tracking. Entries are kept in state AND mirrored to
+  // localStorage so a page refresh can rebuild the list — backend jobs survive
+  // browser navigation, so the polling effect picks them right up again.
+  const [importingEntries, setImportingEntries] = useState<ImportingEntry[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem("themis_importing_entries");
+      return stored ? (JSON.parse(stored) as ImportingEntry[]) : [];
+    } catch { return []; }
+  });
   const [failedEntries, setFailedEntries] = useState<FailedEntry[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -53,7 +68,8 @@ export default function LibraryPage() {
   // Track law_ids currently importing from new versions section
   const [newVersionImportingIds, setNewVersionImportingIds] = useState<Set<number>>(new Set());
   const [newVersionsRefreshKey, setNewVersionsRefreshKey] = useState(0);
-  // Keep abort controllers so we can cancel if needed
+  // Abort controllers for the EU sync import path (RO imports are job-based
+  // and don't need cancellation tied to the request).
   const abortControllers = useRef<Map<string, AbortController>>(new Map());
 
   // Category pick for suggestions without a predetermined category
@@ -62,32 +78,212 @@ export default function LibraryPage() {
     importHistory: boolean;
   } | null>(null);
 
-  // Bulk import state
+  // Add-law modal
+
+  // Bulk import state. The job_id is what makes this resumable across page
+  // refreshes — on mount we look for an active import_all_suggestions job and
+  // adopt it. The polling effect below pulls live progress from /api/jobs.
   const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkJobId, setBulkJobId] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<BulkImportProgress | null>(null);
   const [bulkResult, setBulkResult] = useState<BulkImportResult | null>(null);
 
   function handleImportAll(importHistory: boolean) {
-    setBulkImporting(true);
-    setBulkProgress(null);
     setBulkResult(null);
-
-    importAllSuggestionsSSE(
-      importHistory,
-      (progress) => setBulkProgress(progress),
-      () => { /* item done — will refresh at end */ },
-      () => { /* item error — tracked in final result */ },
-      (result) => {
+    setBulkProgress(null);
+    api.laws
+      .startBulkImport(importHistory)
+      .then(({ job_id, total }) => {
+        setBulkJobId(job_id);
+        setBulkImporting(true);
+        setBulkProgress({
+          current: 0,
+          total,
+          title: "",
+          status: "starting",
+        });
+      })
+      .catch(() => {
         setBulkImporting(false);
         setBulkProgress(null);
-        setBulkResult(result);
-        fetchData();
-      },
-    ).catch(() => {
-      setBulkImporting(false);
-      setBulkProgress(null);
-    });
+      });
   }
+
+  // Resume an in-flight bulk import after a page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    api.jobs
+      .list({ kind: "import_all_suggestions", active: true, limit: 1 })
+      .then((res) => {
+        if (cancelled || res.jobs.length === 0) return;
+        setBulkJobId(res.jobs[0].id);
+        setBulkImporting(true);
+      })
+      .catch(() => { /* ignore */ });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Poll the bulk-import job and reflect progress + final result into state.
+  useEffect(() => {
+    if (!bulkJobId) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const job = await api.jobs.get(bulkJobId);
+        if (cancelled) return;
+        if (job.status === "running" || job.status === "pending") {
+          setBulkProgress({
+            current: job.current ?? 0,
+            total: job.total ?? 0,
+            title: job.phase || "",
+            status: "importing",
+          });
+          return;
+        }
+        if (job.status === "succeeded") {
+          setBulkResult((job.result as BulkImportResult) ?? null);
+        } else if (job.status === "failed") {
+          setBulkResult({
+            total: job.total ?? 0,
+            imported: 0,
+            failed: 0,
+            skipped: 0,
+            items: [],
+          });
+        }
+        setBulkImporting(false);
+        setBulkProgress(null);
+        setBulkJobId(null);
+        fetchData();
+      } catch (err) {
+        const statusCode = (err as { statusCode?: number }).statusCode;
+        if (statusCode === 404) {
+          setBulkImporting(false);
+          setBulkProgress(null);
+          setBulkJobId(null);
+        }
+      }
+    };
+
+    tick();
+    const timer = setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // fetchData is a stable useCallback declared below — safe to omit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkJobId]);
+
+  // Poll active suggestion-import jobs. On terminal status, drop the entry
+  // from both maps and refresh the library so the new law shows up.
+  const suggestionJobIds = useMemo(
+    () =>
+      Array.from(suggestionImportJobs.values())
+        .map((v) => v.jobId)
+        .sort()
+        .join(","),
+    [suggestionImportJobs]
+  );
+
+  useEffect(() => {
+    if (!suggestionJobIds) return;
+    let cancelled = false;
+    const ids = suggestionJobIds.split(",").filter(Boolean);
+
+    const tick = async () => {
+      const results = await Promise.all(
+        ids.map((id) =>
+          api.jobs.get(id).then(
+            (j) => ({ id, ok: true as const, job: j }),
+            (err) => ({ id, ok: false as const, err })
+          )
+        )
+      );
+      if (cancelled) return;
+
+      let needsRefresh = false;
+      setSuggestionImportJobs((prev) => {
+        const next = new Map(prev);
+        for (const res of results) {
+          // Find the mapping_id whose entry has this jobId.
+          let mappingId: number | undefined;
+          for (const [k, v] of next.entries()) {
+            if (v.jobId === res.id) {
+              mappingId = k;
+              break;
+            }
+          }
+          if (mappingId === undefined) continue;
+          if (!res.ok) {
+            const statusCode = (res.err as { statusCode?: number } | null)?.statusCode;
+            if (statusCode === 404) {
+              next.delete(mappingId);
+              setPendingImports((p) => {
+                const np = new Map(p);
+                const cur = np.get(mappingId!);
+                if (cur) np.set(mappingId!, { ...cur, error: "Job no longer exists" });
+                return np;
+              });
+            }
+            continue;
+          }
+          const job = res.job;
+          if (job.status === "succeeded") {
+            next.delete(mappingId);
+            setPendingImports((p) => {
+              const np = new Map(p);
+              np.delete(mappingId!);
+              return np;
+            });
+            needsRefresh = true;
+          } else if (job.status === "failed") {
+            next.delete(mappingId);
+            const msg = job.error?.message || "Import failed";
+            setPendingImports((p) => {
+              const np = new Map(p);
+              const cur = np.get(mappingId!);
+              if (cur) np.set(mappingId!, { ...cur, error: msg });
+              return np;
+            });
+          } else {
+            // Running — surface phase as progress message.
+            setPendingImports((p) => {
+              const np = new Map(p);
+              const cur = np.get(mappingId!);
+              if (cur) {
+                np.set(mappingId!, {
+                  ...cur,
+                  progress: {
+                    phase: job.phase || "running",
+                    current: job.current ?? undefined,
+                    total: job.total ?? undefined,
+                    message: job.phase || "Importing...",
+                  },
+                });
+              }
+              return np;
+            });
+          }
+        }
+        return next;
+      });
+
+      if (needsRefresh) fetchData();
+    };
+
+    tick();
+    const timer = setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // fetchData is a stable useCallback declared below — safe to omit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestionJobIds]);
 
   // Persist failed imports to localStorage
   useEffect(() => {
@@ -99,6 +295,142 @@ export default function LibraryPage() {
       }
     } catch { /* localStorage unavailable */ }
   }, [failedEntries]);
+
+  // Mirror in-flight import entries to localStorage so a refresh can show
+  // them again (the backend job is what's actually doing the work — the
+  // polling effect below picks it back up).
+  useEffect(() => {
+    try {
+      if (importingEntries.length > 0) {
+        localStorage.setItem(
+          "themis_importing_entries",
+          JSON.stringify(importingEntries)
+        );
+      } else {
+        localStorage.removeItem("themis_importing_entries");
+      }
+    } catch { /* ignore */ }
+  }, [importingEntries]);
+
+  // Centralized polling for all in-flight import jobs.
+  //
+  // This loop is what makes import progress survive page navigation: backend
+  // Jobs are durable, so on every tick we pull each entry's latest state and
+  // update the UI from it. When a job reaches a terminal state we either drop
+  // the entry (success → refresh data) or move it to failedEntries.
+  //
+  // We extract the list of active job ids as a stable string so the effect
+  // restarts only when the set of polled jobs actually changes.
+  const activeJobIds = useMemo(
+    () =>
+      importingEntries
+        .map((e) => e.jobId)
+        .filter((id): id is string => id !== null)
+        .sort()
+        .join(","),
+    [importingEntries]
+  );
+
+  useEffect(() => {
+    if (!activeJobIds) return;
+    let cancelled = false;
+    const ids = activeJobIds.split(",").filter(Boolean);
+
+    const tick = async () => {
+      // Fetch all active jobs in parallel.
+      const results = await Promise.all(
+        ids.map((id) =>
+          api.jobs.get(id).then(
+            (j) => ({ id, ok: true as const, job: j }),
+            (err) => ({ id, ok: false as const, err })
+          )
+        )
+      );
+      if (cancelled) return;
+
+      const completed: { entryId: string; success: boolean; message: string }[] = [];
+
+      setImportingEntries((prev) => {
+        let next = prev;
+        for (const res of results) {
+          const entry = next.find((e) => e.jobId === res.id);
+          if (!entry) continue;
+          if (!res.ok) {
+            const statusCode = (res.err as { statusCode?: number } | null)?.statusCode;
+            if (statusCode === 404) {
+              completed.push({ entryId: entry.id, success: false, message: "Job no longer exists" });
+              next = next.filter((e) => e.id !== entry.id);
+            }
+            // Transient error: keep entry, try again next tick.
+            continue;
+          }
+          const job = res.job;
+          if (job.status === "succeeded") {
+            completed.push({ entryId: entry.id, success: true, message: "" });
+            next = next.filter((e) => e.id !== entry.id);
+          } else if (job.status === "failed") {
+            const msg = job.error?.message || "Import failed";
+            completed.push({ entryId: entry.id, success: false, message: msg });
+            next = next.filter((e) => e.id !== entry.id);
+          } else {
+            // Still running — merge progress into the entry.
+            next = next.map((e) =>
+              e.id === entry.id
+                ? {
+                    ...e,
+                    progress: {
+                      ...e.progress,
+                      phase: job.phase || e.progress.phase,
+                      current: job.current ?? e.progress.current,
+                      total: job.total ?? e.progress.total,
+                      message: job.phase || e.progress.message,
+                    },
+                  }
+                : e
+            );
+          }
+        }
+        return next;
+      });
+
+      // Side effects after the state update.
+      for (const c of completed) {
+        if (c.success) {
+          fetchData();
+        } else {
+          // Look up the entry's display info for the failed list.
+          const entry = importingEntries.find((e) => e.id === c.entryId);
+          if (entry) {
+            setFailedEntries((prev) => [
+              ...prev,
+              {
+                id: entry.id,
+                title: entry.title,
+                lawNumber: entry.lawNumber,
+                verId: entry.verId,
+                source: entry.source,
+                importHistory: entry.importHistory,
+                categoryId: entry.categoryId,
+                groupSlug: entry.groupSlug,
+                error: c.message,
+              },
+            ]);
+          }
+        }
+      }
+    };
+
+    // Tick immediately, then every 1.5s.
+    tick();
+    const timer = setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // We intentionally exclude importingEntries / fetchData from deps to keep
+    // the loop stable; we use activeJobIds as the cache key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobIds]);
 
   // Abort all in-flight imports on unmount
   useEffect(() => {
@@ -285,32 +617,27 @@ export default function LibraryPage() {
       return next;
     });
 
-    const controller = new AbortController();
-    const timeoutMs = importHistory ? 600_000 : 120_000;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Both EU and RO suggestions kick off a backend job. The polling effect
+    // on suggestionImportJobs below drives the pending entry to a terminal
+    // state, so a page refresh mid-import is safe for both sources.
+    //
+    // EU goes through /api/laws/eu/import/job (no LawMapping involved — we
+    // key the job state by suggestion.id locally, the same way RO does, so
+    // the existing pendingImports / suggestionImportJobs maps stay uniform).
+    const startPromise = suggestion.celex_number
+      ? api.laws.startEuImport(suggestion.celex_number, importHistory, suggestion.category_id ?? null)
+      : api.laws.startImportSuggestion(suggestion.id, importHistory);
 
-    const importPromise = suggestion.celex_number
-      ? api.laws.euImport(suggestion.celex_number, importHistory, controller.signal)
-      : api.laws.importSuggestion(suggestion.id, importHistory, controller.signal);
-
-    importPromise
-      .then(() => {
-        clearTimeout(timer);
-        setPendingImports((prev) => {
+    startPromise
+      .then(({ job_id }) => {
+        setSuggestionImportJobs((prev) => {
           const next = new Map(prev);
-          next.delete(suggestion.id);
+          next.set(suggestion.id, { jobId: job_id, suggestion });
           return next;
         });
-        fetchData();
       })
       .catch((err) => {
-        clearTimeout(timer);
-        const message =
-          err instanceof DOMException && err.name === "AbortError"
-            ? "Import timed out — try current version only."
-            : err instanceof Error
-              ? err.message
-              : "Import failed";
+        const message = err instanceof Error ? err.message : "Failed to start import";
         setPendingImports((prev) => {
           const next = new Map(prev);
           next.set(suggestion.id, { suggestion, error: message });
@@ -335,38 +662,34 @@ export default function LibraryPage() {
     });
   }
 
-  // === NEW: Background import with streaming progress ===
+  // === Background import — job-based for both RO and EU ===
+  //
+  // Both sources go through a job endpoint and the centralized polling effect
+  // below picks them up by jobId. The work runs entirely on the backend, so a
+  // page refresh mid-import is safe — the polling effect re-attaches via the
+  // jobId stored in the entry (which we mirror to localStorage).
 
   function startStreamingImport(entry: ImportingEntry) {
-    const controller = new AbortController();
-    abortControllers.current.set(entry.id, controller);
-
-    // Add to importing list
+    // Add to importing list immediately so the user sees it.
     setImportingEntries((prev) => [...prev.filter(e => e.id !== entry.id), entry]);
 
-    // EU imports don't have streaming — use simple fetch
-    if (entry.source === "eu") {
-      api.laws.euImport(entry.verId, entry.importHistory, controller.signal)
-        .then((res) => {
-          // Assign category
-          if (entry.categoryId) {
-            return api.laws.assignCategory(res.law_id, entry.categoryId).then(() => res);
-          }
-          return res;
-        })
-        .then(() => {
-          abortControllers.current.delete(entry.id);
-          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-          fetchData();
-        })
-        .catch((err) => {
-          abortControllers.current.delete(entry.id);
-          const message = err instanceof DOMException && err.name === "AbortError"
-            ? "Import timed out"
-            : err instanceof Error ? err.message : "Import failed";
-          // Move to failed
-          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-          setFailedEntries((prev) => [...prev, {
+    const startPromise =
+      entry.source === "eu"
+        ? api.laws.startEuImport(entry.verId, entry.importHistory, entry.categoryId)
+        : api.laws.startImport(entry.verId, entry.importHistory, entry.categoryId);
+
+    startPromise
+      .then(({ job_id }) => {
+        setImportingEntries((prev) =>
+          prev.map((e) => (e.id === entry.id ? { ...e, jobId: job_id } : e))
+        );
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Failed to start import";
+        setImportingEntries((prev) => prev.filter((e) => e.id !== entry.id));
+        setFailedEntries((prev) => [
+          ...prev,
+          {
             id: entry.id,
             title: entry.title,
             lawNumber: entry.lawNumber,
@@ -376,93 +699,9 @@ export default function LibraryPage() {
             categoryId: entry.categoryId,
             groupSlug: entry.groupSlug,
             error: message,
-          }]);
-        });
-      return;
-    }
-
-    // RO imports — use SSE streaming
-    importLawStreamSSE(
-      entry.verId,
-      entry.importHistory,
-      entry.categoryId,
-      // onProgress
-      (event: ImportProgressEvent) => {
-        setImportingEntries((prev) => prev.map(e => {
-          if (e.id !== entry.id) return e;
-          return {
-            ...e,
-            progress: {
-              phase: event.phase,
-              current: event.current ?? e.progress.current,
-              total: event.total ?? e.progress.total,
-              versionDate: event.version_date,
-              message: event.message,
-            },
-          };
-        }));
-      },
-      // onComplete
-      () => {
-        abortControllers.current.delete(entry.id);
-        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-        fetchData();
-      },
-      // onError
-      (error) => {
-        abortControllers.current.delete(entry.id);
-        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-        setFailedEntries((prev) => [...prev, {
-          id: entry.id,
-          title: entry.title,
-          lawNumber: entry.lawNumber,
-          verId: entry.verId,
-          source: entry.source,
-          importHistory: entry.importHistory,
-          categoryId: entry.categoryId,
-          groupSlug: entry.groupSlug,
-          error: error.message,
-        }]);
-      },
-      controller.signal,
-    ).catch(async (err) => {
-      // Handle network errors that occur during streaming
-      abortControllers.current.delete(entry.id);
-
-      if (err instanceof DOMException && err.name === "AbortError") {
-        setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-        return; // User navigated away — don't show error
-      }
-
-      // The backend may have completed even though the SSE connection dropped.
-      // Check by refreshing data — if the law appeared, it succeeded.
-      try {
-        const refreshed = await api.laws.library();
-        setData(refreshed);
-        // Check if a law with this verId now exists in the library
-        const found = refreshed.laws.some(l => l.title.includes(entry.title.split(" — ")[0]?.trim() || entry.title));
-        if (found) {
-          setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-          return; // Import succeeded despite connection drop
-        }
-      } catch {
-        // Could not check — fall through to error
-      }
-
-      const message = err instanceof Error ? err.message : "Network error during import";
-      setImportingEntries((prev) => prev.filter(e => e.id !== entry.id));
-      setFailedEntries((prev) => [...prev, {
-        id: entry.id,
-        title: entry.title,
-        lawNumber: entry.lawNumber,
-        verId: entry.verId,
-        source: entry.source,
-        importHistory: entry.importHistory,
-        categoryId: entry.categoryId,
-        groupSlug: entry.groupSlug,
-        error: message,
-      }]);
-    });
+          },
+        ]);
+      });
   }
 
   function handleBackgroundImport(info: BackgroundImportInfo) {
@@ -470,6 +709,7 @@ export default function LibraryPage() {
 
     const entry: ImportingEntry = {
       id: entryId,
+      jobId: null,
       title: info.title,
       lawNumber: "", // Will be populated from search result
       verId: info.verId,
@@ -496,6 +736,7 @@ export default function LibraryPage() {
     const newId = `import-${++_importIdCounter}`;
     const entry: ImportingEntry = {
       id: newId,
+      jobId: null,
       title: failedEntry.title,
       lawNumber: failedEntry.lawNumber,
       verId: failedEntry.verId,
@@ -533,6 +774,7 @@ export default function LibraryPage() {
     const entryId = `newver-${entry.law_id}`;
     const importingEntry: ImportingEntry = {
       id: entryId,
+      jobId: null,
       title: entry.title,
       lawNumber: entry.law_number,
       verId: sortedVerIds[0],
@@ -563,6 +805,28 @@ export default function LibraryPage() {
           imported++;
         } catch (err) {
           const message = err instanceof Error ? err.message : "Import failed";
+          const code = (err as { code?: string } | null)?.code;
+          const isPermanent = code === "eu_content_unavailable";
+
+          if (isPermanent) {
+            // CELLAR has no published text for this version yet — skip it,
+            // record a non-retriable failed entry, and keep trying the rest.
+            setFailedEntries((prev) => [...prev, {
+              id: `${entryId}-skip-${verId}`,
+              title: entry.title,
+              lawNumber: entry.law_number,
+              verId,
+              source: entry.source as "ro" | "eu",
+              importHistory: false,
+              categoryId: null,
+              groupSlug: null,
+              error: message,
+              permanent: true,
+            }]);
+            continue;
+          }
+
+          // Transient/unknown failure — stop the run and let the user retry.
           setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
           setNewVersionImportingIds((prev) => {
             const next = new Set(prev);
@@ -630,8 +894,9 @@ export default function LibraryPage() {
           <h1 className="text-3xl font-bold text-gray-900">Legal Library</h1>
           <p className="mt-1 text-gray-600">Browse Romanian laws with full version history</p>
         </div>
+        <div className="flex gap-2 items-center">
         {activeSuggestions.length > 0 && (
-          <div className="flex gap-2">
+          <>
             {bulkImporting ? (
               <span className="px-4 py-2 bg-indigo-100 text-indigo-700 text-sm font-medium rounded-lg">
                 Importing {bulkProgress?.current || 0}/{bulkProgress?.total || activeSuggestions.length}...
@@ -652,8 +917,9 @@ export default function LibraryPage() {
                 </button>
               </>
             )}
-          </div>
+          </>
         )}
+        </div>
       </div>
 
       {/* Bulk import result */}
@@ -881,6 +1147,7 @@ export default function LibraryPage() {
           onCancel={() => setSuggestionCategoryPick(null)}
         />
       )}
+
     </div>
   );
 }

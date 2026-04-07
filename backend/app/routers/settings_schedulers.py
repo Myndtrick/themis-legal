@@ -11,7 +11,6 @@ from app.models.scheduler_settings import SchedulerSetting
 from app.models.user import User
 from app.services.scheduler_config import (
     compute_next_run,
-    discovery_progress,
     get_all_settings,
     schedule_jobs,
 )
@@ -45,14 +44,6 @@ class SchedulerSettingUpdate(BaseModel):
 class SchedulerSettingsBatch(BaseModel):
     ro: SchedulerSettingUpdate
     eu: SchedulerSettingUpdate
-
-
-class DiscoveryProgressOut(BaseModel):
-    running: bool
-    current: int
-    total: int
-    current_law: str
-    results: dict | None
 
 
 # --- Endpoints ---
@@ -105,17 +96,6 @@ def save_scheduler_settings(
     return {"status": "ok"}
 
 
-@router.get("/discovery-progress/{job_type}", response_model=DiscoveryProgressOut)
-def get_discovery_progress(
-    job_type: str,
-    admin: User = Depends(require_admin),
-):
-    """Poll progress during a manual discovery run."""
-    if job_type not in ("ro", "eu"):
-        raise HTTPException(status_code=400, detail="job_type must be 'ro' or 'eu'")
-
-    progress = discovery_progress.get(job_type)
-    if not progress:
-        return DiscoveryProgressOut(running=False, current=0, total=0, current_law="", results=None)
-
-    return DiscoveryProgressOut(**progress)
+# Note: the old GET /discovery-progress/{job_type} endpoint was removed when
+# discovery moved to the unified jobs system. Frontend now polls /api/jobs by
+# kind ("discover_ro" / "discover_eu") instead.

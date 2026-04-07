@@ -5,14 +5,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category, user, favorite  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
+from app.models import job as job_model  # noqa: F401 — register jobs table
 from app.routers import assistant as assistant_router
-from app.routers import categories, laws, notifications
+from app.routers import categories, jobs as jobs_router, law_mappings, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
 from app.routers import settings_models
 from app.routers import compare
@@ -105,6 +107,9 @@ async def lifespan(app: FastAPI):
         _add_column_if_missing(db, "law_versions", "language", "VARCHAR(10)", "'ro'")
         _add_column_if_missing(db, "known_versions", "language", "VARCHAR(10)", "'ro'")
         _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "law_mappings", "source_url", "TEXT", None)
+        _add_column_if_missing(db, "law_mappings", "source_ver_id", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "law_mappings", "deleted_at", "DATETIME", None)
 
         seed_defaults(db)
         sync_prompts_from_files(db)
@@ -113,6 +118,12 @@ async def lifespan(app: FastAPI):
         ensure_eu_decision_category(db)
         seed_eu_celex_mappings(db)
         backfill_law_mapping_fields(db)
+
+        # One-time rename: 'seed' source label is now 'system'.
+        # Runs after backfill so any pending backfills complete first.
+        db.execute(text("UPDATE law_mappings SET source='system' WHERE source='seed'"))
+        db.commit()
+
         from app.services.user_service import seed_admin_users
         seed_admin_users(db)
         from app.services.model_seed import seed_models
@@ -122,7 +133,7 @@ async def lifespan(app: FastAPI):
 
         # Add diff_summary column if it doesn't exist (SQLite migration)
         # Must run before any query that touches LawVersion
-        from sqlalchemy import inspect, text
+        from sqlalchemy import inspect
         inspector = inspect(engine)
         columns = [c["name"] for c in inspector.get_columns("law_versions")]
         if "diff_summary" not in columns:
@@ -137,6 +148,11 @@ async def lifespan(app: FastAPI):
 
         from app.services.scheduler_config import seed_scheduler_settings
         seed_scheduler_settings(db)
+
+        # Mark any jobs left running by a previous process as failed.
+        # Without this, the UI would spin forever on rows orphaned by a crash.
+        from app.services.job_service import recover_interrupted_jobs
+        recover_interrupted_jobs(db)
 
         # Diff summary backfill skipped on startup (too slow with many versions).
         # Run manually via /api/admin/backfill-diffs if needed.
@@ -212,6 +228,7 @@ async def generic_error_handler(request, exc: Exception):
 
 
 app.include_router(categories.router)
+app.include_router(law_mappings.router)
 app.include_router(laws.router)
 app.include_router(notifications.router)
 app.include_router(assistant_router.router)
@@ -222,6 +239,7 @@ app.include_router(settings_models.router)
 app.include_router(compare.router)
 app.include_router(admin_router.router)
 app.include_router(settings_schedulers.router)
+app.include_router(jobs_router.router)
 
 
 @app.get("/api/health")
