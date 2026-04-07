@@ -128,6 +128,19 @@ export interface SuggestedLaw {
   group_slug: string;
 }
 
+export interface LawMappingResponse {
+  id: number;
+  title: string;
+  category_id: number;
+  source: "system" | "user";
+  source_url: string | null;
+  source_ver_id: string | null;
+  celex_number: string | null;
+  law_number: string | null;
+  law_year: number | null;
+  document_type: string | null;
+}
+
 export interface LibraryData {
   groups: CategoryGroupData[];
   laws: LibraryLaw[];
@@ -910,6 +923,20 @@ export const api = {
       apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "POST" }),
     favoriteRemove: (lawId: number) =>
       apiFetch<{ ok: boolean }>(`/api/laws/${lawId}/favorite`, { method: "DELETE" }),
+  },
+  lawMappings: {
+    create: (url: string, categoryId: number, title?: string) =>
+      apiFetch<LawMappingResponse>("/api/law-mappings", {
+        method: "POST",
+        body: JSON.stringify({ url, category_id: categoryId, title }),
+      }),
+    update: (id: number, fields: Partial<{ title: string; category_id: number; law_number: string; law_year: number; document_type: string }>) =>
+      apiFetch<LawMappingResponse>(`/api/law-mappings/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(fields),
+      }),
+    remove: (id: number) =>
+      apiFetch<void>(`/api/law-mappings/${id}`, { method: "DELETE" }),
   },
   notifications: {
     list: (unreadOnly = false) =>
