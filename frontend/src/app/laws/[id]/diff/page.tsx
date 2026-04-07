@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, DiffResult } from "@/lib/api";
+import { StructuredDiffArticle } from "./components/structured-diff-article";
+import "./diff.css";
 
 export default function DiffPage() {
   const params = useParams();
@@ -141,46 +143,8 @@ export default function DiffPage() {
           <h2 className="text-lg font-semibold text-gray-900">
             Changes ({changedArticles.length} articles)
           </h2>
-          {changedArticles.map((change, idx) => (
-            <div
-              key={idx}
-              className="bg-white rounded-lg border border-gray-200 overflow-hidden"
-            >
-              <div
-                className={`px-4 py-2 text-sm font-medium border-b ${
-                  change.change_type === "modified"
-                    ? "bg-yellow-50 text-yellow-800 border-yellow-200"
-                    : change.change_type === "added"
-                      ? "bg-green-50 text-green-800 border-green-200"
-                      : "bg-red-50 text-red-800 border-red-200"
-                }`}
-              >
-                Art. {change.article_number} —{" "}
-                {change.change_type === "modified"
-                  ? "Modified"
-                  : change.change_type === "added"
-                    ? "Added"
-                    : "Removed"}
-              </div>
-              <div className="p-4">
-                {change.change_type === "modified" && change.diff_html && (
-                  <div
-                    className="text-sm text-gray-700 leading-relaxed diff-content"
-                    dangerouslySetInnerHTML={{ __html: change.diff_html }}
-                  />
-                )}
-                {change.change_type === "added" && (
-                  <div className="text-sm text-green-700 whitespace-pre-wrap">
-                    {change.text_b}
-                  </div>
-                )}
-                {change.change_type === "removed" && (
-                  <div className="text-sm text-red-700 line-through whitespace-pre-wrap">
-                    {change.text_a}
-                  </div>
-                )}
-              </div>
-            </div>
+          {changedArticles.map((change) => (
+            <StructuredDiffArticle key={change.article_number} article={change} />
           ))}
         </div>
       )}
