@@ -160,3 +160,10 @@ def test_real_marker_after_reference_still_recognized():
     assert ("litera", "b)") in labels
     # No second alineat from the reference:
     assert sum(1 for k, _ in labels if k == "alineat") == 1
+
+
+def test_decimal_inside_body_does_not_match_numbered():
+    # The decimal '2.347' must NOT be picked up as numbered '347.'.
+    units = tokenize_article("(1) Conform art. 2.347 din Codul civil.")
+    assert len(units) == 1
+    assert units[0].label == "(1)"
