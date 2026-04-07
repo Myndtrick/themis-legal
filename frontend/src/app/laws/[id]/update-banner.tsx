@@ -54,11 +54,13 @@ export default function UpdateBanner({
   const [importingVerId, setImportingVerId] = useState<string | null>(null);
   const [importingAll, setImportingAll] = useState(false);
   const [checkedAt, setCheckedAt] = useState(lastCheckedAt);
+  const [checkError, setCheckError] = useState<string | null>(null);
 
   // Auto-check on mount if stale
   useEffect(() => {
     if (!shouldAutoCheck(lastCheckedAt)) return;
     setChecking(true);
+    setCheckError(null);
     api.laws
       .checkUpdates(lawId)
       .then(() => api.laws.getKnownVersions(lawId))
@@ -66,7 +68,9 @@ export default function UpdateBanner({
         onKnownVersionsLoaded(data.versions);
         setCheckedAt(data.last_checked_at);
       })
-      .catch(() => {})
+      .catch((e: unknown) => {
+        setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
+      })
       .finally(() => setChecking(false));
   }, [lawId, lastCheckedAt, onKnownVersionsLoaded]);
 
@@ -100,13 +104,14 @@ export default function UpdateBanner({
 
   async function handleCheckNow() {
     setChecking(true);
+    setCheckError(null);
     try {
       await api.laws.checkUpdates(lawId);
       const data = await api.laws.getKnownVersions(lawId);
       onKnownVersionsLoaded(data.versions);
       setCheckedAt(data.last_checked_at);
-    } catch {
-      // silently fail — user can retry
+    } catch (e: unknown) {
+      setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
     } finally {
       setChecking(false);
     }
@@ -155,22 +160,29 @@ export default function UpdateBanner({
   // Up to date
   if (newVersions.length === 0 || dismissed) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-green-800">No new versions</p>
-            <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-green-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-green-800">No new versions</p>
+              <p className="text-sm text-gray-500">{checkedText} &middot; All available versions are imported</p>
+              {checkError && (
+                <p className="text-sm text-red-600 mt-1">
+                  Check failed: {checkError}
+                </p>
+              )}
+            </div>
           </div>
+          <button
+            onClick={handleCheckNow}
+            className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors shrink-0"
+          >
+            {checkError ? "Retry" : "Check now"}
+          </button>
         </div>
-        <button
-          onClick={handleCheckNow}
-          className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors shrink-0"
-        >
-          Check now
-        </button>
       </div>
     );
   }
@@ -192,6 +204,11 @@ export default function UpdateBanner({
             <p className="text-sm text-amber-700/70">
               {checkedText} &middot; {newVersions.length} version{newVersions.length !== 1 ? "s" : ""} not yet imported
             </p>
+            {checkError && (
+              <p className="text-sm text-red-600 mt-1">
+                Check failed: {checkError}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
