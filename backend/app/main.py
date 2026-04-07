@@ -105,6 +105,11 @@ async def lifespan(app: FastAPI):
         _add_column_if_missing(db, "law_versions", "language", "VARCHAR(10)", "'ro'")
         _add_column_if_missing(db, "known_versions", "language", "VARCHAR(10)", "'ro'")
         _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "law_mappings", "source_url", "TEXT", None)
+        _add_column_if_missing(db, "law_mappings", "source_ver_id", "VARCHAR(50)", None)
+        from sqlalchemy import text as _sql_text
+        db.execute(_sql_text("UPDATE law_mappings SET source='system' WHERE source='seed'"))
+        db.commit()
 
         seed_defaults(db)
         sync_prompts_from_files(db)
