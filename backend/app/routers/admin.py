@@ -1,5 +1,4 @@
 import logging
-import threading
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -177,46 +176,86 @@ def get_scheduler_status(admin: User = Depends(require_admin)):
 @router.post("/trigger-discovery/{job_type}")
 def trigger_discovery(
     job_type: str,
+    db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Manually trigger a version discovery check. job_type: 'ro' or 'eu'."""
+    """Manually trigger a version discovery check. job_type: 'ro' or 'eu'.
+
+    Returns `{job_id}` — the discovery itself runs in the JobService thread
+    pool. Frontend polls /api/jobs/{job_id} for progress, which means the work
+    is no longer tied to the request that started it.
+    """
     if job_type not in ("ro", "eu"):
         raise HTTPException(status_code=400, detail="job_type must be 'ro' or 'eu'")
 
-    from app.services.scheduler_config import discovery_progress
+    from app.services import job_service
 
-    # Prevent concurrent runs
-    progress = discovery_progress.get(job_type)
-    if progress and progress.get("running"):
+    kind = f"discover_{job_type}"
+
+    # One discovery per kind at a time. has_active also covers a stale row
+    # left in 'running' from before startup recovery — recover_interrupted_jobs
+    # cleans those, but we still re-check at submission time to be safe.
+    if job_service.has_active(db, kind=kind):
         raise HTTPException(status_code=409, detail=f"{job_type} discovery is already running")
 
-    def _run(jtype: str):
-        import datetime as _dt
-        from app.database import SessionLocal
-        from app.models.scheduler_settings import SchedulerSetting
-
-        if jtype == "ro":
-            from app.services.version_discovery import run_daily_discovery
-            results = run_daily_discovery()
-        else:
-            from app.services.eu_version_discovery import run_eu_weekly_discovery
-            results = run_eu_weekly_discovery()
-
-        # Persist run results in scheduler_settings
-        db = SessionLocal()
-        try:
-            setting = db.query(SchedulerSetting).filter(SchedulerSetting.id == jtype).first()
-            if setting:
-                setting.last_run_at = _dt.datetime.now(_dt.timezone.utc)
-                setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
-                setting.last_run_summary = results
-                db.commit()
-        finally:
-            db.close()
-
-    thread = threading.Thread(target=_run, args=(job_type,), name=f"manual_{job_type}_discovery", daemon=True)
-    thread.start()
+    job_id = job_service.submit(
+        kind=kind,
+        params={"job_type": job_type},
+        runner=_make_discovery_runner(job_type),
+        user_id=admin.id,
+        db=db,
+    )
 
     label = "Romanian law version discovery" if job_type == "ro" else "EU law version discovery"
-    logger.info("Manually triggered %s", label)
-    return {"status": "started", "job_type": job_type, "label": label}
+    logger.info("Manually triggered %s as job %s", label, job_id)
+    return {"status": "started", "job_type": job_type, "label": label, "job_id": job_id}
+
+
+def _make_discovery_runner(job_type: str):
+    """Build a JobService runner that wraps run_daily/run_eu_weekly_discovery.
+
+    The runner runs in a worker thread with its own DB session. The progress
+    callback writes phase/current/total back to the Job row each time we move
+    to the next law, which is what the frontend polls.
+    """
+    import datetime as _dt
+
+    def _runner(db, job_id: str, _params: dict):
+        from app.database import SessionLocal
+        from app.models.scheduler_settings import SchedulerSetting
+        from app.services import job_service as _js
+
+        def _on_progress(current: int, total: int, current_law: str):
+            # Use a fresh session — the runner's own session is mid-loop in
+            # the discovery code path.
+            progress_db = SessionLocal()
+            try:
+                _js.update_progress(
+                    progress_db,
+                    job_id,
+                    phase=f"Checking: {current_law}",
+                    current=current,
+                    total=total,
+                )
+            finally:
+                progress_db.close()
+
+        if job_type == "ro":
+            from app.services.version_discovery import run_daily_discovery
+            results = run_daily_discovery(on_progress=_on_progress)
+        else:
+            from app.services.eu_version_discovery import run_eu_weekly_discovery
+            results = run_eu_weekly_discovery(on_progress=_on_progress)
+
+        # Persist last-run summary on the SchedulerSetting row, just like the
+        # cron path does. We use the runner's own session here.
+        setting = db.query(SchedulerSetting).filter(SchedulerSetting.id == job_type).first()
+        if setting:
+            setting.last_run_at = _dt.datetime.now(_dt.timezone.utc)
+            setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
+            setting.last_run_summary = results
+            db.commit()
+
+        return results
+
+    return _runner

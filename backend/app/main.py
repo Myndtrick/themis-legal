@@ -12,8 +12,9 @@ from app.database import Base, engine
 from app.models import assistant, pipeline, prompt, category, user, favorite  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
+from app.models import job as job_model  # noqa: F401 — register jobs table
 from app.routers import assistant as assistant_router
-from app.routers import categories, law_mappings, laws, notifications
+from app.routers import categories, jobs as jobs_router, law_mappings, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
 from app.routers import settings_models
 from app.routers import compare
@@ -148,6 +149,11 @@ async def lifespan(app: FastAPI):
         from app.services.scheduler_config import seed_scheduler_settings
         seed_scheduler_settings(db)
 
+        # Mark any jobs left running by a previous process as failed.
+        # Without this, the UI would spin forever on rows orphaned by a crash.
+        from app.services.job_service import recover_interrupted_jobs
+        recover_interrupted_jobs(db)
+
         # Diff summary backfill skipped on startup (too slow with many versions).
         # Run manually via /api/admin/backfill-diffs if needed.
     finally:
@@ -233,6 +239,7 @@ app.include_router(settings_models.router)
 app.include_router(compare.router)
 app.include_router(admin_router.router)
 app.include_router(settings_schedulers.router)
+app.include_router(jobs_router.router)
 
 
 @app.get("/api/health")

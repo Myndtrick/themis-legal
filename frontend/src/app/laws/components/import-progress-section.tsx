@@ -4,6 +4,8 @@ import { useState } from "react";
 
 export interface ImportingEntry {
   id: string;
+  /** Backend Job id once the import has been submitted (null = not yet submitted, e.g. EU sync path). */
+  jobId: string | null;
   title: string;
   lawNumber: string;
   verId: string;

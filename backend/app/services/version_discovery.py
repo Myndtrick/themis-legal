@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 
 from app.models.law import KnownVersion, Law, LawVersion
 from app.services.fetcher import fetch_document
-from app.services.scheduler_config import discovery_progress
 from app.services.version_state import (
     SENTINEL_DATE,
     recalculate_current_version as _recalculate_current_version,
@@ -363,11 +362,19 @@ def _discover_eu_versions(db: Session, law: Law) -> int:
     return new_count
 
 
-def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
+def run_daily_discovery(
+    rate_limit_delay: float = 2.0,
+    on_progress: "ProgressCallback | None" = None,
+) -> dict:
     """Run version discovery for all laws.
 
     Creates Notification entries for laws with newly-discovered versions and
     an AuditLog entry summarising the run.
+
+    `on_progress(current, total, current_law)` is invoked once per law before
+    its work begins. The callback is what bridges this function to the Job row
+    so the frontend can poll for progress. It is intentionally optional so the
+    scheduled (cron) call site doesn't need to know about jobs.
 
     Returns a summary dict with keys: checked, discovered, errors.
     """
@@ -382,11 +389,13 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
         logger.info("Starting daily version discovery for %d law(s)", len(laws))
 
         total = len(laws)
-        discovery_progress["ro"] = {"running": True, "current": 0, "total": total, "current_law": "", "results": None}
 
         for i, law in enumerate(laws):
-            discovery_progress["ro"]["current"] = i + 1
-            discovery_progress["ro"]["current_law"] = law.title or f"Law {law.id}"
+            if on_progress is not None:
+                try:
+                    on_progress(i + 1, total, law.title or f"Law {law.id}")
+                except Exception:  # noqa: BLE001
+                    logger.exception("on_progress callback raised; continuing")
             results["checked"] += 1
 
             try:
@@ -424,16 +433,20 @@ def run_daily_discovery(rate_limit_delay: float = 2.0) -> dict:
         )
         db.add(audit)
         db.commit()
-        discovery_progress["ro"] = {"running": False, "current": total, "total": total, "current_law": "", "results": results}
 
     except Exception:
         logger.exception("run_daily_discovery failed")
-        discovery_progress["ro"] = {"running": False, "current": 0, "total": 0, "current_law": "", "results": results}
         db.rollback()
     finally:
         db.close()
 
     return results
+
+
+# Type alias declared after the function so the forward reference resolves.
+from typing import Callable  # noqa: E402
+
+ProgressCallback = Callable[[int, int, str], None]
 
 
 def seed_known_versions_from_imported(db: Session) -> int:

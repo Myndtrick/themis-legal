@@ -640,165 +640,32 @@ export interface SchedulerSettingsUpdate {
   eu: { enabled: boolean; frequency: string; time_hour: number; time_minute: number };
 }
 
-export interface DiscoveryProgress {
-  running: boolean;
-  current: number;
-  total: number;
-  current_law: string;
-  results: { checked: number; discovered: number; errors: number } | null;
+// Background-job tracking. Long-running operations on the backend create a Job
+// row; the frontend polls /api/jobs/{id} so progress survives navigation.
+export type JobStatus = "pending" | "running" | "succeeded" | "failed";
+
+export interface JobData {
+  id: string;
+  kind: string;
+  status: JobStatus;
+  phase: string | null;
+  current: number | null;
+  total: number | null;
+  params: unknown;
+  result: unknown;
+  error: { code?: string; message?: string } | null;
+  entity_kind: string | null;
+  entity_id: string | null;
+  created_by_user_id: number | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
-export async function importSuggestionSSE(
-  mappingId: number,
-  importHistory: boolean,
-  onProgress: (event: { phase: string; current?: number; total?: number; message: string }) => void,
-  onComplete: (data: { law_id: number; title: string; versions_imported: number }) => void,
-  onError: (error: { code: string; message: string }) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/api/laws/import-suggestion/${mappingId}/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ import_history: importHistory }),
-    signal,
-  });
-
-  if (!res.ok || !res.body) {
-    const body = await res.json().catch(() => ({}));
-    onError({ code: body.code || "import_failed", message: body.message || "Import failed" });
-    return;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    let currentEvent = "progress";
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        currentEvent = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        try {
-          const data = JSON.parse(line.slice(5).trim());
-          if (currentEvent === "progress") onProgress(data);
-          else if (currentEvent === "complete") onComplete(data);
-          else if (currentEvent === "error") onError(data);
-        } catch {
-          // Skip malformed data lines
-        }
-      }
-    }
-  }
-}
-
-export interface ImportProgressEvent {
-  phase: string;
-  current?: number;
-  total?: number;
-  message: string;
-  version_date?: string;
-}
-
-export interface ImportCompleteEvent {
-  law_id: number;
-  title: string;
-  law_number: string;
-  law_year: number;
-  document_type: string;
-  suggested_category_id?: number;
-}
-
-export interface ImportErrorEvent {
-  code: string;
-  message: string;
-}
-
-export async function importLawStreamSSE(
-  verId: string,
-  importHistory: boolean,
-  categoryId: number | null,
-  onProgress: (event: ImportProgressEvent) => void,
-  onComplete: (data: ImportCompleteEvent) => void,
-  onError: (error: ImportErrorEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const token = await getAuthToken();
-  console.log("[SSE] Connecting to /api/laws/import/stream", { verId, importHistory, categoryId, hasToken: !!token });
-  const res = await fetch(`${API_BASE}/api/laws/import/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      ver_id: verId,
-      import_history: importHistory,
-      category_id: categoryId,
-    }),
-    signal,
-  });
-  console.log("[SSE] Response status:", res.status, "body:", !!res.body);
-
-  if (!res.ok || !res.body) {
-    const body = await res.json().catch(() => ({}));
-    console.log("[SSE] Error response:", body);
-    onError({ code: body.code || "import_failed", message: body.message || "Import failed" });
-    return;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  console.log("[SSE] Starting to read stream...");
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        console.log("[SSE] Stream done");
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      let currentEvent = "progress";
-      for (const line of lines) {
-        if (line.startsWith("event:")) {
-          currentEvent = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          try {
-            const data = JSON.parse(line.slice(5).trim());
-            console.log("[SSE] Event:", currentEvent, data);
-            if (currentEvent === "progress") onProgress(data);
-            else if (currentEvent === "complete") onComplete(data);
-            else if (currentEvent === "error") onError(data);
-          } catch {
-            // Skip malformed data lines
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[SSE] Stream error:", err);
-    // Network error during streaming
-    if (err instanceof DOMException && err.name === "AbortError") throw err;
-    onError({ code: "network_error", message: err instanceof Error ? err.message : "Connection lost during import" });
-  }
-}
+export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
+  "succeeded",
+  "failed",
+]);
 
 export interface BulkImportProgress {
   current: number;
@@ -808,65 +675,15 @@ export interface BulkImportProgress {
 }
 
 export interface BulkImportResult {
+  total: number;
   imported: number;
   failed: number;
-  total: number;
-}
-
-export async function importAllSuggestionsSSE(
-  importHistory: boolean,
-  onProgress: (event: BulkImportProgress) => void,
-  onItemDone: (data: { title: string; law_id: number }) => void,
-  onItemError: (data: { title: string; error: string }) => void,
-  onComplete: (result: BulkImportResult) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/api/laws/import-all-suggestions/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ import_history: importHistory }),
-    signal,
-  });
-
-  if (!res.ok || !res.body) {
-    onComplete({ imported: 0, failed: 0, total: 0 });
-    return;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    let currentEvent = "progress";
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        currentEvent = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        try {
-          const data = JSON.parse(line.slice(5).trim());
-          if (currentEvent === "progress") onProgress(data);
-          else if (currentEvent === "item_done") onItemDone(data);
-          else if (currentEvent === "item_error") onItemError(data);
-          else if (currentEvent === "item_skip") { /* skip silently */ }
-          else if (currentEvent === "complete") onComplete(data);
-        } catch {
-          // Skip malformed data
-        }
-      }
-    }
-  }
+  skipped: number;
+  items: Array<
+    | { title: string; status: "imported"; law_id: number }
+    | { title: string; status: "skipped"; reason: string }
+    | { title: string; status: "error"; error: string }
+  >;
 }
 
 // API functions
@@ -901,6 +718,38 @@ export const api = {
       ),
     getKnownVersions: (lawId: number) =>
       apiFetch<KnownVersionsResponse>(`/api/laws/${lawId}/known-versions`),
+    /**
+     * Start a direct law import as a background job.
+     * Returns the job_id immediately. Caller polls /api/jobs/{job_id} for
+     * progress and result. Replaces importLawStreamSSE — it survives page
+     * navigation because the work runs in the backend job pool.
+     */
+    startImport: (
+      verId: string,
+      importHistory: boolean,
+      categoryId: number | null
+    ) =>
+      apiFetch<{ job_id: string }>("/api/laws/import/job", {
+        method: "POST",
+        body: JSON.stringify({
+          ver_id: verId,
+          import_history: importHistory,
+          category_id: categoryId,
+        }),
+      }),
+    /**
+     * Start a bulk import of every unimported suggested law.
+     * Returns the job_id immediately. Caller polls /api/jobs/{job_id} for
+     * progress and the final BulkImportResult lives in the job's `result`.
+     */
+    startBulkImport: (importHistory: boolean) =>
+      apiFetch<{ job_id: string; total: number }>(
+        "/api/laws/import-all-suggestions/job",
+        {
+          method: "POST",
+          body: JSON.stringify({ import_history: importHistory }),
+        }
+      ),
     importKnownVersion: (lawId: number, verId: string) =>
       apiFetch<{ status: string; ver_id: string; law_version_id: number }>(
         `/api/laws/${lawId}/known-versions/import`,
@@ -943,6 +792,19 @@ export const api = {
         body: JSON.stringify({ mapping_id: mappingId, import_history: importHistory }),
         signal,
       }),
+    /**
+     * Start a single suggestion import as a background job. Returns the
+     * job_id immediately. The runner mirrors importSuggestion's pin-on-import
+     * behaviour and frontend polls /api/jobs/{job_id} for progress.
+     */
+    startImportSuggestion: (mappingId: number, importHistory: boolean) =>
+      apiFetch<{ job_id: string }>(
+        `/api/laws/import-suggestion/${mappingId}/job`,
+        {
+          method: "POST",
+          body: JSON.stringify({ import_history: importHistory }),
+        }
+      ),
     euSearch: (params: {
       keyword?: string; doc_type?: string; year?: string;
       number?: string; in_force_only?: boolean;
@@ -1130,11 +992,32 @@ export const api = {
           body: JSON.stringify(update),
         }),
       triggerDiscovery: (jobType: "ro" | "eu") =>
-        apiFetch<{ status: string; job_type: string }>(`/api/admin/trigger-discovery/${jobType}`, {
-          method: "POST",
-        }),
-      progress: (jobType: "ro" | "eu") =>
-        apiFetch<DiscoveryProgress>(`/api/admin/discovery-progress/${jobType}`),
+        apiFetch<{ status: string; job_type: string; job_id: string }>(
+          `/api/admin/trigger-discovery/${jobType}`,
+          { method: "POST" }
+        ),
+    },
+  },
+  jobs: {
+    get: (jobId: string) => apiFetch<JobData>(`/api/jobs/${jobId}`),
+    list: (params?: {
+      kind?: string;
+      entityKind?: string;
+      entityId?: string | number;
+      active?: boolean;
+      limit?: number;
+    }) => {
+      const qs = new URLSearchParams();
+      if (params?.kind) qs.set("kind", params.kind);
+      if (params?.entityKind) qs.set("entity_kind", params.entityKind);
+      if (params?.entityId !== undefined && params.entityId !== null)
+        qs.set("entity_id", String(params.entityId));
+      if (params?.active !== undefined) qs.set("active", String(params.active));
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+      const query = qs.toString();
+      return apiFetch<{ jobs: JobData[] }>(
+        `/api/jobs${query ? `?${query}` : ""}`
+      );
     },
   },
 };

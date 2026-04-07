@@ -10,10 +10,6 @@ from app.scheduler import scheduler
 
 logger = logging.getLogger(__name__)
 
-# --- Progress tracking for manual runs ---
-# Updated by discovery functions, read by the progress endpoint.
-discovery_progress: dict[str, dict] = {}
-
 DEFAULTS = {
     "ro": {"frequency": "daily", "time_hour": 3, "time_minute": 0},
     "eu": {"frequency": "weekly", "time_hour": 4, "time_minute": 0},
