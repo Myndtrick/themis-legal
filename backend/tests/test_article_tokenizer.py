@@ -50,3 +50,40 @@ def test_text_before_first_alineat_becomes_intro():
         AtomicUnit(None, "intro", "", "Preambul al articolului."),
         AtomicUnit(None, "alineat", "(1)", "Conținutul."),
     ]
+
+
+def test_numbered_marker_inside_alineat():
+    units = tokenize_article("(1) Intro: 1. primul punct. 2. al doilea punct.")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", "Intro:"),
+        AtomicUnit("(1)", "numbered", "1.", "primul punct."),
+        AtomicUnit("(1)", "numbered", "2.", "al doilea punct."),
+    ]
+
+
+def test_litera_marker_inside_alineat():
+    units = tokenize_article("(1) Intro: a) prima literă; b) a doua literă;")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", "Intro:"),
+        AtomicUnit("(1)", "litera", "a)", "prima literă;"),
+        AtomicUnit("(1)", "litera", "b)", "a doua literă;"),
+    ]
+
+
+def test_upper_litera_marker():
+    units = tokenize_article("(1) Intro: A. primul; B. al doilea;")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", "Intro:"),
+        AtomicUnit("(1)", "upper_litera", "A.", "primul;"),
+        AtomicUnit("(1)", "upper_litera", "B.", "al doilea;"),
+    ]
+
+
+def test_bullet_marker():
+    # Bullet uses U+2013 en-dash + space.
+    units = tokenize_article("(1) Intro: – primul; – al doilea;")
+    assert units == [
+        AtomicUnit(None, "alineat", "(1)", "Intro:"),
+        AtomicUnit("(1)", "bullet", "–", "primul;"),
+        AtomicUnit("(1)", "bullet", "–", "al doilea;"),
+    ]

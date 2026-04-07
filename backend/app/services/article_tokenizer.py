@@ -48,6 +48,17 @@ class MarkerKind:
 # at the same start position — see _resolve_overlaps.
 _MARKER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (MarkerKind.ALINEAT, re.compile(r"\(\s*(\d+(?:\^\d+)?)\s*\)")),
+    # Numbered: digit(s) [+ ^N suffix] + dot + space. The trailing \s avoids
+    # eating decimals like '1.617'. The leading lookbehind requires the digit
+    # NOT to be preceded by another digit or '^' so 'art. 234^1.' (a citation)
+    # does not produce a numbered marker for '1'.
+    (MarkerKind.NUMBERED, re.compile(r"(?<![\d\^])(\d+(?:\^\d+)?)\.\s")),
+    # Upper-case litera: single capital letter + dot + space.
+    (MarkerKind.UPPER_LITERA, re.compile(r"(?<![A-Za-z])([A-Z])\.\s")),
+    # Lower-case litera: single lowercase letter [+ ^N] + closing paren + space.
+    (MarkerKind.LITERA, re.compile(r"(?<![A-Za-z])([a-z](?:\^\d+)?)\)\s")),
+    # Bullet: en-dash + space (most common in parser output).
+    (MarkerKind.BULLET, re.compile(r"(–)\s")),
 ]
 
 
@@ -91,7 +102,15 @@ def _format_label(kind: str, raw_group: str) -> str:
     """Build the AtomicUnit.label from the regex group capture."""
     if kind == MarkerKind.ALINEAT:
         return f"({raw_group})"
-    return raw_group  # filled in by later tasks
+    if kind == MarkerKind.NUMBERED:
+        return f"{raw_group}."
+    if kind == MarkerKind.UPPER_LITERA:
+        return f"{raw_group}."
+    if kind == MarkerKind.LITERA:
+        return f"{raw_group})"
+    if kind == MarkerKind.BULLET:
+        return raw_group  # "–"
+    return raw_group
 
 
 _WHITESPACE_RUN = re.compile(r"\s+")
