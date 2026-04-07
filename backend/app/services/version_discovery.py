@@ -90,20 +90,32 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
 
     Returns the count of newly discovered versions.
     """
-    # Get current LawVersion as entry point
-    current_version = (
-        db.query(LawVersion)
-        .filter(LawVersion.law_id == law.id, LawVersion.is_current == True)  # noqa: E712
-        .first()
-    )
-    if not current_version:
-        logger.warning("No current LawVersion for law %s (%s)", law.id, law.title)
+    # Pick any usable ver_id as the upstream probe entry point. We do NOT
+    # require an is_current LawVersion — see _get_probe_ver_id docstring.
+    entry_ver_id = _get_probe_ver_id(db, law)
+    if entry_ver_id is None:
+        logger.warning("No versions at all for law %s (%s) — skipping discovery", law.id, law.title)
         return 0
 
-    entry_ver_id = current_version.ver_id
+    # Resolve a date_in_force to use for the synthetic-history fallback below.
+    # Prefer LawVersion (richer source), fall back to KnownVersion.
+    probe_lv = (
+        db.query(LawVersion)
+        .filter(LawVersion.law_id == law.id, LawVersion.ver_id == entry_ver_id)
+        .first()
+    )
+    probe_kv = (
+        db.query(KnownVersion)
+        .filter(KnownVersion.law_id == law.id, KnownVersion.ver_id == entry_ver_id)
+        .first()
+    )
+    probe_date = (
+        (probe_lv.date_in_force if probe_lv else None)
+        or (probe_kv.date_in_force if probe_kv else None)
+    )
 
     try:
-        # First fetch using the current ver_id
+        # First fetch using the probe ver_id
         result = fetch_document(entry_ver_id, use_cache=False)
         doc = result["document"]
 
@@ -118,15 +130,10 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
             if next_history:
                 history = list(next_history)
 
-        # Ensure the original entry ver_id appears in the history
+        # Ensure the probe ver_id appears in the history
         history_ver_ids = {h["ver_id"] for h in history}
         if entry_ver_id not in history_ver_ids:
-            # Add a synthetic entry using the date_in_force from LawVersion
-            date_str = (
-                current_version.date_in_force.isoformat()
-                if current_version.date_in_force
-                else ""
-            )
+            date_str = probe_date.isoformat() if probe_date else ""
             history.append({"ver_id": entry_ver_id, "date": date_str})
 
     except Exception as exc:  # noqa: BLE001
@@ -144,9 +151,13 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
         for kv in db.query(KnownVersion).filter(KnownVersion.law_id == law.id).all()
     }
 
-    # The current LawVersion's ver_id is the known entry point — inserting it
+    # Any already-imported LawVersion ver_id is "pre-known" — inserting it
     # into KnownVersion is bookkeeping, not a "new" discovery.
-    pre_known_ver_ids = existing_ver_ids | {entry_ver_id}
+    imported_ver_ids: set[str] = {
+        lv.ver_id
+        for lv in db.query(LawVersion).filter(LawVersion.law_id == law.id).all()
+    }
+    pre_known_ver_ids = existing_ver_ids | imported_ver_ids
 
     new_count = 0
     for entry in history:
@@ -184,6 +195,11 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
     )
     for i, kv in enumerate(all_known_sorted):
         kv.is_current = i == 0
+
+    # Re-derive LawVersion.is_current from the freshly-authoritative
+    # KnownVersion.is_current. This is what makes stuck production laws
+    # self-heal on first visit after deploy.
+    _recalculate_current_version(db, law.id)
 
     # Update law.last_checked_at on success
     law.last_checked_at = datetime.datetime.utcnow()

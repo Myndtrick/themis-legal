@@ -220,3 +220,110 @@ def test_probe_ver_id_falls_back_to_any_law_version_with_null_date():
     db.commit()
 
     assert _get_probe_ver_id(db, law) == "NO_DATE"
+
+
+def test_discover_versions_works_without_is_current_law_version():
+    """Discovery succeeds when no LawVersion has is_current=True."""
+    db = _make_db()
+    law = Law(title="Test", law_number="200", law_year=2020)
+    db.add(law)
+    db.flush()
+    # Imported versions, none marked current (the dead state)
+    db.add(LawVersion(law_id=law.id, ver_id="V1",
+                      date_in_force=datetime.date(2024, 1, 1), is_current=False))
+    db.add(LawVersion(law_id=law.id, ver_id="V2",
+                      date_in_force=datetime.date(2024, 6, 1), is_current=False))
+    db.commit()
+
+    mock_result = {
+        "document": {
+            "next_ver": None,
+            "history": [
+                {"ver_id": "V3", "date": "2024-12-01"},
+                {"ver_id": "V2", "date": "2024-06-01"},
+                {"ver_id": "V1", "date": "2024-01-01"},
+            ],
+        }
+    }
+
+    from app.services.version_discovery import discover_versions_for_law
+    with patch("app.services.version_discovery.fetch_document", return_value=mock_result):
+        new_count = discover_versions_for_law(db, law)
+
+    assert new_count == 1  # V3 is new
+    known_ids = {kv.ver_id for kv in
+                 db.query(KnownVersion).filter(KnownVersion.law_id == law.id).all()}
+    assert known_ids == {"V1", "V2", "V3"}
+    assert law.last_checked_at is not None
+
+
+def test_discover_versions_self_heals_law_version_is_current():
+    """When KnownVersion.is_current points to an imported ver_id, the LawVersion's
+    is_current flag is flipped to True at the end of discovery."""
+    db = _make_db()
+    law = Law(title="Test", law_number="300", law_year=2020)
+    db.add(law)
+    db.flush()
+    db.add(LawVersion(law_id=law.id, ver_id="V1",
+                      date_in_force=datetime.date(2024, 1, 1), is_current=False))
+    db.add(LawVersion(law_id=law.id, ver_id="V2",
+                      date_in_force=datetime.date(2024, 6, 1), is_current=False))
+    db.commit()
+
+    # Discovery will find V2 as the newest in upstream history → mark its
+    # KnownVersion is_current=True → recalc should flip LawVersion V2 to is_current=True
+    mock_result = {
+        "document": {
+            "next_ver": None,
+            "history": [
+                {"ver_id": "V2", "date": "2024-06-01"},
+                {"ver_id": "V1", "date": "2024-01-01"},
+            ],
+        }
+    }
+
+    from app.services.version_discovery import discover_versions_for_law
+    with patch("app.services.version_discovery.fetch_document", return_value=mock_result):
+        discover_versions_for_law(db, law)
+
+    v2 = db.query(LawVersion).filter(LawVersion.ver_id == "V2").one()
+    v1 = db.query(LawVersion).filter(LawVersion.ver_id == "V1").one()
+    assert v2.is_current is True
+    assert v1.is_current is False
+
+
+def test_discover_versions_preserves_dead_state_correctly():
+    """When upstream's current ver_id is NOT imported, no LawVersion is marked current.
+    This is semantic B — we're not up to date and the truth is reflected."""
+    db = _make_db()
+    law = Law(title="Test", law_number="400", law_year=2020)
+    db.add(law)
+    db.flush()
+    db.add(LawVersion(law_id=law.id, ver_id="V1",
+                      date_in_force=datetime.date(2024, 1, 1), is_current=False))
+    db.commit()
+
+    # Upstream has V2 (newer, not yet imported)
+    mock_result = {
+        "document": {
+            "next_ver": None,
+            "history": [
+                {"ver_id": "V2", "date": "2024-06-01"},
+                {"ver_id": "V1", "date": "2024-01-01"},
+            ],
+        }
+    }
+
+    from app.services.version_discovery import discover_versions_for_law
+    with patch("app.services.version_discovery.fetch_document", return_value=mock_result):
+        discover_versions_for_law(db, law)
+
+    # KnownVersion V2 should be is_current=True
+    kv_v2 = db.query(KnownVersion).filter(KnownVersion.ver_id == "V2").one()
+    assert kv_v2.is_current is True
+
+    # But no LawVersion should be marked current (V2 isn't imported)
+    current_lvs = db.query(LawVersion).filter(
+        LawVersion.law_id == law.id, LawVersion.is_current == True  # noqa: E712
+    ).all()
+    assert current_lvs == []
