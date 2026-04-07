@@ -104,3 +104,57 @@ def test_diff_paragraph_intro_text_modified():
     assert result["text_a"] == "Intro vechi:"
     assert result["text_b"] == "Intro nou:"
     assert "<del>vechi:</del>" in result["diff_html"]
+
+
+from app.services.structured_diff import diff_article
+
+
+@dataclass
+class FakeArt:
+    article_number: str
+    full_text: str
+    label: str | None = None
+    paragraphs: list[FakePara] = field(default_factory=list)
+
+
+def test_diff_article_unchanged():
+    a = FakeArt("62", "same", paragraphs=[FakePara("(1)", "", subparagraphs=[FakeSub("a)", "x")])])
+    b = FakeArt("62", "same", paragraphs=[FakePara("(1)", "", subparagraphs=[FakeSub("a)", "x")])])
+    result = diff_article(a, b)
+    assert result["change_type"] == "unchanged"
+
+
+def test_diff_article_modified_in_one_litera():
+    a = FakeArt("62", "x", paragraphs=[FakePara("(1)", "", subparagraphs=[
+        FakeSub("a)", "alpha"),
+        FakeSub("k)", "fonduri facultative"),
+    ])])
+    b = FakeArt("62", "x", paragraphs=[FakePara("(1)", "", subparagraphs=[
+        FakeSub("a)", "alpha"),
+        FakeSub("k)", "fonduri ocupaționale"),
+    ])])
+    result = diff_article(a, b)
+    assert result["article_number"] == "62"
+    assert result["change_type"] == "modified"
+    assert len(result["paragraphs"]) == 1
+    para = result["paragraphs"][0]
+    assert para["label"] == "(1)"
+    assert para["change_type"] == "modified"
+    leaves = para["subparagraphs"]
+    assert leaves[0]["change_type"] == "unchanged"
+    assert leaves[1]["change_type"] == "modified"
+    assert "<ins>ocupaționale</ins>" in leaves[1]["diff_html"]
+
+
+def test_diff_article_added_paragraph():
+    a = FakeArt("76", "x", paragraphs=[FakePara("(1)", "intro")])
+    b = FakeArt("76", "x", paragraphs=[
+        FakePara("(1)", "intro"),
+        FakePara("(4^1)", "noul alineat"),
+    ])
+    result = diff_article(a, b)
+    assert result["change_type"] == "modified"
+    labels = [p["label"] for p in result["paragraphs"]]
+    assert labels == ["(1)", "(4^1)"]
+    assert result["paragraphs"][1]["change_type"] == "added"
+    assert result["paragraphs"][1]["text_b"] == "noul alineat"

@@ -167,3 +167,98 @@ def diff_paragraph(para_a: _ParaLike, para_b: _ParaLike) -> dict[str, Any]:
         result["change_type"] = "modified"
 
     return result
+
+
+class _ArticleLike(Protocol):
+    article_number: str
+    full_text: str
+    label: str | None
+    paragraphs: list[_ParaLike]
+
+
+def _diff_paragraphs_list(
+    paras_a: list[_ParaLike], paras_b: list[_ParaLike]
+) -> list[dict[str, Any]]:
+    """Match paragraphs by label, fall back to position for unlabeled."""
+    seen: set[str] = set()
+    map_a: dict[str, _ParaLike] = {p.label: p for p in paras_a if p.label}
+    result: list[dict[str, Any]] = []
+
+    unlabeled_a = [p for p in paras_a if not p.label]
+    unlabeled_b = [p for p in paras_b if not p.label]
+
+    for p in paras_b:
+        if not p.label:
+            continue
+        seen.add(p.label)
+        if p.label in map_a:
+            result.append(diff_paragraph(map_a[p.label], p))
+        else:
+            # Whole paragraph added: emit as a one-off leaf with no children diff.
+            result.append({
+                "label": p.label,
+                "change_type": "added",
+                "text_b": p.text,
+                "subparagraphs": [
+                    _leaf_for_added(s) for s in p.subparagraphs
+                ],
+            })
+
+    for p in paras_a:
+        if p.label and p.label not in seen:
+            result.append({
+                "label": p.label,
+                "change_type": "removed",
+                "text_a": p.text,
+                "subparagraphs": [
+                    _leaf_for_removed(s) for s in p.subparagraphs
+                ],
+            })
+
+    # Position-match unlabeled paragraphs.
+    for i in range(max(len(unlabeled_a), len(unlabeled_b))):
+        a = unlabeled_a[i] if i < len(unlabeled_a) else None
+        b = unlabeled_b[i] if i < len(unlabeled_b) else None
+        if a and b:
+            result.append(diff_paragraph(a, b))
+        elif b:
+            result.append({
+                "label": None,
+                "change_type": "added",
+                "text_b": b.text,
+                "subparagraphs": [_leaf_for_added(s) for s in b.subparagraphs],
+            })
+        elif a:
+            result.append({
+                "label": None,
+                "change_type": "removed",
+                "text_a": a.text,
+                "subparagraphs": [_leaf_for_removed(s) for s in a.subparagraphs],
+            })
+
+    return result
+
+
+def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
+    """Diff two articles by structural recursion.
+
+    Recurses into paragraphs and derives the article's change_type from
+    whether any descendant changed. We do NOT short-circuit on
+    art.full_text equality — denormalized full_text can drift from the
+    authoritative paragraph tree, and short-circuiting would silently
+    hide real changes when it does.
+    """
+    paragraph_diffs = _diff_paragraphs_list(
+        list(art_a.paragraphs), list(art_b.paragraphs)
+    )
+
+    any_changed = any(p["change_type"] != "unchanged" for p in paragraph_diffs)
+    change_type = "modified" if any_changed else "unchanged"
+
+    return {
+        "article_number": art_b.article_number,
+        "change_type": change_type,
+        "title": art_b.label,
+        "paragraphs": paragraph_diffs if change_type == "modified" else [],
+        "renumbered_from": None,
+    }
