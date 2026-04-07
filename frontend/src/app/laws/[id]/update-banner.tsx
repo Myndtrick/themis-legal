@@ -105,6 +105,10 @@ export default function UpdateBanner({
   async function handleCheckNow() {
     setChecking(true);
     setCheckError(null);
+    // Clear any prior dismissal — the user is explicitly asking for a fresh
+    // check, so if new versions are found they should surface again even if
+    // the user had dismissed the banner earlier in this session.
+    setDismissed(false);
     try {
       await api.laws.checkUpdates(lawId);
       const data = await api.laws.getKnownVersions(lawId);
