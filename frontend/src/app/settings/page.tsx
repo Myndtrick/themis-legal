@@ -8,6 +8,7 @@ import { HealthDashboard } from "./pipeline/health-dashboard";
 import { RunTable } from "./pipeline/run-table";
 import { VersionHistory } from "./versions/version-history";
 import { CategoriesTable } from "./categories/categories-table";
+import { SuggestionsTable } from "./suggestions/suggestions-table";
 import { ModelsTable } from "./models/models-table";
 import { UsersTable } from "./users/users-table";
 import { SchedulerSettings } from "./schedulers/scheduler-settings";
@@ -53,6 +54,10 @@ function SettingsContent() {
 
           if (activeTab === "categories") {
             return <CategoriesTable />;
+          }
+
+          if (activeTab === "suggestions") {
+            return <SuggestionsTable />;
           }
 
           if (activeTab === "models") {

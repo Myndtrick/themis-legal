@@ -7,6 +7,7 @@ const TABS = [
   { id: "pipeline", label: "Pipeline Tracking" },
   { id: "versions", label: "Version History" },
   { id: "categories", label: "Categories" },
+  { id: "suggestions", label: "Suggestions" },
   { id: "models", label: "Models" },
   { id: "users", label: "Users" },
   { id: "schedulers", label: "Schedulers" },
