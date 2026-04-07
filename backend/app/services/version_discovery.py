@@ -17,14 +17,32 @@ from app.services.scheduler_config import discovery_progress
 logger = logging.getLogger(__name__)
 
 
+SENTINEL_DATE = datetime.date(1900, 1, 1)
+
+
 def _parse_date(date_str: str) -> datetime.date:
-    """Parse a date string, falling back to 1900-01-01 on failure."""
+    """Parse a date string from legislatie.just.ro history.
+
+    legislatie.just.ro returns dates in European DD.MM.YYYY format (e.g.
+    "31.03.2026"). Older tests and some callers pass ISO YYYY-MM-DD. We
+    accept both and fall back to the 1900-01-01 sentinel on failure.
+    """
     if not date_str:
-        return datetime.date(1900, 1, 1)
+        return SENTINEL_DATE
+    s = date_str.strip()
+    # Try DD.MM.YYYY first (the format legislatie.just.ro actually returns)
+    if "." in s:
+        parts = s.split(".")
+        if len(parts) == 3:
+            try:
+                return datetime.date(int(parts[2]), int(parts[1]), int(parts[0]))
+            except (ValueError, IndexError):
+                pass
+    # Try ISO YYYY-MM-DD
     try:
-        return datetime.date.fromisoformat(date_str)
+        return datetime.date.fromisoformat(s)
     except (ValueError, TypeError):
-        return datetime.date(1900, 1, 1)
+        return SENTINEL_DATE
 
 
 def _get_probe_ver_id(db: Session, law: Law) -> str | None:
@@ -159,6 +177,12 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
     }
     pre_known_ver_ids = existing_ver_ids | imported_ver_ids
 
+    # Pre-load existing KnownVersion rows so we can heal broken dates in-place.
+    existing_kvs: dict[str, KnownVersion] = {
+        kv.ver_id: kv
+        for kv in db.query(KnownVersion).filter(KnownVersion.law_id == law.id).all()
+    }
+
     new_count = 0
     for entry in history:
         ver_id = entry.get("ver_id")
@@ -180,6 +204,17 @@ def discover_versions_for_law(db: Session, law: Law) -> int:
             # Only count as new if it wasn't the existing current ver_id
             if ver_id not in pre_known_ver_ids:
                 new_count += 1
+        else:
+            # Heal sentinel dates from the old broken parser. Only overwrite
+            # when the stored date is the SENTINEL_DATE *and* the freshly
+            # parsed date is real — never clobber a real date with a sentinel.
+            kv = existing_kvs.get(ver_id)
+            if (
+                kv is not None
+                and kv.date_in_force == SENTINEL_DATE
+                and date_in_force != SENTINEL_DATE
+            ):
+                kv.date_in_force = date_in_force
 
     db.flush()
 
@@ -307,8 +342,15 @@ def _recalculate_current_version(db: Session, law_id: int) -> None:
         v.is_current = (
             current_known is not None and v.ver_id == current_known.ver_id
         )
-        if v.date_in_force is None and v.ver_id in known_map:
-            v.date_in_force = known_map[v.ver_id].date_in_force
+        # Backfill missing or sentinel date_in_force from KnownVersion data.
+        # The SENTINEL_DATE branch heals rows that were created by the old
+        # broken DD.MM.YYYY-unaware parser.
+        if v.ver_id in known_map:
+            kv_date = known_map[v.ver_id].date_in_force
+            if kv_date is not None and kv_date != SENTINEL_DATE and (
+                v.date_in_force is None or v.date_in_force == SENTINEL_DATE
+            ):
+                v.date_in_force = kv_date
 
 
 def seed_known_versions_from_imported(db: Session) -> int:

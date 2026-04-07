@@ -327,3 +327,68 @@ def test_discover_versions_preserves_dead_state_correctly():
         LawVersion.law_id == law.id, LawVersion.is_current == True  # noqa: E712
     ).all()
     assert current_lvs == []
+
+
+def test_parse_date_handles_european_format():
+    """legislatie.just.ro returns dates as DD.MM.YYYY, not ISO YYYY-MM-DD."""
+    from app.services.version_discovery import _parse_date
+    assert _parse_date("31.03.2026") == datetime.date(2026, 3, 31)
+    assert _parse_date("01.01.2020") == datetime.date(2020, 1, 1)
+    assert _parse_date("08.09.2015") == datetime.date(2015, 9, 8)
+
+
+def test_parse_date_still_handles_iso_format():
+    """Backward compat: ISO YYYY-MM-DD strings used by existing tests must still parse."""
+    from app.services.version_discovery import _parse_date
+    assert _parse_date("2026-03-31") == datetime.date(2026, 3, 31)
+    assert _parse_date("2024-06-01") == datetime.date(2024, 6, 1)
+
+
+def test_parse_date_falls_back_on_garbage():
+    """Unparseable input falls back to the 1900-01-01 sentinel."""
+    from app.services.version_discovery import _parse_date
+    assert _parse_date("") == datetime.date(1900, 1, 1)
+    assert _parse_date("not a date") == datetime.date(1900, 1, 1)
+    assert _parse_date("99.99.9999") == datetime.date(1900, 1, 1)
+
+
+def test_discover_heals_known_version_with_sentinel_date():
+    """A pre-existing KnownVersion row with date_in_force=1900-01-01 (from the
+    old broken parser) must be healed when discovery re-fetches and finds a
+    real date in the history."""
+    db = _make_db()
+    law = Law(title="Test", law_number="500", law_year=2020)
+    db.add(law)
+    db.flush()
+    # Seed the broken state: LawVersion and KnownVersion both have the sentinel
+    # date, exactly like the production data.
+    db.add(LawVersion(law_id=law.id, ver_id="307831",
+                      date_in_force=datetime.date(1900, 1, 1), is_current=False))
+    db.add(KnownVersion(law_id=law.id, ver_id="307831",
+                        date_in_force=datetime.date(1900, 1, 1),
+                        is_current=False, discovered_at=datetime.datetime.utcnow()))
+    db.commit()
+
+    # Upstream history returns the real DD.MM.YYYY date for 307831
+    mock_result = {
+        "document": {
+            "next_ver": None,
+            "history": [
+                {"ver_id": "307831", "date": "31.03.2026"},
+            ],
+        }
+    }
+
+    from app.services.version_discovery import discover_versions_for_law
+    with patch("app.services.version_discovery.fetch_document", return_value=mock_result):
+        discover_versions_for_law(db, law)
+
+    kv = db.query(KnownVersion).filter(KnownVersion.ver_id == "307831").one()
+    lv = db.query(LawVersion).filter(LawVersion.ver_id == "307831").one()
+    # Both rows should now carry the real date, not the sentinel.
+    assert kv.date_in_force == datetime.date(2026, 3, 31)
+    assert lv.date_in_force == datetime.date(2026, 3, 31)
+    # And the LawVersion should be marked is_current because it matches the
+    # upstream-current KnownVersion after the date fix makes it the newest.
+    assert kv.is_current is True
+    assert lv.is_current is True
