@@ -836,7 +836,7 @@ export const api = {
         { method: "DELETE" }
       ),
     checkUpdates: (id: number) =>
-      apiFetch<{ has_update: boolean; message: string }>(
+      apiFetch<{ discovered: number; last_checked_at: string | null }>(
         `/api/laws/${id}/check-updates`,
         { method: "POST" }
       ),
