@@ -11,6 +11,7 @@ structured_diff.py), so a flat representation is sufficient.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -41,6 +42,14 @@ class MarkerKind:
     BULLET = "bullet"
 
 
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace to a single space and strip ends."""
+    return _WHITESPACE_RUN.sub(" ", text).strip()
+
+
 def tokenize_article(full_text: str) -> list[AtomicUnit]:
     """Tokenize an article's full_text into a flat list of AtomicUnit.
 
@@ -49,4 +58,16 @@ def tokenize_article(full_text: str) -> list[AtomicUnit]:
     """
     if not full_text:
         return []
-    return []  # filled in by later tasks
+
+    # No markers recognized yet — emit the whole text as one intro unit.
+    normalized = _normalize_whitespace(full_text)
+    if not normalized:
+        return []
+    return [
+        AtomicUnit(
+            alineat_label=None,
+            marker_kind=MarkerKind.INTRO,
+            label="",
+            text=normalized,
+        )
+    ]
