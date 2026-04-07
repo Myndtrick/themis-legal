@@ -1,6 +1,5 @@
 import asyncio
 import datetime
-import difflib
 import json
 import logging
 import re
@@ -994,9 +993,6 @@ class ImportKnownVersionRequest(BaseModel):
 @router.post("/{law_id}/known-versions/import")
 def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Session = Depends(get_db)):
     """Import a specific known version (full text extraction)."""
-    from app.services.leropa_service import fetch_and_store_version
-    import app.services.leropa_service as _ls
-
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
@@ -1015,10 +1011,19 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
     if existing:
         raise HTTPException(status_code=409, detail="This version is already imported")
 
-    _ls._stored_article_ids = set()
-    _, new_version = fetch_and_store_version(
-        db, req.ver_id, law=law, override_date=kv.date_in_force,
-    )
+    if law.source == "eu":
+        from app.services.eu_cellar_service import import_eu_known_version
+        try:
+            new_version = import_eu_known_version(db, law, req.ver_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    else:
+        from app.services.leropa_service import fetch_and_store_version
+        import app.services.leropa_service as _ls
+        _ls._stored_article_ids = set()
+        _, new_version = fetch_and_store_version(
+            db, req.ver_id, law=law, override_date=kv.date_in_force,
+        )
 
     # Update is_current based on KnownVersion source of truth (LegislatieJust)
     _recalculate_current_version(db, law_id)
@@ -1051,9 +1056,6 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
 @router.post("/{law_id}/known-versions/import-all")
 def import_all_missing(law_id: int, db: Session = Depends(get_db)):
     """Import all known versions that aren't imported yet."""
-    from app.services.leropa_service import fetch_and_store_version
-    import app.services.leropa_service as _ls
-
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
         raise HTTPException(status_code=404, detail="Law not found")
@@ -1080,14 +1082,30 @@ def import_all_missing(law_id: int, db: Session = Depends(get_db)):
 
     imported_count = 0
     errors = []
-    for kv in missing:
-        try:
-            _ls._stored_article_ids = set()
-            fetch_and_store_version(db, kv.ver_id, law=law, override_date=kv.date_in_force)
-            imported_count += 1
-        except Exception as e:
-            logger.error(f"Failed to import version {kv.ver_id}: {e}")
-            errors.append({"ver_id": kv.ver_id, "error": str(e)[:200]})
+
+    if law.source == "eu":
+        import time as _time
+        from app.services.eu_cellar_service import import_eu_known_version
+        for i, kv in enumerate(missing):
+            try:
+                if i > 0:
+                    _time.sleep(2.0)  # rate-limit CELLAR API
+                import_eu_known_version(db, law, kv.ver_id)
+                imported_count += 1
+            except Exception as e:
+                logger.error(f"Failed to import EU version {kv.ver_id}: {e}")
+                errors.append({"ver_id": kv.ver_id, "error": str(e)[:200]})
+    else:
+        from app.services.leropa_service import fetch_and_store_version
+        import app.services.leropa_service as _ls
+        for kv in missing:
+            try:
+                _ls._stored_article_ids = set()
+                fetch_and_store_version(db, kv.ver_id, law=law, override_date=kv.date_in_force)
+                imported_count += 1
+            except Exception as e:
+                logger.error(f"Failed to import version {kv.ver_id}: {e}")
+                errors.append({"ver_id": kv.ver_id, "error": str(e)[:200]})
 
     # Update is_current based on KnownVersion source of truth
     _recalculate_current_version(db, law_id)
@@ -1482,11 +1500,14 @@ def diff_versions(
     version_b: int,
     db: Session = Depends(get_db),
 ):
-    """Compare two versions of a law, article by article.
+    """Compare two versions of a law as a structural tree.
 
     version_a and version_b are LawVersion IDs.
-    Returns a list of article-level changes.
+    Returns a tree of article → paragraph → subparagraph diffs. Articles
+    that are byte-for-byte unchanged are excluded.
     """
+    from app.services.structured_diff import diff_articles
+
     ver_a = (
         db.query(LawVersion)
         .filter(LawVersion.id == version_a, LawVersion.law_id == law_id)
@@ -1503,71 +1524,32 @@ def diff_versions(
     articles_a = (
         db.query(Article)
         .filter(Article.law_version_id == version_a)
+        .options(
+            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs)
+        )
         .order_by(Article.order_index)
         .all()
     )
     articles_b = (
         db.query(Article)
         .filter(Article.law_version_id == version_b)
+        .options(
+            subqueryload(Article.paragraphs).subqueryload(Paragraph.subparagraphs)
+        )
         .order_by(Article.order_index)
         .all()
     )
 
-    # Index by article_number
-    map_a = {a.article_number: a for a in articles_a}
-    map_b = {b.article_number: b for b in articles_b}
+    changes = diff_articles(articles_a, articles_b)
 
-    all_numbers = sorted(
-        set(map_a.keys()) | set(map_b.keys()),
-        key=lambda x: (len(x), x),
-    )
-
-    changes = []
-    for num in all_numbers:
-        art_a = map_a.get(num)
-        art_b = map_b.get(num)
-
-        if art_a and not art_b:
-            changes.append({
-                "article_number": num,
-                "change_type": "removed",
-                "text_a": art_a.full_text,
-                "text_b": None,
-                "diff_html": None,
-            })
-        elif art_b and not art_a:
-            changes.append({
-                "article_number": num,
-                "change_type": "added",
-                "text_a": None,
-                "text_b": art_b.full_text,
-                "diff_html": None,
-            })
-        elif art_a and art_b:
-            if art_a.full_text.strip() == art_b.full_text.strip():
-                changes.append({
-                    "article_number": num,
-                    "change_type": "unchanged",
-                    "text_a": art_a.full_text,
-                    "text_b": art_b.full_text,
-                    "diff_html": None,
-                })
-            else:
-                # Generate word-level diff
-                diff_html = _word_diff(art_a.full_text, art_b.full_text)
-                changes.append({
-                    "article_number": num,
-                    "change_type": "modified",
-                    "text_a": art_a.full_text,
-                    "text_b": art_b.full_text,
-                    "diff_html": diff_html,
-                })
-
+    common = {a.article_number for a in articles_a} & {b.article_number for b in articles_b}
     summary = {
         "added": sum(1 for c in changes if c["change_type"] == "added"),
         "removed": sum(1 for c in changes if c["change_type"] == "removed"),
         "modified": sum(1 for c in changes if c["change_type"] == "modified"),
-        "unchanged": sum(1 for c in changes if c["change_type"] == "unchanged"),
+        "unchanged": (
+            len(common) - sum(1 for c in changes if c["change_type"] == "modified")
+        ),
     }
 
     return {
@@ -1585,23 +1567,3 @@ def diff_versions(
         "summary": summary,
         "changes": changes,
     }
-
-
-def _word_diff(text_a: str, text_b: str) -> str:
-    """Generate a word-level diff as HTML with <ins> and <del> tags."""
-    words_a = text_a.split()
-    words_b = text_b.split()
-    matcher = difflib.SequenceMatcher(None, words_a, words_b)
-
-    parts = []
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            parts.append(" ".join(words_a[i1:i2]))
-        elif op == "delete":
-            parts.append(f'<del>{" ".join(words_a[i1:i2])}</del>')
-        elif op == "insert":
-            parts.append(f'<ins>{" ".join(words_b[j1:j2])}</ins>')
-        elif op == "replace":
-            parts.append(f'<del>{" ".join(words_a[i1:i2])}</del>')
-            parts.append(f'<ins>{" ".join(words_b[j1:j2])}</ins>')
-    return " ".join(parts)
