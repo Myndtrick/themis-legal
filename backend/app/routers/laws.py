@@ -456,29 +456,31 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
     if existing:
         raise DuplicateImportError(existing.title)
 
-    # 4. Search legislatie.just.ro
-    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
-    year_str = str(mapping.law_year) if mapping.law_year else ""
+    # 4. Resolve ver_id — pinned mappings skip the search entirely
+    if mapping.source_ver_id:
+        ver_id = mapping.source_ver_id
+    else:
+        doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
+        year_str = str(mapping.law_year) if mapping.law_year else ""
 
-    try:
-        results = advanced_search(
-            doc_type=doc_type_code,
-            number=mapping.law_number,
-            year=year_str,
-        )
-    except Exception as e:
-        logger.error(f"Search failed for suggestion {req.mapping_id}: {e}")
-        raise SearchFailedError()
+        try:
+            results = advanced_search(
+                doc_type=doc_type_code,
+                number=mapping.law_number,
+                year=year_str,
+            )
+        except Exception as e:
+            logger.error(f"Search failed for suggestion {req.mapping_id}: {e}")
+            raise SearchFailedError()
 
-    if not results:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No results found on legislatie.just.ro for {mapping.title}",
-        )
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No results found on legislatie.just.ro for {mapping.title}",
+            )
 
-    # 5. Pick best match — first result (search is already filtered by type+number+year)
-    best = results[0]
-    ver_id = best.ver_id
+        # Pick best match — first result (search is filtered by type+number+year)
+        ver_id = results[0].ver_id
 
     # 6. Check if this ver_id is already imported
     existing_ver = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
@@ -544,27 +546,30 @@ async def import_suggestion_stream(
             yield {"event": "error", "data": json.dumps(DuplicateImportError(existing.title).to_dict())}
         return EventSourceResponse(error_stream())
 
-    # Search legislatie.just.ro
-    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
-    year_str = str(mapping.law_year) if mapping.law_year else ""
-    try:
-        results = advanced_search(
-            doc_type=doc_type_code,
-            number=mapping.law_number,
-            year=year_str,
-        )
-    except Exception as e:
-        logger.error(f"Search failed for suggestion {mapping_id}: {e}")
-        async def error_stream():
-            yield {"event": "error", "data": json.dumps(SearchFailedError().to_dict())}
-        return EventSourceResponse(error_stream())
+    # Resolve ver_id — pinned mappings skip the search entirely
+    if mapping.source_ver_id:
+        ver_id = str(mapping.source_ver_id)
+    else:
+        doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping.document_type or "", "")
+        year_str = str(mapping.law_year) if mapping.law_year else ""
+        try:
+            results = advanced_search(
+                doc_type=doc_type_code,
+                number=mapping.law_number,
+                year=year_str,
+            )
+        except Exception as e:
+            logger.error(f"Search failed for suggestion {mapping_id}: {e}")
+            async def error_stream():
+                yield {"event": "error", "data": json.dumps(SearchFailedError().to_dict())}
+            return EventSourceResponse(error_stream())
 
-    if not results:
-        async def error_stream():
-            yield {"event": "error", "data": json.dumps({"code": "not_found", "message": f"No results found on legislatie.just.ro for {mapping.title}"})}
-        return EventSourceResponse(error_stream())
+        if not results:
+            async def error_stream():
+                yield {"event": "error", "data": json.dumps({"code": "not_found", "message": f"No results found on legislatie.just.ro for {mapping.title}"})}
+            return EventSourceResponse(error_stream())
 
-    ver_id = str(results[0].ver_id)
+        ver_id = str(results[0].ver_id)
 
     # Check if version already imported
     existing_ver = db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
