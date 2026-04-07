@@ -202,3 +202,93 @@ def test_delete_refuses_system_mapping(client_and_db):
     resp = client.delete(f"/api/law-mappings/{mid}")
     assert resp.status_code == 403
     assert db.query(LawMapping).filter(LawMapping.id == mid).first() is not None
+
+
+# ---------- GET /api/law-mappings ----------
+
+def test_list_returns_all_mappings(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    db.add(LawMapping(title="A", category_id=cat.id, source="system",
+                      law_number="1", law_year=2000, document_type="law"))
+    db.add(LawMapping(title="B", category_id=cat.id, source="user",
+                      law_number="2", law_year=2001, document_type="law",
+                      source_ver_id="555"))
+    db.commit()
+
+    resp = client.get("/api/law-mappings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert len(body) == 2
+    titles = {row["title"] for row in body}
+    assert titles == {"A", "B"}
+    # Spot-check shape
+    row = next(r for r in body if r["title"] == "B")
+    assert row["source"] == "user"
+    assert row["source_ver_id"] == "555"
+    assert row["category_id"] == cat.id
+    assert row["category_name"] == "x"  # _seed_category sets name_en="x"
+    assert row["group_slug"] == "civil"
+    assert row["is_imported"] is False
+
+
+def test_list_filter_by_source(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    db.add(LawMapping(title="sys", category_id=cat.id, source="system"))
+    db.add(LawMapping(title="usr", category_id=cat.id, source="user"))
+    db.commit()
+
+    resp = client.get("/api/law-mappings?source=system")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["title"] == "sys"
+
+
+def test_list_filter_by_group_slug(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db, slug="ro.civil")  # group slug = "civil" via _seed_category
+    db.add(LawMapping(title="hit", category_id=cat.id, source="user"))
+    db.commit()
+
+    resp = client.get("/api/law-mappings?group_slug=civil")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+    resp2 = client.get("/api/law-mappings?group_slug=nonexistent")
+    assert resp2.status_code == 200
+    assert resp2.json() == []
+
+
+def test_list_filter_by_pinned(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    db.add(LawMapping(title="pinned-ro", category_id=cat.id, source="user", source_ver_id="111"))
+    db.add(LawMapping(title="pinned-eu", category_id=cat.id, source="user", celex_number="32016R0679"))
+    db.add(LawMapping(title="unpinned", category_id=cat.id, source="user"))
+    db.commit()
+
+    resp = client.get("/api/law-mappings?pinned=true")
+    assert resp.status_code == 200
+    titles = {r["title"] for r in resp.json()}
+    assert titles == {"pinned-ro", "pinned-eu"}
+
+    resp = client.get("/api/law-mappings?pinned=false")
+    titles = {r["title"] for r in resp.json()}
+    assert titles == {"unpinned"}
+
+
+def test_list_filter_by_search_query(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    db.add(LawMapping(title="Codul Civil", category_id=cat.id, source="user"))
+    db.add(LawMapping(title="Codul Penal", category_id=cat.id, source="user"))
+    db.commit()
+
+    resp = client.get("/api/law-mappings?q=civil")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["title"] == "Codul Civil"
