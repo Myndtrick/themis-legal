@@ -262,3 +262,101 @@ def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
         "paragraphs": paragraph_diffs if change_type == "modified" else [],
         "renumbered_from": None,
     }
+
+
+RENUMBER_SIMILARITY_THRESHOLD = 0.85
+
+
+def _pair_renumbered(
+    removed: list[_ArticleLike], added: list[_ArticleLike]
+) -> list[tuple[_ArticleLike, _ArticleLike]]:
+    """Greedy pair removed/added articles whose texts are >=85% similar."""
+    pairs: list[tuple[_ArticleLike, _ArticleLike]] = []
+    used_added: set[int] = set()
+
+    for r in removed:
+        best_idx = -1
+        best_ratio = 0.0
+        for i, ad in enumerate(added):
+            if i in used_added:
+                continue
+            ratio = difflib.SequenceMatcher(None, r.full_text, ad.full_text).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_idx = i
+        if best_idx >= 0 and best_ratio >= RENUMBER_SIMILARITY_THRESHOLD:
+            used_added.add(best_idx)
+            pairs.append((r, added[best_idx]))
+
+    return pairs
+
+
+def diff_articles(
+    arts_a: list[_ArticleLike], arts_b: list[_ArticleLike]
+) -> list[dict[str, Any]]:
+    """Top-level: diff two lists of articles. Excludes unchanged articles.
+
+    1. Match by article_number.
+    2. Run renumbering pairing on the leftovers (added + removed) so true
+       renumberings show as one modified card instead of one add + one remove.
+    """
+    map_a = {a.article_number: a for a in arts_a}
+    map_b = {b.article_number: b for b in arts_b}
+
+    changes: list[dict[str, Any]] = []
+    leftover_added: list[_ArticleLike] = []
+    leftover_removed: list[_ArticleLike] = []
+
+    all_numbers = sorted(
+        set(map_a.keys()) | set(map_b.keys()),
+        key=lambda x: (len(x), x),
+    )
+
+    for num in all_numbers:
+        a = map_a.get(num)
+        b = map_b.get(num)
+        if a and b:
+            d = diff_article(a, b)
+            if d["change_type"] != "unchanged":
+                changes.append(d)
+        elif b:
+            leftover_added.append(b)
+        else:
+            assert a is not None
+            leftover_removed.append(a)
+
+    pairs = _pair_renumbered(leftover_removed, leftover_added)
+    paired_added_ids = {id(ad) for _, ad in pairs}
+    paired_removed_ids = {id(r) for r, _ in pairs}
+
+    for r, ad in pairs:
+        d = diff_article(r, ad)
+        d["change_type"] = "modified"
+        d["renumbered_from"] = r.article_number
+        changes.append(d)
+
+    for ad in leftover_added:
+        if id(ad) in paired_added_ids:
+            continue
+        changes.append({
+            "article_number": ad.article_number,
+            "change_type": "added",
+            "title": ad.label,
+            "text_b": ad.full_text,
+            "paragraphs": [],
+            "renumbered_from": None,
+        })
+
+    for r in leftover_removed:
+        if id(r) in paired_removed_ids:
+            continue
+        changes.append({
+            "article_number": r.article_number,
+            "change_type": "removed",
+            "title": r.label,
+            "text_a": r.full_text,
+            "paragraphs": [],
+            "renumbered_from": None,
+        })
+
+    return changes

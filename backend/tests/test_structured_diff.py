@@ -158,3 +158,50 @@ def test_diff_article_added_paragraph():
     assert labels == ["(1)", "(4^1)"]
     assert result["paragraphs"][1]["change_type"] == "added"
     assert result["paragraphs"][1]["text_b"] == "noul alineat"
+
+
+from app.services.structured_diff import diff_articles
+
+
+def _art(num: str, text: str = "", paras: list[FakePara] | None = None) -> FakeArt:
+    return FakeArt(article_number=num, full_text=text, paragraphs=paras or [])
+
+
+def test_diff_articles_pure_add_and_remove():
+    a = [_art("1", "a"), _art("2", "b")]
+    b = [_art("1", "a"), _art("3", "c")]  # 2 removed, 3 added — texts unrelated
+    changes = diff_articles(a, b)
+    types = {c["article_number"]: c["change_type"] for c in changes}
+    assert types == {"2": "removed", "3": "added"}
+
+
+def test_diff_articles_renumbering_pair_threshold():
+    """Article 73 was renumbered to 74; same body. Should pair as one modified."""
+    body = "lorem ipsum dolor sit amet consectetur adipiscing elit"
+    a = [_art("73", body)]
+    b = [_art("74", body)]
+    changes = diff_articles(a, b)
+    assert len(changes) == 1
+    c = changes[0]
+    assert c["change_type"] == "modified"
+    assert c["article_number"] == "74"
+    assert c["renumbered_from"] == "73"
+
+
+def test_diff_articles_unrelated_texts_do_not_pair():
+    a = [_art("5", "complete unrelated text about taxes")]
+    b = [_art("6", "totally different content about pensions and stuff")]
+    changes = diff_articles(a, b)
+    types = sorted(c["change_type"] for c in changes)
+    assert types == ["added", "removed"]
+
+
+def test_diff_articles_unchanged_articles_excluded():
+    a = [_art("1", "same", paras=[FakePara("(1)", "intro", subparagraphs=[FakeSub("a)", "x")])]),
+         _art("2", "different", paras=[FakePara("(1)", "intro", subparagraphs=[FakeSub("a)", "y")])])]
+    b = [_art("1", "same", paras=[FakePara("(1)", "intro", subparagraphs=[FakeSub("a)", "x")])]),
+         _art("2", "different changed", paras=[FakePara("(1)", "intro", subparagraphs=[FakeSub("a)", "z")])])]
+    changes = diff_articles(a, b)
+    nums = [c["article_number"] for c in changes]
+    assert "1" not in nums  # unchanged article excluded
+    assert "2" in nums
