@@ -1,8 +1,9 @@
 """Tests for structured version diff service."""
 import difflib
+from dataclasses import dataclass, field
 
 from app.services.article_tokenizer import AtomicUnit
-from app.services.structured_diff import _diff_alineat_items, word_diff_html
+from app.services.structured_diff import _diff_alineat_items, diff_article, word_diff_html
 
 
 # --- word_diff_html (kept from the previous version) ---
@@ -140,3 +141,37 @@ def test_diff_alineat_duplicate_labels_with_one_modified_item():
                 f"modified leaf with low similarity ratio {ratio:.2f}: "
                 f"text_a={l['text_a']!r} text_b={l['text_b']!r}"
             )
+
+
+# --- diff_article (new tokenizer-based implementation) ---
+
+
+@dataclass
+class FakeArt:
+    article_number: str
+    full_text: str
+    label: str | None = None
+
+
+def test_diff_article_unchanged_returns_unchanged():
+    a = FakeArt("62", "(1) Conținut neschimbat.")
+    b = FakeArt("62", "(1) Conținut neschimbat.")
+    result = diff_article(a, b)
+    assert result["change_type"] == "unchanged"
+    assert result["units"] == []
+
+
+def test_diff_article_modified_returns_units_grouped_by_alineat():
+    a = FakeArt("62", "(1) Intro: 1. primul punct.")
+    b = FakeArt("62", "(1) Intro: 1. primul punct. 2. punct nou.")
+    result = diff_article(a, b)
+    assert result["article_number"] == "62"
+    assert result["change_type"] == "modified"
+    units = result["units"]
+    # Units include: alineat (1) [unchanged], 1. [unchanged], 2. [added]
+    types = [u["change_type"] for u in units]
+    assert "added" in types
+    added = next(u for u in units if u["change_type"] == "added")
+    assert added["label"] == "2."
+    assert added["text_b"] == "punct nou."
+    assert added["alineat_label"] == "(1)"

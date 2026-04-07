@@ -37,231 +37,10 @@ def word_diff_html(text_a: str, text_b: str) -> str:
     return " ".join(parts)
 
 
-class _SubLike(Protocol):
-    label: str | None
-    text: str
-    order_index: int
-
-
-class _ParaLike(Protocol):
-    label: str | None
-    text: str
-    order_index: int
-    subparagraphs: list[_SubLike]
-
-
-def _leaf_for_unchanged(label: str | None) -> dict[str, Any]:
-    return {"label": label, "change_type": "unchanged"}
-
-
-def _leaf_for_added(node: _SubLike | _ParaLike) -> dict[str, Any]:
-    return {
-        "label": node.label,
-        "change_type": "added",
-        "text_b": node.text,
-    }
-
-
-def _leaf_for_removed(node: _SubLike | _ParaLike) -> dict[str, Any]:
-    return {
-        "label": node.label,
-        "change_type": "removed",
-        "text_a": node.text,
-    }
-
-
-def _leaf_for_modified(label: str | None, text_a: str, text_b: str) -> dict[str, Any]:
-    return {
-        "label": label,
-        "change_type": "modified",
-        "text_a": text_a,
-        "text_b": text_b,
-        "diff_html": word_diff_html(text_a, text_b),
-    }
-
-
-def _diff_subparagraphs(
-    subs_a: list[_SubLike], subs_b: list[_SubLike]
-) -> list[dict[str, Any]]:
-    """Match by label, fall back to position for unlabeled subs."""
-    map_a: dict[str, _SubLike] = {}
-    map_b: dict[str, _SubLike] = {}
-    unlabeled_a: list[_SubLike] = []
-    unlabeled_b: list[_SubLike] = []
-
-    for s in subs_a:
-        if s.label:
-            map_a[s.label] = s
-        else:
-            unlabeled_a.append(s)
-    for s in subs_b:
-        if s.label:
-            map_b[s.label] = s
-        else:
-            unlabeled_b.append(s)
-
-    # Preserve B's order for matched/added labels, then append A-only.
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-
-    for s in subs_b:
-        if not s.label:
-            continue
-        seen.add(s.label)
-        if s.label in map_a:
-            a = map_a[s.label]
-            if a.text.strip() == s.text.strip():
-                result.append(_leaf_for_unchanged(s.label))
-            else:
-                result.append(_leaf_for_modified(s.label, a.text, s.text))
-        else:
-            result.append(_leaf_for_added(s))
-
-    for s in subs_a:
-        if s.label and s.label not in seen:
-            result.append(_leaf_for_removed(s))
-
-    # Position-match unlabeled subs.
-    for i in range(max(len(unlabeled_a), len(unlabeled_b))):
-        a = unlabeled_a[i] if i < len(unlabeled_a) else None
-        b = unlabeled_b[i] if i < len(unlabeled_b) else None
-        if a and b:
-            if a.text.strip() == b.text.strip():
-                result.append(_leaf_for_unchanged(None))
-            else:
-                result.append(_leaf_for_modified(None, a.text, b.text))
-        elif b:
-            result.append(_leaf_for_added(b))
-        elif a:
-            result.append(_leaf_for_removed(a))
-
-    return result
-
-
-def diff_paragraph(para_a: _ParaLike, para_b: _ParaLike) -> dict[str, Any]:
-    """Diff one paragraph and its subparagraphs.
-
-    Returns a dict with: label, change_type, optional text_a/text_b/diff_html
-    for the paragraph's own intro line, and a `subparagraphs` list of leaves.
-    """
-    sub_leaves = _diff_subparagraphs(
-        list(para_a.subparagraphs), list(para_b.subparagraphs)
-    )
-
-    result: dict[str, Any] = {
-        "label": para_b.label or para_a.label,
-        "change_type": "unchanged",
-        "subparagraphs": sub_leaves,
-    }
-
-    intro_a = (para_a.text or "").strip()
-    intro_b = (para_b.text or "").strip()
-    intro_changed = intro_a != intro_b
-    if intro_changed:
-        result["text_a"] = para_a.text
-        result["text_b"] = para_b.text
-        result["diff_html"] = word_diff_html(para_a.text or "", para_b.text or "")
-
-    has_changed_sub = any(s["change_type"] != "unchanged" for s in sub_leaves)
-    if intro_changed or has_changed_sub:
-        result["change_type"] = "modified"
-
-    return result
-
-
 class _ArticleLike(Protocol):
     article_number: str
     full_text: str
     label: str | None
-    paragraphs: list[_ParaLike]
-
-
-def _diff_paragraphs_list(
-    paras_a: list[_ParaLike], paras_b: list[_ParaLike]
-) -> list[dict[str, Any]]:
-    """Match paragraphs by label, fall back to position for unlabeled."""
-    seen: set[str] = set()
-    map_a: dict[str, _ParaLike] = {p.label: p for p in paras_a if p.label}
-    result: list[dict[str, Any]] = []
-
-    unlabeled_a = [p for p in paras_a if not p.label]
-    unlabeled_b = [p for p in paras_b if not p.label]
-
-    for p in paras_b:
-        if not p.label:
-            continue
-        seen.add(p.label)
-        if p.label in map_a:
-            result.append(diff_paragraph(map_a[p.label], p))
-        else:
-            # Whole paragraph added: emit as a one-off leaf with no children diff.
-            result.append({
-                "label": p.label,
-                "change_type": "added",
-                "text_b": p.text,
-                "subparagraphs": [
-                    _leaf_for_added(s) for s in p.subparagraphs
-                ],
-            })
-
-    for p in paras_a:
-        if p.label and p.label not in seen:
-            result.append({
-                "label": p.label,
-                "change_type": "removed",
-                "text_a": p.text,
-                "subparagraphs": [
-                    _leaf_for_removed(s) for s in p.subparagraphs
-                ],
-            })
-
-    # Position-match unlabeled paragraphs.
-    for i in range(max(len(unlabeled_a), len(unlabeled_b))):
-        a = unlabeled_a[i] if i < len(unlabeled_a) else None
-        b = unlabeled_b[i] if i < len(unlabeled_b) else None
-        if a and b:
-            result.append(diff_paragraph(a, b))
-        elif b:
-            result.append({
-                "label": None,
-                "change_type": "added",
-                "text_b": b.text,
-                "subparagraphs": [_leaf_for_added(s) for s in b.subparagraphs],
-            })
-        elif a:
-            result.append({
-                "label": None,
-                "change_type": "removed",
-                "text_a": a.text,
-                "subparagraphs": [_leaf_for_removed(s) for s in a.subparagraphs],
-            })
-
-    return result
-
-
-def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
-    """Diff two articles by structural recursion.
-
-    Recurses into paragraphs and derives the article's change_type from
-    whether any descendant changed. We do NOT short-circuit on
-    art.full_text equality — denormalized full_text can drift from the
-    authoritative paragraph tree, and short-circuiting would silently
-    hide real changes when it does.
-    """
-    paragraph_diffs = _diff_paragraphs_list(
-        list(art_a.paragraphs), list(art_b.paragraphs)
-    )
-
-    any_changed = any(p["change_type"] != "unchanged" for p in paragraph_diffs)
-    change_type = "modified" if any_changed else "unchanged"
-
-    return {
-        "article_number": art_b.article_number,
-        "change_type": change_type,
-        "title": art_b.label,
-        "paragraphs": paragraph_diffs if change_type == "modified" else [],
-        "renumbered_from": None,
-    }
 
 
 from app.services.article_tokenizer import AtomicUnit, MarkerKind, tokenize_article
@@ -365,6 +144,65 @@ def _diff_alineat_items(
             for rb in left_b:
                 out.append(_leaf(rb, "added", text_b=rb.text))
     return out
+
+
+def _group_by_alineat(units: list[AtomicUnit]) -> dict[str | None, list[AtomicUnit]]:
+    """Group AtomicUnits by their alineat_label, preserving order within each group.
+
+    The alineat marker units themselves (marker_kind='alineat') are placed in
+    the bucket of the alineat they introduce, NOT in the parent bucket.
+    """
+    groups: dict[str | None, list[AtomicUnit]] = {}
+    for u in units:
+        if u.marker_kind == MarkerKind.ALINEAT:
+            key = u.label
+        else:
+            key = u.alineat_label
+        groups.setdefault(key, []).append(u)
+    return groups
+
+
+def _ordered_alineat_keys(
+    groups_a: dict[str | None, list[AtomicUnit]],
+    groups_b: dict[str | None, list[AtomicUnit]],
+) -> list[str | None]:
+    """Return the union of alineat keys, preserving B's insertion order
+    first (since B is the new version) and appending any keys only in A.
+    """
+    seen: list[str | None] = []
+    for k in groups_b:
+        if k not in seen:
+            seen.append(k)
+    for k in groups_a:
+        if k not in seen:
+            seen.append(k)
+    return seen
+
+
+def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
+    """Diff two articles by tokenizing their full_text and aligning items
+    per alineat with content-based matching.
+    """
+    units_a = tokenize_article(art_a.full_text or "")
+    units_b = tokenize_article(art_b.full_text or "")
+
+    groups_a = _group_by_alineat(units_a)
+    groups_b = _group_by_alineat(units_b)
+
+    leaves: list[dict[str, Any]] = []
+    for key in _ordered_alineat_keys(groups_a, groups_b):
+        leaves.extend(
+            _diff_alineat_items(groups_a.get(key, []), groups_b.get(key, []))
+        )
+
+    has_changes = any(l["change_type"] != "unchanged" for l in leaves)
+    return {
+        "article_number": art_b.article_number,
+        "change_type": "modified" if has_changes else "unchanged",
+        "title": art_b.label,
+        "renumbered_from": None,
+        "units": leaves if has_changes else [],
+    }
 
 
 RENUMBER_SIMILARITY_THRESHOLD = 0.85
