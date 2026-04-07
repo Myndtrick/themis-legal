@@ -7,7 +7,10 @@ All functions are pure (no DB access) so they can be unit-tested in isolation.
 from __future__ import annotations
 
 import difflib
+import logging
 from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
 
 
 def word_diff_html(text_a: str, text_b: str) -> str:
@@ -183,8 +186,26 @@ def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
     """Diff two articles by tokenizing their full_text and aligning items
     per alineat with content-based matching.
     """
-    units_a = tokenize_article(art_a.full_text or "")
-    units_b = tokenize_article(art_b.full_text or "")
+    text_a = art_a.full_text or ""
+    text_b = art_b.full_text or ""
+
+    try:
+        units_a = tokenize_article(text_a)
+        units_b = tokenize_article(text_b)
+    except Exception as exc:  # noqa: BLE001 — broad on purpose, fallback path
+        log.warning(
+            "tokenizer fallback for article %s: %s",
+            art_b.article_number, exc,
+        )
+        return _fallback_article_diff(art_a, art_b)
+
+    if text_a and text_b and (not units_a or not units_b):
+        log.warning(
+            "tokenizer fallback for article %s: empty unit list "
+            "(units_a=%d units_b=%d)",
+            art_b.article_number, len(units_a), len(units_b),
+        )
+        return _fallback_article_diff(art_a, art_b)
 
     groups_a = _group_by_alineat(units_a)
     groups_b = _group_by_alineat(units_b)
@@ -202,6 +223,22 @@ def diff_article(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
         "title": art_b.label,
         "renumbered_from": None,
         "units": leaves if has_changes else [],
+    }
+
+
+def _fallback_article_diff(art_a: _ArticleLike, art_b: _ArticleLike) -> dict[str, Any]:
+    """Coarse fallback when tokenization fails — one big word-level diff."""
+    text_a = art_a.full_text or ""
+    text_b = art_b.full_text or ""
+    return {
+        "article_number": art_b.article_number,
+        "change_type": "modified",
+        "title": art_b.label,
+        "renumbered_from": None,
+        "units": [],
+        "text_a": text_a,
+        "text_b": text_b,
+        "diff_html": word_diff_html(text_a, text_b),
     }
 
 

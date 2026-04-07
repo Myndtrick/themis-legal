@@ -1,5 +1,6 @@
 """Tests for structured version diff service."""
 import difflib
+import logging
 from dataclasses import dataclass, field
 
 from app.services.article_tokenizer import AtomicUnit
@@ -213,3 +214,34 @@ def test_diff_articles_identical_returns_empty():
     a = [FakeArt("1", "(1) același conținut.")]
     b = [FakeArt("1", "(1) același conținut.")]
     assert diff_articles(a, b) == []
+
+
+def test_diff_article_falls_back_when_tokenizer_raises(monkeypatch, caplog):
+    def boom(text):
+        raise ValueError("synthetic tokenizer crash")
+
+    monkeypatch.setattr("app.services.structured_diff.tokenize_article", boom)
+    a = FakeArt("99", "(1) text vechi.")
+    b = FakeArt("99", "(1) text nou.")
+
+    with caplog.at_level(logging.WARNING):
+        result = diff_article(a, b)
+
+    assert result["change_type"] == "modified"
+    assert "diff_html" in result
+    assert "text vechi" in result["text_a"]
+    assert "text nou" in result["text_b"]
+    assert result["units"] == []  # no structural units in fallback
+    # Warning logged
+    assert any("tokenizer" in r.message.lower() or "fallback" in r.message.lower()
+               for r in caplog.records)
+
+
+def test_diff_article_falls_back_when_tokenizer_returns_empty(monkeypatch):
+    monkeypatch.setattr("app.services.structured_diff.tokenize_article", lambda t: [])
+    a = FakeArt("99", "ceva text")
+    b = FakeArt("99", "ceva text editat")
+    result = diff_article(a, b)
+    assert result["change_type"] == "modified"
+    assert "diff_html" in result
+    assert result["units"] == []
