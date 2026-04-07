@@ -333,32 +333,26 @@ export interface NotificationData {
   created_at: string;
 }
 
-export interface DiffSubparagraph {
-  label: string | null;
+export interface DiffUnit {
+  alineat_label: string | null;
+  marker_kind: "alineat" | "numbered" | "litera" | "upper_litera" | "bullet" | "intro";
+  label: string;
   change_type: "added" | "removed" | "modified" | "unchanged";
   text_a?: string;
   text_b?: string;
   diff_html?: string;
-  renumbered_from?: string | null;
-}
-
-export interface DiffParagraph {
-  label: string | null;
-  change_type: "added" | "removed" | "modified" | "unchanged";
-  text_a?: string;
-  text_b?: string;
-  diff_html?: string;
-  subparagraphs: DiffSubparagraph[];
 }
 
 export interface DiffArticle {
   article_number: string;
   change_type: "added" | "removed" | "modified" | "unchanged";
   title?: string | null;
+  renumbered_from: string | null;
+  units: DiffUnit[];
+  // For added/removed articles and the tokenizer-fallback path:
   text_a?: string;
   text_b?: string;
-  paragraphs: DiffParagraph[];
-  renumbered_from: string | null;
+  diff_html?: string;
 }
 
 export interface DiffResult {
