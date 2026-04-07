@@ -46,48 +46,71 @@ Frontend updates live under `frontend/src/app/laws/[id]/diff/`. The existing com
 
 ## The tokenizer
 
-`tokenize_article(full_text: str) -> list[AtomicUnit]` walks the article text, tracks a hierarchical context stack of the current alineat / numbered point / litera, and emits one `AtomicUnit` per leaf segment.
+`tokenize_article(full_text: str) -> list[AtomicUnit]` scans the article text for marker positions, filters false positives, and emits one `AtomicUnit` per item in document order.
 
 ```python
 @dataclass(frozen=True)
 class AtomicUnit:
-    path: tuple[str, ...]   # ("(1)", "11.", "a)") — full hierarchical location
-    text: str               # the leaf body, with the marker prefix stripped
-    marker_kind: str        # "alineat" | "numbered" | "litera" | "bullet" | "intro"
+    alineat_label: str | None  # "(1)", "(2)" — current alineat at the time of emission, or None for items before the first alineat
+    marker_kind: str           # "alineat" | "numbered" | "litera" | "upper_litera" | "bullet" | "intro"
+    label: str                  # "(1)" | "32." | "a)" | "A." | "" (intro)
+    text: str                   # body text after the marker, whitespace-normalized
 ```
+
+The tokenizer is **flat**: it does not try to reconstruct parent-child relationships between numbered points and their literae. This is intentional. Investigation against real `Article.full_text` for art 5 (Romanian insolvency law) showed that the parser concatenates content in an order that destroys parent context: all 75 numbered definitions appear first, then six independent litera groups (`a) b) c) … a) b) c) …`) are dumped at the end of the alineat with no marker indicating which definition each group belongs to. Any context-stack reconstruction would either collapse all `a)` items into one bucket (recreating the original bug) or mis-attribute literae to the wrong parent. The flat representation avoids both failure modes.
 
 ### Marker recognition
 
-A ranked list of regexes; the first that matches at a segment boundary wins. Each kind has a fixed depth in the context stack (alineat = 1, numbered = 2, litera = 3, bullet = 4). When a marker fires, the stack is popped to its depth and the new marker is pushed.
+The tokenizer scans the entire `full_text` for marker positions using `re.finditer`, applies false-positive filtering, sorts by position, and walks the resulting list. Body text for each item is the slice from the marker's `match.end()` to the next marker's `match.start()`.
 
-| Kind     | Depth | Pattern (anchored to segment start, after whitespace) | Examples       |
-|----------|-------|--------------------------------------------------------|----------------|
-| alineat  | 1     | `\(\s*(\d+(?:\^\d+)?)\s*\)`                            | `(1)`, `(4^1)` |
-| numbered | 2     | `(?<![\w\^])(\d+(?:\^\d+)?)\.`                         | `32.`, `42^2.` |
-| litera   | 3     | `\b([a-z](?:\^\d+)?)\)`                                | `a)`, `d^1)`   |
-| bullet   | 4     | `^[–-]\s`                                              | `–`            |
+| Kind           | Pattern                              | Examples       |
+|----------------|--------------------------------------|----------------|
+| alineat        | `\(\s*(\d+(?:\^\d+)?)\s*\)`          | `(1)`, `(4^1)` |
+| numbered       | `(\d+(?:\^\d+)?)\.\s`                | `32. `, `42^2. ` |
+| litera         | `\b([a-z](?:\^\d+)?)\)\s`            | `a) `, `d^1) ` |
+| upper_litera   | `\b([A-Z])\.\s`                      | `A. `, `B. `   |
+| bullet         | `(?:^|\s)([–-])\s`                   | `– `           |
 
-The negative-lookbehind on `numbered` (`(?<![\w\^])`) prevents `art. 125` from being eaten as a numbered point. Bullet-as-fourth-level only fires when the line literally starts with an en-dash + space; ASCII hyphen-space is also accepted because the parser is inconsistent.
+### False-positive filtering
 
-### Segmentation
+Markers can appear inside literal references like `art. 90 alin. (1) și (2)`, `pct. 8`, `art. 125`. The filter rejects a candidate marker match if any of the following holds in the **20 characters preceding** `match.start()`:
 
-The current parsed text uses `...` (literal three-dot ellipsis) as a soft separator between definitions and `;` as a hard separator between litere. The tokenizer splits on ellipsis, semicolon, and newline, then re-runs marker recognition on each segment. Whitespace is normalized (collapsed runs of spaces, leading/trailing strip) before recognition. Empty segments are dropped.
+- Contains `art.` and the marker kind is `numbered` (catches `art. 125`).
+- Contains `art. ` (with trailing space) and the marker kind is `alineat` (catches `art. 90 alin. (1)` — the `art.` is part of `art. 90 alin.`).
+- Contains `alin.` and the marker kind is `alineat` (catches `alin. (1)`).
+- Contains `pct.` and the marker kind is `numbered` (catches `pct. 8`).
+- Contains `lit.` and the marker kind is `litera` or `upper_litera` (catches `lit. a)`).
+- Contains `nr.` and the marker kind is `numbered` (catches `nr. 19/2020`).
+- The first character of the regex group is preceded by a digit (catches `1.617` or `2025.`).
 
-If a segment has **no leading marker**, it is treated as a continuation of the previous unit and its text is appended (with a single space) to the previous unit's text. This handles wrapped sentences and embedded notes (`Notă...`, `Decizie de admitere:...`) without spawning fake leaves.
+Rejected matches are dropped entirely. The filter is unit-tested against real fixtures including `art. 90 alin. (1) și (2)`, `art. 125`, `art. 234^1`, `Legea nr. 85/2014`.
 
-### Intro leaves
+### Marker conflict resolution
 
-The first segment of an alineat is its **intro line** — the lead-in sentence above its children, e.g. `În înțelesul prezentei legi, termenii și expresiile au următoarele semnificații:`. It is emitted as its own atomic unit with `marker_kind="intro"` and `path=("(1)", "intro")`. This makes legitimate intro changes diffable as one small inline edit, while keeping the body content out of the intro text. An alineat with no children at all is still emitted as a single intro unit at `("(1)", "intro")`.
+When two marker patterns match at the same `start` position (rare but possible), priority order is: alineat > numbered > upper_litera > litera > bullet. A match that overlaps the body of an earlier-accepted match is dropped.
 
-An article with **no alineat markers at all** (a flat one-sentence article) is emitted as a single atomic unit with `path=("intro",)` and `marker_kind="intro"`. The frontend treats `path[0] == "intro"` as a special "no alineat" group with no breadcrumb prefix.
+### Intro and pre-marker text
 
-### Why paths solve the duplicate-label bug
+Whatever text appears in `full_text` **before the first accepted marker** becomes a single intro unit with `alineat_label=None`, `marker_kind="intro"`, `label=""`. This handles articles that start with bare text (no `(1)` marker), as well as articles whose entire content is one sentence with no markers at all.
 
-Today, 17 different `a)` rows for art 5 §(1) collide in one dict because they share a label. With paths, every leaf is uniquely addressed: `("(1)", "11.", "a)")`, `("(1)", "12.", "a)")`, `("(1)", "13.", "a)")`, … Path-based matching has no collisions by construction. The `(1) · 11. · a)` breadcrumb in the rendered output also tells the user *which* numbered point they're looking at, which the current UI can't show.
+For articles that start with `(1)` and have content immediately after the alineat marker, the alineat's body text is itself an `AtomicUnit` with `marker_kind="alineat"`, `label="(1)"`, and `text` set to the alineat header text up to the next marker. Subsequent items inside the alineat carry `alineat_label="(1)"`. So `(1) În înțelesul prezentei legi: 1. acord de compensare bilaterală (netting):...` produces:
+
+```
+AtomicUnit(alineat_label=None, marker_kind="alineat", label="(1)", text="În înțelesul prezentei legi:")
+AtomicUnit(alineat_label="(1)", marker_kind="numbered", label="1.", text="acord de compensare bilaterală (netting):")
+```
+
+### Whitespace and continuation
+
+Body text is whitespace-normalized: runs of spaces collapsed to single, leading/trailing stripped. Embedded inline notes (`Notă... Decizie de admitere: ...`) appear inside the body of the previous numbered/litera item naturally — they have no markers of their own, so they fall into the slice between two real markers and become part of that item's body. No special continuation logic is needed.
+
+### Why content-based matching solves the duplicate-label bug
+
+Each `AtomicUnit` is unique by its position in `full_text`, but `(alineat_label, label)` is **not** unique — art 5 has 17 items with `("(1)", "a)")`. Path-based dict matching cannot work. Instead, the diff algorithm uses content-based alignment via `difflib.SequenceMatcher` over the items' `(label + first 200 normalized chars of text)` keys. Identical items match on the equal opcode regardless of their position; near-duplicates within a `replace` opcode are paired by `SequenceMatcher.ratio()` similarity. The duplicate-`a)` collision becomes irrelevant because the matching is per-content, not per-label.
 
 ### Tokenizer testing
 
-`backend/tests/fixtures/tokenizer/` holds snapshot fixtures: each test case is a `<name>.txt` with raw `Article.full_text` plus a `<name>.expected.json` with the expected `list[AtomicUnit]` (path, text, marker_kind). The test parameterizes over the directory.
+`backend/tests/fixtures/tokenizer/` holds snapshot fixtures: each test case is a `<name>.txt` with raw `Article.full_text` plus a `<name>.expected.json` with the expected `list[AtomicUnit]` (alineat_label, marker_kind, label, text). The test parameterizes over the directory.
 
 Initial fixture set:
 
@@ -109,45 +132,70 @@ Plus targeted unit tests for each marker kind, the negative lookbehind on `numbe
    - In both sides → tokenize both, run the unit-level diff below.
    - If the resulting unit list has zero non-`unchanged` entries, the article is excluded from the response (matches today's behavior).
 2. **Renumbered articles** — `_pair_renumbered` is kept and runs on the article-level leftovers, same threshold (0.85), same `(was Art. 73)` rendering.
-3. **Unit-level diff** for each matched article pair:
+3. **Unit-level diff** for each matched article pair, using **content-based alignment via SequenceMatcher**:
 
 ```python
 units_a = tokenize_article(article_a.full_text)
 units_b = tokenize_article(article_b.full_text)
 
-by_path_a = {u.path: u for u in units_a}
-by_path_b = {u.path: u for u in units_b}
+# Group items by (alineat_label or "" for pre-alineat content)
+groups_a = group_by_alineat(units_a)   # {"": [...], "(1)": [...], "(2)": [...]}
+groups_b = group_by_alineat(units_b)
 
 leaves: list[dict] = []
-unmatched_a, unmatched_b = [], []
+all_alineat_labels = ordered_union(groups_a.keys(), groups_b.keys())  # B's order, then A-only
 
-for path in set(by_path_a) | set(by_path_b):
-    a, b = by_path_a.get(path), by_path_b.get(path)
-    if a and b:
-        if a.text.strip() == b.text.strip():
-            leaves.append(unchanged_leaf(a))
-        else:
-            leaves.append(modified_leaf(a, b))
-    elif a:
-        unmatched_a.append(a)
-    else:
-        unmatched_b.append(b)
+for alineat_label in all_alineat_labels:
+    items_a = groups_a.get(alineat_label, [])
+    items_b = groups_b.get(alineat_label, [])
+    leaves.extend(diff_alineat_items(items_a, items_b))
 
-# Phase 2: greedy similarity pairing for renumbered units
-for r, ad in greedy_pair_units(unmatched_a, unmatched_b, threshold=0.85):
-    leaves.append(renumbered_leaf(r, ad))
+return leaves
 
-# Anything still unmatched is a real add or remove
-for u in remaining(unmatched_a): leaves.append(removed_leaf(u))
-for u in remaining(unmatched_b): leaves.append(added_leaf(u))
 
-# Sort: present in B's path order, with removed-only units inserted after their nearest neighbor
-leaves.sort(key=presentation_order(units_b))
+def diff_alineat_items(items_a, items_b):
+    """Content-based alignment of two flat item lists within one alineat."""
+    # Hash-friendly key per item: label + normalized first 200 chars of text
+    def key(item):
+        return (item.label, normalize(item.text)[:200])
+
+    keys_a = [key(i) for i in items_a]
+    keys_b = [key(i) for i in items_b]
+    matcher = difflib.SequenceMatcher(a=keys_a, b=keys_b, autojunk=False)
+
+    out = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                out.append(unchanged_leaf(items_b[j1 + k]))
+        elif tag == "delete":
+            for k in range(i1, i2):
+                out.append(removed_leaf(items_a[k]))
+        elif tag == "insert":
+            for k in range(j1, j2):
+                out.append(added_leaf(items_b[k]))
+        elif tag == "replace":
+            # Greedy similarity pairing inside the replace block
+            block_a = items_a[i1:i2]
+            block_b = items_b[j1:j2]
+            pairs, leftover_a, leftover_b = greedy_pair_by_text_ratio(
+                block_a, block_b, threshold=0.5
+            )
+            # Emit modified pairs in B's order, then leftovers as removed/added
+            for ra, rb in pairs:
+                out.append(modified_leaf(ra, rb))
+            for ra in leftover_a:
+                out.append(removed_leaf(ra))
+            for rb in leftover_b:
+                out.append(added_leaf(rb))
+    return out
 ```
 
-The greedy pairing reuses the existing `_pair_renumbered` logic (same threshold, same algorithm) applied to atomic units instead of articles. Threshold of 0.85 is conservative on purpose: in the common insertion case (a new `42^2.` definition), nothing gets paired against it and it correctly becomes `added`.
+**Why this works for art 5.** The 17 duplicate-`a)` items in v517 and 18 in v529 align by their text content via SequenceMatcher's `equal` opcodes — items whose `(label, text[:200])` keys match exactly become `unchanged` regardless of where they sit in the list. A genuinely new definition like `42^2.` appears as an `insert` opcode → one `added` leaf. A definition with edited wording appears in a `replace` opcode and gets paired with its old version by the 0.5 similarity threshold (pairs above the threshold become `modified`; the rest become add+remove). The original bug — fake "modified" leaves between unrelated definitions — becomes structurally impossible because the alignment is by content, not by colliding labels.
 
-Path matching is O(n). Similarity pairing is O(leftover²) where leftover is typically <10 even for the worst article, so it is effectively free. Tokenization itself is single-pass linear in `len(full_text)`. Total for art 5 (~38 k chars) should stay well under 100 ms.
+**Threshold of 0.5 inside replace blocks** is intentionally lower than the article-level renumbering threshold (0.85) because items inside a `replace` opcode are already known to be in the same alignment slot and we want to surface even moderately-edited items as `modified` rather than add+remove. The 0.85 threshold for article-level renumbering stays unchanged because that operates on articles that SequenceMatcher couldn't align by `article_number` and we want to be conservative there.
+
+**Complexity.** Tokenization is O(n) in `len(full_text)`. SequenceMatcher is O(m × n) where m, n are item counts per alineat — bounded by ~100 even for art 5, so well under 10 ms per article. Greedy similarity pairing inside replace blocks is O(k²) where k is the replace-block size, typically <10. Total for a 400-article diff stays well under one second.
 
 ## API shape
 
@@ -161,28 +209,33 @@ Path matching is O(n). Similarity pairing is O(leftover²) where leftover is typ
   "renumbered_from": null,                      // article-level renumber, unchanged from today
   "units": [                                    // flat, ordered for presentation
     {
-      "path": ["(1)", "intro"],
+      "alineat_label": "(1)",
+      "marker_kind": "alineat",
+      "label": "(1)",
       "change_type": "unchanged"
     },
     {
-      "path": ["(1)", "42^2."],
+      "alineat_label": "(1)",
+      "marker_kind": "numbered",
+      "label": "42^2.",
       "change_type": "added",
       "text_b": "persoana strâns legată de debitor este considerată..."
     },
     {
-      "path": ["(1)", "75."],
+      "alineat_label": "(1)",
+      "marker_kind": "numbered",
+      "label": "75.",
       "change_type": "modified",
       "text_a": "instrumente de datorie - obligațiuni...",
       "text_b": "instrumente de datorie - obligațiuni și alte forme...",
       "diff_html": "instrumente de datorie - obligațiuni <ins>și alte forme...</ins>"
     },
     {
-      "path": ["(2)", "b)"],
-      "change_type": "renumbered",
-      "renumbered_from_path": ["(2)", "a)"],
-      "text_a": "...",
-      "text_b": "...",
-      "diff_html": "..."
+      "alineat_label": "(1)",
+      "marker_kind": "litera",
+      "label": "a)",
+      "change_type": "removed",
+      "text_a": "orice acord master de netting - orice înțelegere..."
     }
   ]
 }
@@ -190,42 +243,45 @@ Path matching is O(n). Similarity pairing is O(leftover²) where leftover is typ
 
 Payload rules:
 
-- `unchanged` units carry only `path` and `change_type`. `text_a`, `text_b`, `diff_html` are omitted to keep the response small.
-- `added` units carry `text_b` only.
+- Every unit carries `alineat_label`, `marker_kind`, `label`, and `change_type`. `alineat_label` is the alineat the item belongs to (or `null` for items before the first alineat marker / articles with no alineate at all).
+- `unchanged` units carry only those four fields. `text_a`, `text_b`, `diff_html` are omitted to keep the response small.
+- `added` units carry `text_b` only (in addition to the four base fields).
 - `removed` units carry `text_a` only.
 - `modified` units carry `text_a`, `text_b`, and `diff_html`.
-- `renumbered` units carry `renumbered_from_path`, `text_a`, `text_b`, `diff_html`. The `path` field is the **new** path.
-- The old `paragraphs` / `subparagraphs` nested structure is removed from the payload entirely. The frontend reconstructs the visual tree from `path` arrays.
+- The old `paragraphs` / `subparagraphs` nested structure is removed from the payload entirely. The frontend groups units by `alineat_label` and renders each alineat as a section.
+- Renumbered items (a definition that gained a `^N` suffix or shifted index) are not flagged with a special change_type; they fall out of SequenceMatcher's `replace` opcode and are emitted as a `modified` pair if their text similarity is high enough, or as an `added` + `removed` pair otherwise. This is honest: from `full_text` alone we cannot reliably distinguish "renumbered" from "deleted X, inserted Y with similar text". A future enhancement could add a `was_label` field once we have a more authoritative source.
 - Articles whose unit list collapses to all-`unchanged` are excluded from `changes[*]` (matches today's behavior). The `summary.unchanged` count still reflects them.
 - When the tokenizer fallback fires for an article, the entry has `change_type: "modified"`, no `units` field, and a top-level `diff_html` field (article-level word diff). The frontend renders this as a single-block fallback card.
 
 ## Frontend
 
-`StructuredDiffArticle` and its leaf components are reshaped to consume `units` instead of `paragraphs`. The reshape is mechanical: the old code already groups things into a header card + body; the body now walks a flat unit list and groups by the first path segment (the alineat).
+`StructuredDiffArticle` and its leaf components are reshaped to consume `units` instead of `paragraphs`. The reshape is mechanical: the old code already groups things into a header card + body; the body now walks a flat unit list and groups by `alineat_label`.
 
 ### Render tree from a flat list
 
 ```
 For each article in changes:
-  Group units by units[i].path[0] (the alineat label)
+  Group article.units by units[i].alineat_label  (preserving B's order)
   For each alineat group:
+    Render an alineat header (e.g. "(1)") if alineat_label is not null
     Walk units in order
     Collapse runs of consecutive unchanged units into one CollapsedRun
-    Each modified / added / removed / renumbered unit renders as one row
+    Each modified / added / removed unit renders as one row
 ```
 
-The collapsed-run renderer groups by the first **two** path segments where possible, so the user sees `… (1) · points 1.–41. — unchanged · show` instead of `… 41 unchanged units · show`. This makes the collapse legible.
+A `CollapsedRun` shows a sensible label range based on the first and last collapsed item's `label` field, e.g. `… items 1.–41. unchanged · show`.
 
 ### Row layout
 
 Each non-unchanged unit renders as one row with:
 
-- **Path breadcrumb** on the left, monospace, gray. For `("(1)", "11.", "a)")` it shows `(1) · 11. · a)`. For `("(1)", "intro")` it shows `(1)` only. The breadcrumb is the visual cue that lets the user disambiguate the 17 different `a)` rows in art 5.
+- **Marker label** on the left, monospace, gray, e.g. `1.`, `42^2.`, `a)`, `A.`, `–`. Items with `marker_kind="alineat"` render their label as an alineat header above the row group, not as a row label.
 - **Body** on the right with the same flex layout as the normal version view.
-- For `modified` and `renumbered`: `diff_html` injected via `dangerouslySetInnerHTML`. The HTML is server-built from text we control, no XSS surface.
-- For `added`: `text_b` rendered with `bg-green-50 / text-green-800`, plus a small green `New` badge after the breadcrumb.
+- For `modified`: `diff_html` injected via `dangerouslySetInnerHTML`. The HTML is server-built from text we control, no XSS surface.
+- For `added`: `text_b` rendered with `bg-green-50 / text-green-800`, plus a small green `New` badge after the label.
 - For `removed`: `text_a` rendered struck-through with `bg-red-50 / text-red-800`.
-- For `renumbered`: same styling as `modified`, with `(was (1) · 31.)` appended to the breadcrumb in muted gray.
+
+There is no parent-context breadcrumb. The investigation found that `Article.full_text` does not preserve which numbered definition a litera belongs to, so we cannot show one accurately. The alineat header (`(1)`) is the one structural anchor we keep.
 
 ### Interaction
 
@@ -265,7 +321,7 @@ No new exception types are introduced. All errors are caught at the diff-article
   - Greedy similarity pairing: a renumbered unit is detected and emitted as `renumbered`; an unrelated text in the same slot is **not** paired and stays as `removed` + `added`.
   - Article-level renumbering still works (`_pair_renumbered` reuse).
   - Tokenizer-fallback path: monkeypatch `tokenize_article` to raise, assert the article appears as `modified` with `diff_html` and no `units`, assert a warning is logged.
-  - Regression test for the art 5 v517 vs v529 bug: load both `Article.full_text` snapshots from a fixture, run `diff_articles`, assert that the result contains the new `42^2.` definition as an `added` unit at path `("(1)", "42^2.")` and contains **zero** `modified` units in §(1) whose `text_a` and `text_b` are completely unrelated (concretely: assert that for every `modified` unit in §(1), the SequenceMatcher ratio between its `text_a` and `text_b` is ≥ 0.5). This is the regression test that the original bug never had — the old code would emit 17+ `modified` units with ratio near zero.
+  - Regression test for the art 5 v517 vs v529 bug: load both `Article.full_text` snapshots from a fixture, run `diff_articles`, assert that the result contains a unit with `label="42^2."`, `change_type="added"`, `alineat_label="(1)"` and contains **zero** `modified` units whose `text_a` and `text_b` are completely unrelated (concretely: assert that for every `modified` unit in §(1), `difflib.SequenceMatcher(None, u.text_a, u.text_b).ratio() >= 0.5`). This is the regression test the original bug never had — the old code emitted 17+ `modified` units with ratio near zero.
   - Empty `changes` for two identical versions.
 
 ### Frontend
@@ -274,8 +330,8 @@ Visual review against an updated mockup screen. No automated tests (matches exis
 
 1. Art 5 §(1) shows the new `42^2.` definition as one green `added` row, not a stream of fake `modified` rows.
 2. No 28 k-char text blob anywhere on the page.
-3. Path breadcrumbs are visible on every non-unchanged row (no bare `a)` without a parent point).
-4. Collapsed runs show a sensible range like `(1) · 1.–41.`.
+3. Items render under their alineat header (e.g. `(1)`, `(2)`) with bare marker labels (`1.`, `42^2.`, `a)`).
+4. Collapsed runs show a sensible range like `items 1.–41. unchanged · show`.
 5. Clicking "show full article" expands every collapsed run.
 
 ## Migration / rollout
