@@ -165,6 +165,10 @@ This is the sequence that repairs the user's stuck production state on first int
 
 For laws where the upstream-current is **already imported** but `LawVersion.is_current=False` due to the same dead-state bug (i.e. the user did import v151 originally but `_recalculate_current_version` failed to mark it), step 7 will instead find a matching LawVersion and flip its `is_current` to `True` immediately. No user action required beyond visiting the page.
 
+## Visible UX consequence of strict semantic B
+
+When discovery finds a new upstream version that you have not yet imported, the previously-current LawVersion **loses** its green "Current version" badge immediately, and **no** LawVersion shows the badge until the user clicks Import on the new one. This is the truthful state under semantic B: between learning upstream has v122 and actually importing v122, the user does not possess the current version, and the UI reflects that. The amber "new version available" banner is the call-to-action that bridges the window. This behaviour is intentional and was confirmed during brainstorming.
+
 ## Test plan
 
 ### Backend unit tests (extend `backend/tests/test_version_discovery.py` or similar)
