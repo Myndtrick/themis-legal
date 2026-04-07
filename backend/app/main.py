@@ -13,7 +13,7 @@ from app.models import assistant, pipeline, prompt, category, user, favorite  # 
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.routers import assistant as assistant_router
-from app.routers import categories, laws, notifications
+from app.routers import categories, law_mappings, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
 from app.routers import settings_models
 from app.routers import compare
@@ -221,6 +221,7 @@ async def generic_error_handler(request, exc: Exception):
 
 
 app.include_router(categories.router)
+app.include_router(law_mappings.router)
 app.include_router(laws.router)
 app.include_router(notifications.router)
 app.include_router(assistant_router.router)
