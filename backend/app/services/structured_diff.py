@@ -7,6 +7,7 @@ All functions are pure (no DB access) so they can be unit-tested in isolation.
 from __future__ import annotations
 
 import difflib
+from typing import Any, Protocol
 
 
 def word_diff_html(text_a: str, text_b: str) -> str:
@@ -34,3 +35,135 @@ def word_diff_html(text_a: str, text_b: str) -> str:
             parts.append(f'<del>{" ".join(words_a[i1:i2])}</del>')
             parts.append(f'<ins>{" ".join(words_b[j1:j2])}</ins>')
     return " ".join(parts)
+
+
+class _SubLike(Protocol):
+    label: str | None
+    text: str
+    order_index: int
+
+
+class _ParaLike(Protocol):
+    label: str | None
+    text: str
+    order_index: int
+    subparagraphs: list[_SubLike]
+
+
+def _leaf_for_unchanged(label: str | None) -> dict[str, Any]:
+    return {"label": label, "change_type": "unchanged"}
+
+
+def _leaf_for_added(node: _SubLike | _ParaLike) -> dict[str, Any]:
+    return {
+        "label": node.label,
+        "change_type": "added",
+        "text_b": node.text,
+    }
+
+
+def _leaf_for_removed(node: _SubLike | _ParaLike) -> dict[str, Any]:
+    return {
+        "label": node.label,
+        "change_type": "removed",
+        "text_a": node.text,
+    }
+
+
+def _leaf_for_modified(label: str | None, text_a: str, text_b: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "change_type": "modified",
+        "text_a": text_a,
+        "text_b": text_b,
+        "diff_html": word_diff_html(text_a, text_b),
+    }
+
+
+def _diff_subparagraphs(
+    subs_a: list[_SubLike], subs_b: list[_SubLike]
+) -> list[dict[str, Any]]:
+    """Match by label, fall back to position for unlabeled subs."""
+    map_a: dict[str, _SubLike] = {}
+    map_b: dict[str, _SubLike] = {}
+    unlabeled_a: list[_SubLike] = []
+    unlabeled_b: list[_SubLike] = []
+
+    for s in subs_a:
+        if s.label:
+            map_a[s.label] = s
+        else:
+            unlabeled_a.append(s)
+    for s in subs_b:
+        if s.label:
+            map_b[s.label] = s
+        else:
+            unlabeled_b.append(s)
+
+    # Preserve B's order for matched/added labels, then append A-only.
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+
+    for s in subs_b:
+        if not s.label:
+            continue
+        seen.add(s.label)
+        if s.label in map_a:
+            a = map_a[s.label]
+            if a.text.strip() == s.text.strip():
+                result.append(_leaf_for_unchanged(s.label))
+            else:
+                result.append(_leaf_for_modified(s.label, a.text, s.text))
+        else:
+            result.append(_leaf_for_added(s))
+
+    for s in subs_a:
+        if s.label and s.label not in seen:
+            result.append(_leaf_for_removed(s))
+
+    # Position-match unlabeled subs.
+    for i in range(max(len(unlabeled_a), len(unlabeled_b))):
+        a = unlabeled_a[i] if i < len(unlabeled_a) else None
+        b = unlabeled_b[i] if i < len(unlabeled_b) else None
+        if a and b:
+            if a.text.strip() == b.text.strip():
+                result.append(_leaf_for_unchanged(None))
+            else:
+                result.append(_leaf_for_modified(None, a.text, b.text))
+        elif b:
+            result.append(_leaf_for_added(b))
+        elif a:
+            result.append(_leaf_for_removed(a))
+
+    return result
+
+
+def diff_paragraph(para_a: _ParaLike, para_b: _ParaLike) -> dict[str, Any]:
+    """Diff one paragraph and its subparagraphs.
+
+    Returns a dict with: label, change_type, optional text_a/text_b/diff_html
+    for the paragraph's own intro line, and a `subparagraphs` list of leaves.
+    """
+    sub_leaves = _diff_subparagraphs(
+        list(para_a.subparagraphs), list(para_b.subparagraphs)
+    )
+
+    result: dict[str, Any] = {
+        "label": para_b.label or para_a.label,
+        "change_type": "unchanged",
+        "subparagraphs": sub_leaves,
+    }
+
+    intro_a = (para_a.text or "").strip()
+    intro_b = (para_b.text or "").strip()
+    intro_changed = intro_a != intro_b
+    if intro_changed:
+        result["text_a"] = para_a.text
+        result["text_b"] = para_b.text
+        result["diff_html"] = word_diff_html(para_a.text or "", para_b.text or "")
+
+    has_changed_sub = any(s["change_type"] != "unchanged" for s in sub_leaves)
+    if intro_changed or has_changed_sub:
+        result["change_type"] = "modified"
+
+    return result
