@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
@@ -107,9 +108,6 @@ async def lifespan(app: FastAPI):
         _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
         _add_column_if_missing(db, "law_mappings", "source_url", "TEXT", None)
         _add_column_if_missing(db, "law_mappings", "source_ver_id", "VARCHAR(50)", None)
-        from sqlalchemy import text as _sql_text
-        db.execute(_sql_text("UPDATE law_mappings SET source='system' WHERE source='seed'"))
-        db.commit()
 
         seed_defaults(db)
         sync_prompts_from_files(db)
@@ -118,6 +116,12 @@ async def lifespan(app: FastAPI):
         ensure_eu_decision_category(db)
         seed_eu_celex_mappings(db)
         backfill_law_mapping_fields(db)
+
+        # One-time rename: 'seed' source label is now 'system'.
+        # Runs after backfill so any pending backfills complete first.
+        db.execute(text("UPDATE law_mappings SET source='system' WHERE source='seed'"))
+        db.commit()
+
         from app.services.user_service import seed_admin_users
         seed_admin_users(db)
         from app.services.model_seed import seed_models
@@ -127,7 +131,7 @@ async def lifespan(app: FastAPI):
 
         # Add diff_summary column if it doesn't exist (SQLite migration)
         # Must run before any query that touches LawVersion
-        from sqlalchemy import inspect, text
+        from sqlalchemy import inspect
         inspector = inspect(engine)
         columns = [c["name"] for c in inspector.get_columns("law_versions")]
         if "diff_summary" not in columns:
