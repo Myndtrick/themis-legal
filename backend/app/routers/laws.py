@@ -505,6 +505,11 @@ def import_suggestion(req: ImportSuggestionRequest, db: Session = Depends(get_db
         law.category_confidence = "high"
         db.commit()
 
+    # Pin-on-import: remember the resolved ver_id so future imports skip search
+    if not mapping.source_ver_id and ver_id:
+        mapping.source_ver_id = str(ver_id)
+        db.commit()
+
     return {
         "law_id": result["law_id"],
         "title": result.get("title", mapping.title),
@@ -583,6 +588,8 @@ async def import_suggestion_stream(
     def on_progress(event: dict):
         queue.put_nowait(event)
 
+    resolved_from_search = not mapping.source_ver_id
+
     async def run_import():
         try:
             result = await asyncio.to_thread(
@@ -590,6 +597,10 @@ async def import_suggestion_stream(
                 import_history=req.import_history,
                 on_progress=on_progress,
             )
+            # Pin-on-import: remember resolved ver_id for future runs
+            if resolved_from_search and ver_id:
+                mapping.source_ver_id = str(ver_id)
+                db.commit()
             await queue.put({"event": "complete", "data": result})
         except Exception as e:
             error = map_exception_to_error(e)
@@ -628,11 +639,13 @@ async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = De
     # Extract plain dicts before closing session — ORM objects detach after commit/rollback
     suggestion_data = [
         {
+            "id": m.id,
             "title": m.title,
             "law_number": m.law_number,
             "law_year": m.law_year,
             "document_type": m.document_type,
             "category_id": m.category_id,
+            "source_ver_id": m.source_ver_id,
         }
         for m in suggestions
     ]
@@ -680,21 +693,26 @@ async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = De
                         }})
                         break
 
-                    doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping["document_type"] or "", "")
-                    year_str = str(mapping["law_year"]) if mapping["law_year"] else ""
-                    results = advanced_search(
-                        doc_type=doc_type_code,
-                        number=mapping["law_number"],
-                        year=year_str,
-                    )
-                    if not results:
-                        failed += 1
-                        await queue.put({"event": "item_error", "data": {
-                            "title": mapping["title"], "error": "Not found on legislatie.just.ro",
-                        }})
-                        break
+                    if mapping["source_ver_id"]:
+                        ver_id = str(mapping["source_ver_id"])
+                        resolved_from_search = False
+                    else:
+                        doc_type_code = _DOC_TYPE_TO_SEARCH_CODE.get(mapping["document_type"] or "", "")
+                        year_str = str(mapping["law_year"]) if mapping["law_year"] else ""
+                        results = advanced_search(
+                            doc_type=doc_type_code,
+                            number=mapping["law_number"],
+                            year=year_str,
+                        )
+                        if not results:
+                            failed += 1
+                            await queue.put({"event": "item_error", "data": {
+                                "title": mapping["title"], "error": "Not found on legislatie.just.ro",
+                            }})
+                            break
 
-                    ver_id = str(results[0].ver_id)
+                        ver_id = str(results[0].ver_id)
+                        resolved_from_search = True
                     existing_ver = import_db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
                     if existing_ver:
                         await queue.put({"event": "item_skip", "data": {
@@ -710,6 +728,14 @@ async def import_all_suggestions_stream(req: BulkImportRequest, db: Session = De
                         law.category_id = mapping["category_id"]
                         law.category_confidence = "high"
                         import_db.commit()
+
+                    # Pin-on-import: remember resolved ver_id for future runs
+                    if resolved_from_search:
+                        from app.models.category import LawMapping as _LM
+                        m = import_db.query(_LM).filter(_LM.id == mapping["id"]).first()
+                        if m and not m.source_ver_id:
+                            m.source_ver_id = ver_id
+                            import_db.commit()
 
                     imported += 1
                     await queue.put({"event": "item_done", "data": {
