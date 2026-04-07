@@ -7,6 +7,7 @@ to user, deleting them is forbidden.
 """
 from __future__ import annotations
 
+import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -102,6 +103,7 @@ def list_mappings(
     query = (
         db.query(LawMapping)
         .options(joinedload(LawMapping.category).joinedload(Category.group))
+        .filter(LawMapping.deleted_at.is_(None))
     )
     if category_id is not None:
         query = query.filter(LawMapping.category_id == category_id)
@@ -158,7 +160,7 @@ def create_mapping(
 ):
     existing = (
         db.query(LawMapping)
-        .filter(LawMapping.source_url == req.url)
+        .filter(LawMapping.source_url == req.url, LawMapping.deleted_at.is_(None))
         .first()
     )
     try:
@@ -182,7 +184,9 @@ def update_mapping(
     db: Session = Depends(get_db),
 ):
     mapping = (
-        db.query(LawMapping).filter(LawMapping.id == mapping_id).first()
+        db.query(LawMapping)
+        .filter(LawMapping.id == mapping_id, LawMapping.deleted_at.is_(None))
+        .first()
     )
     if mapping is None:
         raise HTTPException(status_code=404, detail="Mapping not found")
@@ -208,15 +212,14 @@ def update_mapping(
 @router.delete("/{mapping_id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_mapping(mapping_id: int, db: Session = Depends(get_db)):
     mapping = (
-        db.query(LawMapping).filter(LawMapping.id == mapping_id).first()
+        db.query(LawMapping)
+        .filter(LawMapping.id == mapping_id, LawMapping.deleted_at.is_(None))
+        .first()
     )
     if mapping is None:
         raise HTTPException(status_code=404, detail="Mapping not found")
-    if mapping.source != "user":
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot delete a system-managed mapping",
-        )
-    db.delete(mapping)
+    # Soft-delete: mark as deleted instead of removing the row, so the seed
+    # loader's skip-if-exists check still matches and never re-inserts it.
+    mapping.deleted_at = datetime.datetime.utcnow()
     db.commit()
     return Response(status_code=204)

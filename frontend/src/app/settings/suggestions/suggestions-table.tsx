@@ -69,7 +69,6 @@ export function SuggestionsTable() {
   );
 
   async function handleDelete(row: LawMappingRow) {
-    if (row.source === "system") return;
     if (!confirm("Delete this suggestion?")) return;
     try {
       await api.lawMappings.remove(row.id);
@@ -251,13 +250,8 @@ export function SuggestionsTable() {
                         </button>
                         <button
                           onClick={() => handleDelete(row)}
-                          disabled={row.source === "system"}
-                          title={
-                            row.source === "system"
-                              ? "System suggestions cannot be deleted"
-                              : "Delete"
-                          }
-                          className="text-xs text-rose-600 hover:text-rose-800 px-2 py-1 disabled:text-gray-300 disabled:cursor-not-allowed"
+                          title="Delete"
+                          className="text-xs text-rose-600 hover:text-rose-800 px-2 py-1"
                         >
                           Delete
                         </button>

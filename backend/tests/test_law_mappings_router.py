@@ -178,7 +178,66 @@ def test_put_returns_404_when_missing(client_and_db):
 
 # ---------- DELETE /api/law-mappings/{id} ----------
 
-def test_delete_removes_user_mapping(client_and_db):
+def test_delete_user_mapping_soft_deletes(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    m = LawMapping(title="usr", category_id=cat.id, source="user")
+    db.add(m)
+    db.commit()
+    mid = m.id
+
+    resp = client.delete(f"/api/law-mappings/{mid}")
+    assert resp.status_code == 204
+
+    db.expire_all()
+    row = db.query(LawMapping).filter(LawMapping.id == mid).first()
+    assert row is not None
+    assert row.deleted_at is not None
+
+    # And it should no longer appear in the list endpoint
+    list_resp = client.get("/api/law-mappings")
+    assert list_resp.status_code == 200
+    assert all(r["id"] != mid for r in list_resp.json())
+
+
+def test_delete_system_mapping_soft_deletes(client_and_db):
+    client, db = client_and_db
+    cat = _seed_category(db)
+    m = LawMapping(title="seeded", category_id=cat.id, source="system")
+    db.add(m)
+    db.commit()
+    mid = m.id
+
+    resp = client.delete(f"/api/law-mappings/{mid}")
+    assert resp.status_code == 204
+
+    db.expire_all()
+    row = db.query(LawMapping).filter(LawMapping.id == mid).first()
+    assert row is not None
+    assert row.deleted_at is not None
+
+
+def test_list_excludes_tombstoned(client_and_db):
+    import datetime as _dt
+    client, db = client_and_db
+    cat = _seed_category(db)
+    db.add(LawMapping(title="alive", category_id=cat.id, source="user"))
+    db.add(LawMapping(
+        title="dead",
+        category_id=cat.id,
+        source="user",
+        deleted_at=_dt.datetime.utcnow(),
+    ))
+    db.commit()
+
+    resp = client.get("/api/law-mappings")
+    assert resp.status_code == 200
+    titles = {r["title"] for r in resp.json()}
+    assert "alive" in titles
+    assert "dead" not in titles
+
+
+def test_put_on_tombstoned_returns_404(client_and_db):
     client, db = client_and_db
     cat = _seed_category(db)
     m = LawMapping(title="x", category_id=cat.id, source="user")
@@ -186,22 +245,26 @@ def test_delete_removes_user_mapping(client_and_db):
     db.commit()
     mid = m.id
 
-    resp = client.delete(f"/api/law-mappings/{mid}")
-    assert resp.status_code == 204
-    assert db.query(LawMapping).filter(LawMapping.id == mid).first() is None
+    client.delete(f"/api/law-mappings/{mid}")
+    resp = client.put(f"/api/law-mappings/{mid}", json={"title": "y"})
+    assert resp.status_code == 404
 
 
-def test_delete_refuses_system_mapping(client_and_db):
+def test_delete_already_deleted_returns_404(client_and_db):
+    import datetime as _dt
     client, db = client_and_db
     cat = _seed_category(db)
-    m = LawMapping(title="x", category_id=cat.id, source="system")
+    m = LawMapping(
+        title="ghost",
+        category_id=cat.id,
+        source="user",
+        deleted_at=_dt.datetime.utcnow(),
+    )
     db.add(m)
     db.commit()
-    mid = m.id
 
-    resp = client.delete(f"/api/law-mappings/{mid}")
-    assert resp.status_code == 403
-    assert db.query(LawMapping).filter(LawMapping.id == mid).first() is not None
+    resp = client.delete(f"/api/law-mappings/{m.id}")
+    assert resp.status_code == 404
 
 
 # ---------- GET /api/law-mappings ----------

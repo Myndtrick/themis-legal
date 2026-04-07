@@ -297,8 +297,11 @@ def seed_categories(db: Session) -> None:
     ]
     for cat_slug, title, law_number, law_year, document_type in mappings_data:
         cat_id = cat_map[cat_slug]
-        # Skip if a matching mapping already exists — so re-seeding
-        # never clobbers user edits or creates duplicates.
+        # Skip if a matching mapping already exists, INCLUDING tombstoned ones —
+        # so re-seeding never resurrects a row the user has explicitly deleted.
+        # Note: seed_categories has an early-return guard above (`if existing
+        # group: return`), so this is the safety net for any future "reload
+        # defaults" admin path that bypasses that guard.
         existing = db.query(LawMapping).filter(
             LawMapping.category_id == cat_id,
             LawMapping.law_number == law_number,
@@ -621,7 +624,7 @@ def get_library_data(db: Session, user_id: int | None = None) -> dict:
     last_imported = db.query(func.max(LawVersion.date_imported)).scalar()
 
     # 4. Suggestions — use pre-loaded categories, no per-mapping queries
-    all_mappings = db.query(LawMapping).all()
+    all_mappings = db.query(LawMapping).filter(LawMapping.deleted_at.is_(None)).all()
     imported_keys = {(law.law_number, law.law_year) for law in laws}
     # Track seen (law_number, law_year) to deduplicate mappings
     seen_keys: set[tuple[str | None, int | None]] = set()
@@ -671,7 +674,7 @@ def get_unimported_suggestions(db: Session) -> list[LawMapping]:
     laws = db.query(Law).all()
     imported_keys = {(law.law_number, law.law_year) for law in laws}
 
-    all_mappings = db.query(LawMapping).all()
+    all_mappings = db.query(LawMapping).filter(LawMapping.deleted_at.is_(None)).all()
     seen_keys: set[tuple[str | None, int | None]] = set()
     unimported = []
     for m in all_mappings:

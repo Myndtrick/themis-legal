@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI):
         _add_column_if_missing(db, "law_mappings", "celex_number", "VARCHAR(50)", None)
         _add_column_if_missing(db, "law_mappings", "source_url", "TEXT", None)
         _add_column_if_missing(db, "law_mappings", "source_ver_id", "VARCHAR(50)", None)
+        _add_column_if_missing(db, "law_mappings", "deleted_at", "DATETIME", None)
 
         seed_defaults(db)
         sync_prompts_from_files(db)

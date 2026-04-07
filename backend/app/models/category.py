@@ -52,5 +52,6 @@ class LawMapping(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     category: Mapped["Category"] = relationship()
