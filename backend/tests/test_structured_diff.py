@@ -3,7 +3,7 @@ import difflib
 from dataclasses import dataclass, field
 
 from app.services.article_tokenizer import AtomicUnit
-from app.services.structured_diff import _diff_alineat_items, diff_article, word_diff_html
+from app.services.structured_diff import _diff_alineat_items, diff_article, diff_articles, word_diff_html
 
 
 # --- word_diff_html (kept from the previous version) ---
@@ -175,3 +175,41 @@ def test_diff_article_modified_returns_units_grouped_by_alineat():
     assert added["label"] == "2."
     assert added["text_b"] == "punct nou."
     assert added["alineat_label"] == "(1)"
+
+
+def test_diff_articles_added_only_uses_units_field():
+    a: list[FakeArt] = []
+    b = [FakeArt("1", "(1) primul articol nou.")]
+    changes = diff_articles(a, b)
+    assert len(changes) == 1
+    assert changes[0]["change_type"] == "added"
+    assert changes[0]["text_b"] == "(1) primul articol nou."
+    assert "units" in changes[0]
+    assert changes[0]["units"] == []
+    assert "paragraphs" not in changes[0]
+
+
+def test_diff_articles_removed_only_uses_units_field():
+    a = [FakeArt("1", "(1) articolul vechi.")]
+    b: list[FakeArt] = []
+    changes = diff_articles(a, b)
+    assert changes[0]["change_type"] == "removed"
+    assert changes[0]["text_a"] == "(1) articolul vechi."
+    assert "units" in changes[0]
+    assert "paragraphs" not in changes[0]
+
+
+def test_diff_articles_modified_keeps_units_from_diff_article():
+    a = [FakeArt("5", "(1) Intro: 1. unu.")]
+    b = [FakeArt("5", "(1) Intro: 1. unu. 2. doi.")]
+    changes = diff_articles(a, b)
+    assert len(changes) == 1
+    assert changes[0]["change_type"] == "modified"
+    assert isinstance(changes[0]["units"], list)
+    assert any(u["change_type"] == "added" and u["label"] == "2." for u in changes[0]["units"])
+
+
+def test_diff_articles_identical_returns_empty():
+    a = [FakeArt("1", "(1) același conținut.")]
+    b = [FakeArt("1", "(1) același conținut.")]
+    assert diff_articles(a, b) == []

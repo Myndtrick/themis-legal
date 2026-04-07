@@ -284,7 +284,7 @@ def diff_articles(
             "change_type": "added",
             "title": ad.label,
             "text_b": ad.full_text,
-            "paragraphs": [],
+            "units": [],
             "renumbered_from": None,
         })
 
@@ -296,7 +296,7 @@ def diff_articles(
             "change_type": "removed",
             "title": r.label,
             "text_a": r.full_text,
-            "paragraphs": [],
+            "units": [],
             "renumbered_from": None,
         })
 
