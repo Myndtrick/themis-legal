@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { DiffArticle } from "@/lib/api";
-import { DiffParagraphLeaf } from "./diff-leaf";
+import type { DiffArticle, DiffUnit } from "@/lib/api";
+import { DiffUnitRow, CollapsedRun } from "./diff-leaf";
 
 function badgeStyle(changeType: string): string {
   switch (changeType) {
@@ -24,6 +24,60 @@ function badgeLabel(changeType: string): string {
   return "Unchanged";
 }
 
+/** Group units by their effective alineat key, preserving first-seen order. */
+function groupByAlineat(units: DiffUnit[]): Array<{ key: string | null; units: DiffUnit[] }> {
+  const order: Array<string | null> = [];
+  const buckets = new Map<string | null, DiffUnit[]>();
+  for (const u of units) {
+    // alineat marker units sit in their OWN bucket (the alineat they introduce)
+    const key = u.marker_kind === "alineat" ? u.label : u.alineat_label;
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      order.push(key);
+    }
+    buckets.get(key)!.push(u);
+  }
+  return order.map((k) => ({ key: k, units: buckets.get(k)! }));
+}
+
+function renderUnitsWithCollapse(units: DiffUnit[], forceShowAll: boolean) {
+  const out: React.ReactNode[] = [];
+  let run: DiffUnit[] = [];
+
+  const flush = (key: string) => {
+    if (run.length === 0) return;
+    if (forceShowAll) {
+      // Render every unchanged unit as a faint stub line.
+      run.forEach((u, i) =>
+        out.push(
+          <div key={`${key}-${i}`} className="flex gap-2 pl-6 mt-1">
+            {u.label && (
+              <span className="font-mono text-xs leading-[1.75] shrink-0 text-gray-400">
+                {u.label}
+              </span>
+            )}
+            <span className="text-[15px] leading-[1.75] text-gray-500">(unchanged)</span>
+          </div>,
+        ),
+      );
+    } else {
+      out.push(<CollapsedRun key={key} units={run} forceShowAll={false} />);
+    }
+    run = [];
+  };
+
+  units.forEach((u, i) => {
+    if (u.change_type === "unchanged") {
+      run.push(u);
+      return;
+    }
+    flush(`run-${i}`);
+    out.push(<DiffUnitRow key={`u-${i}`} unit={u} />);
+  });
+  flush("run-end");
+  return out;
+}
+
 export function StructuredDiffArticle({ article }: { article: DiffArticle }) {
   const [showAll, setShowAll] = useState(false);
   const isModified = article.change_type === "modified";
@@ -32,27 +86,28 @@ export function StructuredDiffArticle({ article }: { article: DiffArticle }) {
     ? `Art. ${article.article_number} (was Art. ${article.renumbered_from})`
     : `Art. ${article.article_number}`;
 
+  // Fallback shape: a modified article with no units but a top-level diff_html.
+  const isFallback = isModified && article.units.length === 0 && !!article.diff_html;
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <button
         type="button"
-        disabled={!isModified}
+        disabled={!isModified || isFallback}
         onClick={() => setShowAll((v) => !v)}
         className={`w-full flex items-center justify-between gap-3 px-4 py-2 text-sm font-medium border-b text-left ${badgeStyle(
           article.change_type,
-        )} ${isModified ? "hover:brightness-95 cursor-pointer" : "cursor-default"}`}
+        )} ${isModified && !isFallback ? "hover:brightness-95 cursor-pointer" : "cursor-default"}`}
       >
         <span>
           {headerLabel}
-          {article.title && (
-            <span className="font-bold"> — {article.title}</span>
-          )}
+          {article.title && <span className="font-bold"> — {article.title}</span>}
         </span>
         <span className="flex items-center gap-2">
           <span className="text-xs uppercase tracking-wide opacity-80">
             {badgeLabel(article.change_type)}
           </span>
-          {isModified && (
+          {isModified && !isFallback && (
             <span className="text-xs underline">
               {showAll ? "hide unchanged" : "show full article"}
             </span>
@@ -61,21 +116,27 @@ export function StructuredDiffArticle({ article }: { article: DiffArticle }) {
       </button>
 
       <div className="p-4">
-        {article.change_type === "modified" && (
+        {isModified && !isFallback && (
           <div className="space-y-1">
-            {article.paragraphs.map((p, i) => {
-              if (p.change_type === "unchanged" && !showAll) {
-                return (
-                  <div
-                    key={i}
-                    className="text-xs text-gray-400 italic py-1 border-t border-dashed border-gray-200"
-                  >
-                    … {p.label ?? "(intro)"} — unchanged
-                  </div>
-                );
-              }
-              return <DiffParagraphLeaf key={i} para={p} forceShowAll={showAll} />;
-            })}
+            {groupByAlineat(article.units).map(({ key, units }, i) => (
+              <div key={`${key ?? "intro"}-${i}`} className="mt-2">
+                {key && (
+                  <div className="font-mono text-xs text-gray-500 mb-1">{key}</div>
+                )}
+                {renderUnitsWithCollapse(units, showAll)}
+              </div>
+            ))}
+          </div>
+        )}
+        {isFallback && (
+          <div>
+            <div
+              className="diff-content text-sm text-gray-700 whitespace-pre-wrap"
+              dangerouslySetInnerHTML={{ __html: article.diff_html! }}
+            />
+            <div className="mt-3 text-xs text-gray-400 italic">
+              structural diff unavailable for this article
+            </div>
           </div>
         )}
         {article.change_type === "added" && (
