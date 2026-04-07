@@ -1013,10 +1013,8 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
 
     if law.source == "eu":
         from app.services.eu_cellar_service import import_eu_known_version
-        try:
-            new_version = import_eu_known_version(db, law, req.ver_id)
-        except RuntimeError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+        # EUContentUnavailableError is a ThemisError handled globally with code
+        new_version = import_eu_known_version(db, law, req.ver_id)
     else:
         from app.services.leropa_service import fetch_and_store_version
         import app.services.leropa_service as _ls

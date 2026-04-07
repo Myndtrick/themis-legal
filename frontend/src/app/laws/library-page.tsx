@@ -567,6 +567,28 @@ export default function LibraryPage() {
           imported++;
         } catch (err) {
           const message = err instanceof Error ? err.message : "Import failed";
+          const code = (err as { code?: string } | null)?.code;
+          const isPermanent = code === "eu_content_unavailable";
+
+          if (isPermanent) {
+            // CELLAR has no published text for this version yet — skip it,
+            // record a non-retriable failed entry, and keep trying the rest.
+            setFailedEntries((prev) => [...prev, {
+              id: `${entryId}-skip-${verId}`,
+              title: entry.title,
+              lawNumber: entry.law_number,
+              verId,
+              source: entry.source as "ro" | "eu",
+              importHistory: false,
+              categoryId: null,
+              groupSlug: null,
+              error: message,
+              permanent: true,
+            }]);
+            continue;
+          }
+
+          // Transient/unknown failure — stop the run and let the user retry.
           setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
           setNewVersionImportingIds((prev) => {
             const next = new Set(prev);

@@ -459,6 +459,51 @@ def import_eu_law(db: Session, celex: str, import_history: bool = True, rate_lim
     }
 
 
+def import_eu_known_version(db: Session, law: Law, ver_celex: str) -> LawVersion:
+    """Import a single missing consolidated version of an already-imported EU law.
+
+    Looks up the cellar_uri for the requested CELEX via SPARQL, fetches its
+    XHTML content, and stores it as a new LawVersion. Caller is responsible for
+    committing and recalculating is_current.
+
+    Raises EUContentUnavailableError when the consolidation exists in CELLAR's
+    metadata but has no readable XHTML in any language — that's a permanent,
+    non-retriable failure until the EU publications office releases the text.
+    """
+    from app.errors import EUContentUnavailableError
+
+    if not law.celex_number:
+        raise RuntimeError(f"Law {law.id} has no celex_number — cannot import EU version")
+
+    consol_versions = fetch_consolidated_versions(law.celex_number)
+    match = next((cv for cv in consol_versions if cv.get("celex") == ver_celex), None)
+    if not match:
+        # SPARQL doesn't know about this CELEX — also permanent until CELLAR publishes it.
+        raise EUContentUnavailableError(ver_celex)
+
+    try:
+        cv_content, cv_lang = fetch_eu_content(match["cellar_uri"], ver_celex)
+    except RuntimeError as e:
+        # fetch_eu_content raises RuntimeError("Could not fetch content for X in any language")
+        logger.info(f"EU content unavailable for {ver_celex}: {e}")
+        raise EUContentUnavailableError(ver_celex)
+
+    # Skip versions with empty/shallow content (CELLAR returns empty XHTML for some)
+    arts = cv_content.get("articles", {})
+    has_real_content = any(
+        len(a.get("paragraphs", [])) > 0
+        and any(p.get("text", "").strip() for p in a.get("paragraphs", []))
+        for a in arts.values()
+    ) if arts else False
+    if not has_real_content:
+        raise EUContentUnavailableError(ver_celex)
+
+    # _store_eu_version handles the empty-preamble case by copying from a sibling
+    return _store_eu_version(
+        db, law, ver_celex, match.get("date", ""), cv_content, cv_lang, is_current=False
+    )
+
+
 def _store_eu_version(db, law, ver_celex, date_str, content, language, is_current):
     """Store a single EU law version with full hierarchy from parsed content."""
     date_in_force = None

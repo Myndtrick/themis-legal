@@ -55,6 +55,9 @@ export default function UpdateBanner({
   const [importingAll, setImportingAll] = useState(false);
   const [checkedAt, setCheckedAt] = useState(lastCheckedAt);
   const [checkError, setCheckError] = useState<string | null>(null);
+  // Per-version error state. Versions whose ver_id maps to permanent: true are
+  // those CELLAR has no published text for — we hide their Import button.
+  const [versionErrors, setVersionErrors] = useState<Map<string, { message: string; permanent: boolean }>>(new Map());
 
   // Auto-check on mount if stale
   useEffect(() => {
@@ -123,11 +126,22 @@ export default function UpdateBanner({
 
   async function handleImportVersion(version: KnownVersionData) {
     setImportingVerId(version.ver_id);
+    setVersionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(version.ver_id);
+      return next;
+    });
     try {
       const res = await api.laws.importKnownVersion(lawId, version.ver_id);
       onVersionImported(version.ver_id, res.law_version_id);
-    } catch {
-      alert("Failed to import version. Please try again.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to import version";
+      const code = (err as { code?: string } | null)?.code;
+      setVersionErrors((prev) => {
+        const next = new Map(prev);
+        next.set(version.ver_id, { message, permanent: code === "eu_content_unavailable" });
+        return next;
+      });
     } finally {
       setImportingVerId(null);
     }
@@ -138,12 +152,24 @@ export default function UpdateBanner({
     // Import oldest first so diffs are computed correctly
     const oldestFirst = [...newVersionsSorted].reverse();
     for (const version of oldestFirst) {
+      // Skip versions we already know are permanently unavailable
+      if (versionErrors.get(version.ver_id)?.permanent) continue;
       try {
         const res = await api.laws.importKnownVersion(lawId, version.ver_id);
         onVersionImported(version.ver_id, res.law_version_id);
-      } catch {
-        alert(`Failed to import v${versionNumberMap.get(version.ver_id) ?? "?"}. Stopping.`);
-        break;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to import version";
+        const code = (err as { code?: string } | null)?.code;
+        const isPermanent = code === "eu_content_unavailable";
+        setVersionErrors((prev) => {
+          const next = new Map(prev);
+          next.set(version.ver_id, { message, permanent: isPermanent });
+          return next;
+        });
+        if (!isPermanent) {
+          break; // transient — stop and let the user retry
+        }
+        // permanent — skip this one and keep going
       }
     }
     setImportingAll(false);
@@ -239,28 +265,42 @@ export default function UpdateBanner({
         {newVersionsSorted.map((version) => {
           const vNum = versionNumberMap.get(version.ver_id) ?? 0;
           const isThisImporting = importingVerId === version.ver_id;
+          const verError = versionErrors.get(version.ver_id);
           return (
             <div
               key={version.ver_id}
-              className="flex items-center justify-between bg-white/60 rounded-md px-3 py-2 border border-amber-100"
+              className="flex flex-col gap-1 bg-white/60 rounded-md px-3 py-2 border border-amber-100"
             >
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-bold text-gray-900">v{vNum}</span>
-                <span className="text-sm text-gray-500">
-                  {(() => {
-                    const d = new Date(version.date_in_force);
-                    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                    return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
-                  })()}
-                </span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-gray-900">v{vNum}</span>
+                  <span className="text-sm text-gray-500">
+                    {(() => {
+                      const d = new Date(version.date_in_force);
+                      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                      return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+                    })()}
+                  </span>
+                </div>
+                {verError?.permanent ? (
+                  <span className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-amber-700 bg-amber-100 rounded">
+                    Not available on CELLAR
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => handleImportVersion(version)}
+                    disabled={isAnyImporting}
+                    className="px-3 py-1 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors"
+                  >
+                    {isThisImporting ? "Importing..." : `Import v${vNum}`}
+                  </button>
+                )}
               </div>
-              <button
-                onClick={() => handleImportVersion(version)}
-                disabled={isAnyImporting}
-                className="px-3 py-1 text-sm font-medium text-amber-700 bg-white border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors"
-              >
-                {isThisImporting ? "Importing..." : `Import v${vNum}`}
-              </button>
+              {verError && (
+                <p className={`text-xs ${verError.permanent ? "text-amber-700" : "text-red-600"}`}>
+                  {verError.message}
+                </p>
+              )}
             </div>
           );
         })}
