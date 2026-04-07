@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { DiffUnit } from "@/lib/api";
 
 function renderLabel(label: string): ReactNode {
@@ -57,8 +57,6 @@ function NewBadge() {
 }
 
 export function DiffUnitRow({ unit }: { unit: DiffUnit }) {
-  if (unit.change_type === "unchanged") return null;
-
   let body: ReactNode;
   if (unit.change_type === "modified" && unit.diff_html) {
     body = (
@@ -73,18 +71,28 @@ export function DiffUnitRow({ unit }: { unit: DiffUnit }) {
         {unit.text_b}
       </span>
     );
-  } else {
+  } else if (unit.change_type === "removed") {
     body = (
       <span className={`text-[15px] leading-[1.75] ${leafBodyStyle("removed")}`}>
         {unit.text_a}
       </span>
     );
+  } else {
+    // unchanged — render the actual text, dimmed.
+    body = (
+      <span className="text-[15px] leading-[1.75] text-gray-400">
+        {unit.text_b ?? unit.text_a}
+      </span>
+    );
   }
+
+  const labelColor =
+    unit.change_type === "unchanged" ? "text-gray-400" : "text-gray-500";
 
   return (
     <div className="flex gap-2 pl-6 mt-1">
       {unit.label && (
-        <span className="font-mono text-xs leading-[1.75] shrink-0 text-gray-500">
+        <span className={`font-mono text-xs leading-[1.75] shrink-0 ${labelColor}`}>
           {renderLabel(unit.label)}
           {unit.change_type === "added" && <NewBadge />}
         </span>
@@ -94,51 +102,3 @@ export function DiffUnitRow({ unit }: { unit: DiffUnit }) {
   );
 }
 
-export function CollapsedRun({
-  units,
-  forceShowAll,
-}: {
-  units: DiffUnit[];
-  forceShowAll: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const open = expanded || forceShowAll;
-
-  if (units.length === 0) return null;
-
-  if (open) {
-    return (
-      <div className="space-y-1">
-        {units.map((u, i) => (
-          <div key={i} className="flex gap-2 pl-6 mt-1">
-            {u.label && (
-              <span className="font-mono text-xs leading-[1.75] shrink-0 text-gray-400">
-                {renderLabel(u.label)}
-              </span>
-            )}
-            <span className="text-[15px] leading-[1.75] text-gray-500">
-              (unchanged — full text hidden in diff view)
-            </span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  const first = units[0].label;
-  const last = units[units.length - 1].label;
-  const range = units.length === 1 ? first : `${first}–${last}`;
-
-  return (
-    <div className="text-xs text-gray-400 italic pl-6 py-1 border-t border-dashed border-gray-200 mt-2">
-      … {range} — unchanged{" "}
-      <button
-        type="button"
-        className="text-blue-600 hover:underline not-italic ml-1"
-        onClick={() => setExpanded(true)}
-      >
-        show
-      </button>
-    </div>
-  );
-}

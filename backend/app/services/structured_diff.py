@@ -125,7 +125,7 @@ def _diff_alineat_items(
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for k in range(i2 - i1):
-                out.append(_leaf(items_b[j1 + k], "unchanged"))
+                out.append(_leaf(items_b[j1 + k], "unchanged", text_b=items_b[j1 + k].text))
         elif tag == "delete":
             for k in range(i1, i2):
                 out.append(_leaf(items_a[k], "removed", text_a=items_a[k].text))

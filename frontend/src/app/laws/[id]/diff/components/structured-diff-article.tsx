@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { DiffArticle, DiffUnit } from "@/lib/api";
-import { DiffUnitRow, CollapsedRun } from "./diff-leaf";
+import { DiffUnitRow } from "./diff-leaf";
 
 function badgeStyle(changeType: string): string {
   switch (changeType) {
@@ -47,22 +47,12 @@ function renderUnitsWithCollapse(units: DiffUnit[], forceShowAll: boolean) {
   const flush = (key: string) => {
     if (run.length === 0) return;
     if (forceShowAll) {
-      // Render every unchanged unit as a faint stub line.
+      // Render every unchanged unit with its actual text, dimmed.
       run.forEach((u, i) =>
-        out.push(
-          <div key={`${key}-${i}`} className="flex gap-2 pl-6 mt-1">
-            {u.label && (
-              <span className="font-mono text-xs leading-[1.75] shrink-0 text-gray-400">
-                {u.label}
-              </span>
-            )}
-            <span className="text-[15px] leading-[1.75] text-gray-500">(unchanged)</span>
-          </div>,
-        ),
+        out.push(<DiffUnitRow key={`${key}-${i}`} unit={u} />),
       );
-    } else {
-      out.push(<CollapsedRun key={key} units={run} forceShowAll={false} />);
     }
+    // When not showing all, unchanged runs are dropped entirely.
     run = [];
   };
 
@@ -118,14 +108,19 @@ export function StructuredDiffArticle({ article }: { article: DiffArticle }) {
       <div className="p-4">
         {isModified && !isFallback && (
           <div className="space-y-1">
-            {groupByAlineat(article.units).map(({ key, units }, i) => (
-              <div key={`${key ?? "intro"}-${i}`} className="mt-2">
-                {key && (
-                  <div className="font-mono text-xs text-gray-500 mb-1">{key}</div>
-                )}
-                {renderUnitsWithCollapse(units, showAll)}
-              </div>
-            ))}
+            {groupByAlineat(article.units)
+              .filter(
+                ({ units }) =>
+                  showAll || units.some((u) => u.change_type !== "unchanged"),
+              )
+              .map(({ key, units }, i) => (
+                <div key={`${key ?? "intro"}-${i}`} className="mt-2">
+                  {key && (
+                    <div className="font-mono text-xs text-gray-500 mb-1">{key}</div>
+                  )}
+                  {renderUnitsWithCollapse(units, showAll)}
+                </div>
+              ))}
           </div>
         )}
         {isFallback && (
