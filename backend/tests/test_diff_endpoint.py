@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import get_current_user
 from app.database import Base, get_db
 from app.main import app as fastapi_app
-from app.models.law import Article, Law, LawVersion, Paragraph, Subparagraph
+from app.models.law import Article, Law, LawVersion
 from app.models.user import User
 import app.models.category  # noqa: F401 — register categories table
 
@@ -44,7 +44,7 @@ def client_and_db():
 
 
 def _seed_law_with_two_versions(db):
-    """Two versions: v2 modifies one subparagraph in art 62 (1)k)."""
+    """Two versions: v2 modifies litera k) of alineat (1) in art 62."""
     law = Law(title="Test Law", law_number="411", law_year=2004)
     db.add(law)
     db.flush()
@@ -62,40 +62,19 @@ def _seed_law_with_two_versions(db):
     db.add_all([v1, v2])
     db.flush()
 
-    # v1 article 62
+    # v1 article 62 — full_text is the source of truth for the new tokenizer-based diff
     art_a = Article(
         law_version_id=v1.id, article_number="62",
-        full_text="art 62 v1", order_index=62,
+        full_text="(1) k) fonduri facultative din pensii",
+        order_index=62,
     )
-    db.add(art_a)
-    db.flush()
-    para_a = Paragraph(
-        article_id=art_a.id, label="(1)", text="", order_index=1,
-    )
-    db.add(para_a)
-    db.flush()
-    db.add(Subparagraph(
-        paragraph_id=para_a.id, label="k)",
-        text="fonduri facultative", order_index=1,
-    ))
-
-    # v2 article 62 — same label, modified subparagraph
+    # v2 article 62 — litera k) changes "facultative" → "ocupaționale"
     art_b = Article(
         law_version_id=v2.id, article_number="62",
-        full_text="art 62 v2", order_index=62,
+        full_text="(1) k) fonduri ocupaționale din pensii",
+        order_index=62,
     )
-    db.add(art_b)
-    db.flush()
-    para_b = Paragraph(
-        article_id=art_b.id, label="(1)", text="", order_index=1,
-    )
-    db.add(para_b)
-    db.flush()
-    db.add(Subparagraph(
-        paragraph_id=para_b.id, label="k)",
-        text="fonduri ocupaționale", order_index=1,
-    ))
-
+    db.add_all([art_a, art_b])
     db.commit()
     return law, v1, v2
 
@@ -115,21 +94,25 @@ def test_diff_endpoint_returns_structured_tree(client_and_db):
     assert body["version_a"]["id"] == v1.id
     assert body["version_b"]["id"] == v2.id
 
-    # All returned changes are in tree shape with paragraphs and renumbered_from
+    # Exactly one modified article
     assert len(body["changes"]) == 1
     change = body["changes"][0]
     assert change["article_number"] == "62"
     assert change["change_type"] == "modified"
-    assert "paragraphs" in change
+    assert "units" in change
     assert "renumbered_from" in change
 
-    # Paragraph (1) modified, with the litera k) showing inline highlight
-    para = change["paragraphs"][0]
-    assert para["label"] == "(1)"
-    assert para["change_type"] == "modified"
-    assert "subparagraphs" in para
+    # units is a non-empty list of DiffUnit dicts
+    units = change["units"]
+    assert isinstance(units, list)
+    assert len(units) > 0
 
-    leaf_k = next(s for s in para["subparagraphs"] if s["label"] == "k)")
+    # Find the litera k) unit — the tokenizer emits label="k)" for "k) "
+    leaf_k = next(
+        (u for u in units if u.get("marker_kind") == "litera" and u.get("label") == "k)"),
+        None,
+    )
+    assert leaf_k is not None, f"No litera k) unit found in units: {units}"
     assert leaf_k["change_type"] == "modified"
     assert "<del>facultative</del>" in leaf_k["diff_html"]
     assert "<ins>ocupaționale</ins>" in leaf_k["diff_html"]
