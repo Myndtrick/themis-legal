@@ -72,6 +72,12 @@ class _Match:
 
 _FP_LOOKBACK = 20  # characters of context to inspect before each candidate
 
+# Sentence-boundary characters that end a clause. The FP lookback window
+# is trimmed to start after the most recent occurrence of one of these,
+# so that citation keywords in a previous sentence don't disqualify a
+# real marker in a new sentence.
+_SENTENCE_BOUNDARY = re.compile(r"[;\n]|(?<=[\d\)\]])\. ")
+
 # Substrings that, when present in the lookback window, mark the marker
 # as a false-positive reference rather than a real structural marker.
 # Each tuple is (substring, list of marker kinds it disqualifies).
@@ -79,6 +85,8 @@ _FALSE_POSITIVE_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("art. ",   (MarkerKind.NUMBERED, MarkerKind.ALINEAT)),
     ("alin. ",  (MarkerKind.ALINEAT,)),
     ("alin.(",  (MarkerKind.ALINEAT,)),  # tolerate missing space
+    ("alineatului ", (MarkerKind.ALINEAT,)),
+    ("Articolului ", (MarkerKind.ALINEAT,)),
     ("pct. ",   (MarkerKind.NUMBERED,)),
     ("pct.",    (MarkerKind.NUMBERED,)),
     ("lit. ",   (MarkerKind.LITERA, MarkerKind.UPPER_LITERA)),
@@ -93,9 +101,20 @@ _FALSE_POSITIVE_RULES: list[tuple[str, tuple[str, ...]]] = [
 def _is_false_positive(full_text: str, match_start: int, kind: str) -> bool:
     """Return True if a marker candidate at `match_start` should be dropped
     because it falls inside a legal reference like 'art. 90 alin. (1)'.
+
+    The lookback window is bounded by the most recent sentence boundary
+    (`;`, `. `, or newline) so that citation keywords in a previous
+    sentence do not disqualify a real structural marker in a new one.
     """
     window_start = max(0, match_start - _FP_LOOKBACK)
     window = full_text[window_start:match_start]
+
+    # Trim window to start after the most recent sentence boundary.
+    last_boundary_end = 0
+    for m in _SENTENCE_BOUNDARY.finditer(window):
+        last_boundary_end = m.end()
+    window = window[last_boundary_end:]
+
     for needle, disqualified_kinds in _FALSE_POSITIVE_RULES:
         if kind in disqualified_kinds and needle in window:
             return True
