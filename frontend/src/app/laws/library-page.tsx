@@ -7,7 +7,6 @@ import StatsCards from "./components/stats-cards";
 import CategoryGroupSection from "./components/category-group-section";
 import UnclassifiedSection from "./components/unclassified-section";
 import CategoryModal from "./components/category-modal";
-import AddLawModal from "./components/add-law-modal";
 import CombinedSearch, { BackgroundImportInfo } from "./components/combined-search";
 import ImportProgressSection, { ImportingEntry, FailedEntry } from "./components/import-progress-section";
 import NewVersionsSection from "./components/new-versions-section";
@@ -64,7 +63,6 @@ export default function LibraryPage() {
   } | null>(null);
 
   // Add-law modal
-  const [showAddLawModal, setShowAddLawModal] = useState(false);
 
   // Bulk import state
   const [bulkImporting, setBulkImporting] = useState(false);
@@ -657,12 +655,6 @@ export default function LibraryPage() {
           <p className="mt-1 text-gray-600">Browse Romanian laws with full version history</p>
         </div>
         <div className="flex gap-2 items-center">
-          <button
-            onClick={() => setShowAddLawModal(true)}
-            className="px-4 py-2 bg-white text-gray-700 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
-          >
-            + Add law
-          </button>
         {activeSuggestions.length > 0 && (
           <>
             {bulkImporting ? (
@@ -916,17 +908,6 @@ export default function LibraryPage() {
         />
       )}
 
-      {/* Add-law modal: paste a URL → user-source LawMapping */}
-      {showAddLawModal && (
-        <AddLawModal
-          groups={data.groups}
-          onCreated={() => {
-            setShowAddLawModal(false);
-            fetchData();
-          }}
-          onCancel={() => setShowAddLawModal(false)}
-        />
-      )}
     </div>
   );
 }
