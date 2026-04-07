@@ -42,6 +42,58 @@ class MarkerKind:
     BULLET = "bullet"
 
 
+# Each entry: (kind, compiled_regex). The regex MUST have one capture group
+# returning the marker label as it should appear in the output (e.g. "(1)",
+# "32.", "a)"). Order matters only for tie-breaking when two patterns match
+# at the same start position — see _resolve_overlaps.
+_MARKER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (MarkerKind.ALINEAT, re.compile(r"\(\s*(\d+(?:\^\d+)?)\s*\)")),
+]
+
+
+@dataclass(frozen=True)
+class _Match:
+    start: int        # inclusive byte offset in full_text where the marker begins
+    end: int          # exclusive byte offset where the marker ends (body starts here)
+    kind: str
+    label: str        # rendered label as it will appear in the AtomicUnit
+
+
+def _find_all_markers(full_text: str) -> list[_Match]:
+    """Scan full_text for every marker candidate, deduplicating overlaps.
+
+    Returns matches sorted by start offset. Overlapping matches at the same
+    start position are resolved by _MARKER_PATTERNS order (earlier wins).
+    Matches whose start offset falls inside an already-accepted match's body
+    are dropped to prevent nested false positives.
+    """
+    candidates: list[_Match] = []
+    for kind, pattern in _MARKER_PATTERNS:
+        for m in pattern.finditer(full_text):
+            label = _format_label(kind, m.group(1))
+            candidates.append(_Match(start=m.start(), end=m.end(), kind=kind, label=label))
+    candidates.sort(key=lambda c: (c.start, _kind_priority(c.kind)))
+    return candidates
+
+
+def _kind_priority(kind: str) -> int:
+    """Lower wins when two markers match at the same start position."""
+    return {
+        MarkerKind.ALINEAT: 0,
+        MarkerKind.NUMBERED: 1,
+        MarkerKind.UPPER_LITERA: 2,
+        MarkerKind.LITERA: 3,
+        MarkerKind.BULLET: 4,
+    }.get(kind, 99)
+
+
+def _format_label(kind: str, raw_group: str) -> str:
+    """Build the AtomicUnit.label from the regex group capture."""
+    if kind == MarkerKind.ALINEAT:
+        return f"({raw_group})"
+    return raw_group  # filled in by later tasks
+
+
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 
@@ -59,15 +111,33 @@ def tokenize_article(full_text: str) -> list[AtomicUnit]:
     if not full_text:
         return []
 
-    # No markers recognized yet — emit the whole text as one intro unit.
-    normalized = _normalize_whitespace(full_text)
-    if not normalized:
-        return []
-    return [
-        AtomicUnit(
-            alineat_label=None,
-            marker_kind=MarkerKind.INTRO,
-            label="",
-            text=normalized,
-        )
-    ]
+    matches = _find_all_markers(full_text)
+
+    # No markers — entire text is one intro unit.
+    if not matches:
+        normalized = _normalize_whitespace(full_text)
+        if not normalized:
+            return []
+        return [AtomicUnit(None, MarkerKind.INTRO, "", normalized)]
+
+    units: list[AtomicUnit] = []
+    current_alineat: str | None = None
+
+    # Pre-marker text: everything before matches[0].start
+    pre = _normalize_whitespace(full_text[: matches[0].start])
+    if pre:
+        units.append(AtomicUnit(None, MarkerKind.INTRO, "", pre))
+
+    for i, m in enumerate(matches):
+        body_end = matches[i + 1].start if i + 1 < len(matches) else len(full_text)
+        body = _normalize_whitespace(full_text[m.end : body_end])
+
+        if m.kind == MarkerKind.ALINEAT:
+            # The alineat unit's alineat_label is None — the marker itself
+            # is the alineat header. Children inside it carry alineat_label=label.
+            units.append(AtomicUnit(None, MarkerKind.ALINEAT, m.label, body))
+            current_alineat = m.label
+        else:
+            units.append(AtomicUnit(current_alineat, m.kind, m.label, body))
+
+    return units
