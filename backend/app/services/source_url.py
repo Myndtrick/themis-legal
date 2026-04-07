@@ -27,7 +27,7 @@ _CELEX_RE = re.compile(
 
 # ELI URL: /eli/reg|dir|dec/<year>/<number>/oj
 _ELI_RE = re.compile(
-    r"/eli/(reg|dir|dec)/(\d{4})/(\d+)(?:/|$)",
+    r"/eli/(reg|dir|dec)/(\d{4})/(\d+)/oj",
     re.IGNORECASE,
 )
 

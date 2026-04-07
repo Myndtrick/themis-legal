@@ -52,6 +52,13 @@ class TestExtractCelex:
     def test_malformed(self):
         assert extract_celex("not a url") is None
 
+    def test_empty(self):
+        assert extract_celex("") is None
+
+    def test_eli_without_oj_rejected(self):
+        # ELI without /oj suffix should not match
+        assert extract_celex("https://eur-lex.europa.eu/eli/reg/2016/679") is None
+
 
 class TestProbeUrl:
     def test_ro_url(self):
