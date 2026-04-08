@@ -646,6 +646,27 @@ export interface SchedulerRunLogData {
   errors: number;
 }
 
+export interface LawCheckLogData {
+  id: number;
+  law_id: number;
+  source: string;
+  law_label: string;
+  checked_at: string;
+  user_email: string | null;
+  new_versions: number;
+  status: "ok" | "error";
+  error_message: string | null;
+}
+
+export interface LawCheckLogRowData {
+  id: number;
+  checked_at: string;
+  user_email: string | null;
+  new_versions: number;
+  status: "ok" | "error";
+  error_message: string | null;
+}
+
 // Background-job tracking. Long-running operations on the backend create a Job
 // row; the frontend polls /api/jobs/{id} so progress survives navigation.
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -724,6 +745,10 @@ export const api = {
       ),
     getKnownVersions: (lawId: number) =>
       apiFetch<KnownVersionsResponse>(`/api/laws/${lawId}/known-versions`),
+    listCheckLogs: (lawId: number, limit = 20) =>
+      apiFetch<LawCheckLogRowData[]>(
+        `/api/laws/${lawId}/check-logs?limit=${limit}`
+      ),
     /**
      * Start a direct law import as a background job.
      * Returns the job_id immediately. Caller polls /api/jobs/{job_id} for
@@ -1024,6 +1049,8 @@ export const api = {
         apiFetch<SchedulerRunLogData[]>(
           `/api/admin/scheduler-logs?scheduler_id=${schedulerId}&limit=${limit}`
         ),
+      listLawCheckLogs: (limit = 20) =>
+        apiFetch<LawCheckLogData[]>(`/api/admin/law-check-logs?limit=${limit}`),
     },
   },
   jobs: {
