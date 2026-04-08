@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type SchedulerSettingData } from "@/lib/api";
 import { DiscoveryProgressPanel } from "./discovery-progress";
+import { SchedulerActivityTable } from "./scheduler-activity-table";
 
 const FREQUENCY_OPTIONS = [
   { value: "daily", label: "Every day" },
@@ -24,6 +25,7 @@ export function SchedulerCard({ setting, label, emoji, source, onChange, onRefre
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
 
   const jobType = setting.id as "ro" | "eu";
 
@@ -64,6 +66,7 @@ export function SchedulerCard({ setting, label, emoji, source, onChange, onRefre
   const handleComplete = useCallback(() => {
     setRunning(false);
     setActiveJobId(null);
+    setActivityRefreshKey((k) => k + 1);
     onRefresh();
   }, [onRefresh]);
 
@@ -184,6 +187,9 @@ export function SchedulerCard({ setting, label, emoji, source, onChange, onRefre
           onComplete={handleComplete}
         />
       )}
+
+      {/* Recent activity log */}
+      <SchedulerActivityTable schedulerId={jobType} refreshKey={activityRefreshKey} />
     </div>
   );
 }
