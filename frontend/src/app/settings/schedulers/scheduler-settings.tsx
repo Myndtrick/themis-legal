@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, type SchedulerSettingData } from "@/lib/api";
 import { SchedulerCard } from "./scheduler-card";
+import { LawCheckLogTable } from "./law-check-log-table";
 
 const LABELS: Record<string, { label: string; emoji: string; source: string }> = {
   ro: { label: "Romanian Laws", emoji: "\uD83C\uDDF7\uD83C\uDDF4", source: "legislatie.just.ro" },
@@ -126,6 +127,8 @@ export function SchedulerSettings() {
           );
         })}
       </div>
+
+      <LawCheckLogTable />
     </div>
   );
 }
