@@ -54,13 +54,19 @@ function LawRow({
   // Single version — simple row
   if (!hasMultiple) {
     const v = entry.versions[0];
+    const vNum = entry.version_number_offset + 1;
     return (
       <div className="px-4 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm text-gray-900">{entry.title}</div>
-            <div className="text-xs text-gray-500 mt-0.5">
-              1 new version available
+            <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+              <span>v{vNum} — {formatDate(v.date_in_force)}</span>
+              {v.is_latest && (
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-indigo-100 text-indigo-700 uppercase">
+                  Latest
+                </span>
+              )}
             </div>
           </div>
           <button
