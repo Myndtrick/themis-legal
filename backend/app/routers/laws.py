@@ -1020,6 +1020,7 @@ def get_new_versions(db: Session = Depends(get_db)):
         results.append({
             "law_id": law.id,
             "title": law.title,
+            "description": law.description,
             "law_number": law.law_number,
             "law_year": law.law_year,
             "source": getattr(law, "source", "ro"),

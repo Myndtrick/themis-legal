@@ -406,6 +406,7 @@ export default function LibraryPage() {
               {
                 id: entry.id,
                 title: entry.title,
+                description: entry.description,
                 lawNumber: entry.lawNumber,
                 verId: entry.verId,
                 source: entry.source,
@@ -692,6 +693,7 @@ export default function LibraryPage() {
           {
             id: entry.id,
             title: entry.title,
+            description: entry.description,
             lawNumber: entry.lawNumber,
             verId: entry.verId,
             source: entry.source,
@@ -711,6 +713,7 @@ export default function LibraryPage() {
       id: entryId,
       jobId: null,
       title: info.title,
+      description: info.description,
       lawNumber: "", // Will be populated from search result
       verId: info.verId,
       source: info.source,
@@ -738,6 +741,7 @@ export default function LibraryPage() {
       id: newId,
       jobId: null,
       title: failedEntry.title,
+      description: failedEntry.description,
       lawNumber: failedEntry.lawNumber,
       verId: failedEntry.verId,
       source: failedEntry.source,
@@ -776,6 +780,7 @@ export default function LibraryPage() {
       id: entryId,
       jobId: null,
       title: entry.title,
+      description: entry.description,
       lawNumber: entry.law_number,
       verId: sortedVerIds[0],
       source: entry.source as "ro" | "eu",
@@ -814,6 +819,7 @@ export default function LibraryPage() {
             setFailedEntries((prev) => [...prev, {
               id: `${entryId}-skip-${verId}`,
               title: entry.title,
+              description: entry.description,
               lawNumber: entry.law_number,
               verId,
               source: entry.source as "ro" | "eu",
@@ -836,6 +842,7 @@ export default function LibraryPage() {
           setFailedEntries((prev) => [...prev, {
             id: entryId,
             title: entry.title,
+            description: entry.description,
             lawNumber: entry.law_number,
             verId,
             source: entry.source as "ro" | "eu",

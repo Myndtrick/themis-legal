@@ -73,6 +73,7 @@ const STATE_COLORS: Record<string, string> = {
 
 export interface BackgroundImportInfo {
   title: string;
+  description: string | null;
   verId: string;
   source: "ro" | "eu";
   importHistory: boolean;
@@ -146,6 +147,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
   const [bgImportPendingCategory, setBgImportPendingCategory] = useState<{
     verId: string;
     title: string;
+    description: string | null;
     source: "ro" | "eu";
     importHistory: boolean;
   } | null>(null);
@@ -315,14 +317,14 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     }
   }
 
-  function startBackgroundImport(verId: string, title: string, source: "ro" | "eu", importHistory: boolean, categoryId: number | null, groupSlug: string | null) {
+  function startBackgroundImport(verId: string, title: string, description: string | null, source: "ro" | "eu", importHistory: boolean, categoryId: number | null, groupSlug: string | null) {
     setImportedIds((prev) => new Set(prev).add(verId));
     // Close search results and clear state
     setShowResults(false);
     setKeyword("");
     setExternalResults([]);
     setLocalResults([]);
-    onBackgroundImport?.({ title, verId, source, importHistory, categoryId, groupSlug });
+    onBackgroundImport?.({ title, description, verId, source, importHistory, categoryId, groupSlug });
   }
 
   function handleImport(verId: string, importHistory: boolean) {
@@ -334,7 +336,8 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     // If background import callback is available, use the new async flow
     if (onBackgroundImport) {
       const resultSource = result.source || "ro";
-      const title = result.description || result.title;
+      const title = result.title;
+      const description = result.description ?? null;
 
       // Try to auto-match category from suggestedLaws
       const desc = (result.description || "").toLowerCase();
@@ -346,10 +349,10 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
       if (match?.category_id) {
         // Auto-matched — start background import immediately
-        startBackgroundImport(verId, title, resultSource, importHistory, match.category_id, match.group_slug);
+        startBackgroundImport(verId, title, description, resultSource, importHistory, match.category_id, match.group_slug);
       } else {
         // No auto-match — ask user to pick category
-        setBgImportPendingCategory({ verId, title, source: resultSource, importHistory });
+        setBgImportPendingCategory({ verId, title, description, source: resultSource, importHistory });
       }
       return;
     }
@@ -442,6 +445,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       setBgImportPendingCategory({
         verId,
         title: `Imported law (ver ${verId})`,
+        description: null,
         source: "ro",
         importHistory,
       });
@@ -810,16 +814,16 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
           lawTitle={bgImportPendingCategory.title}
           groups={groups}
           onConfirm={(categoryId) => {
-            const { verId, title, source, importHistory } = bgImportPendingCategory;
+            const { verId, title, description, source, importHistory } = bgImportPendingCategory;
             // Find the group_slug for the selected category
             const group = groups.find(g => g.categories.some(c => c.id === categoryId));
             setBgImportPendingCategory(null);
-            startBackgroundImport(verId, title, source, importHistory, categoryId, group?.slug ?? null);
+            startBackgroundImport(verId, title, description, source, importHistory, categoryId, group?.slug ?? null);
           }}
           onSkip={() => {
-            const { verId, title, source, importHistory } = bgImportPendingCategory;
+            const { verId, title, description, source, importHistory } = bgImportPendingCategory;
             setBgImportPendingCategory(null);
-            startBackgroundImport(verId, title, source, importHistory, null, "__unclassified__");
+            startBackgroundImport(verId, title, description, source, importHistory, null, "__unclassified__");
           }}
           onCancel={() => {
             setBgImportPendingCategory(null);

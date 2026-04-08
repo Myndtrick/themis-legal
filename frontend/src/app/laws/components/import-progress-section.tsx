@@ -7,6 +7,7 @@ export interface ImportingEntry {
   /** Backend Job id once the import has been submitted (null = not yet submitted, e.g. EU sync path). */
   jobId: string | null;
   title: string;
+  description: string | null;
   lawNumber: string;
   verId: string;
   source: "ro" | "eu";
@@ -25,6 +26,7 @@ export interface ImportingEntry {
 export interface FailedEntry {
   id: string;
   title: string;
+  description: string | null;
   lawNumber: string;
   verId: string;
   source: "ro" | "eu";
@@ -87,10 +89,10 @@ function ImportingSection({
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <div className="font-semibold text-sm text-gray-900">
+                <div className="font-semibold text-sm text-gray-900 line-clamp-2">
                   {entry.title}
-                  {entry.lawNumber && (
-                    <span className="text-gray-500 font-normal"> — Legea {entry.lawNumber}</span>
+                  {entry.description && (
+                    <span className="font-normal text-gray-900"> — {entry.description}</span>
                   )}
                 </div>
                 <div className="text-xs text-gray-400 mt-0.5">
@@ -171,10 +173,10 @@ function FailedSection({
         >
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
-              <div className="font-semibold text-sm text-gray-900">
+              <div className="font-semibold text-sm text-gray-900 line-clamp-2">
                 {entry.title}
-                {entry.lawNumber && (
-                  <span className="text-gray-500 font-normal"> — Legea {entry.lawNumber}</span>
+                {entry.description && (
+                  <span className="font-normal text-gray-900"> — {entry.description}</span>
                 )}
               </div>
               <div className={`text-xs mt-0.5 ${entry.permanent ? "text-amber-700" : "text-red-500"}`}>

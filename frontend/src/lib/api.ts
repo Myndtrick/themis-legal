@@ -255,6 +255,7 @@ export interface NewVersionDetail {
 export interface NewVersionEntry {
   law_id: number;
   title: string;
+  description: string | null;
   law_number: string;
   law_year: number;
   source: string;
