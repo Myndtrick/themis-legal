@@ -44,35 +44,41 @@ Three pieces, in order:
 
 ```
 backend/
-  alembic/versions/
-    2026_04_08_paragraph_notes.py        NEW migration
+  app/main.py                            EDIT — additive ALTERs in lifespan() (existing pattern)
+  app/models/law.py                      EDIT — add columns + relationship
   app/services/
     leropa_service.py                    EDIT — store paragraph notes, write text_clean
     note_subject_parser.py               NEW — note.subject → (article_label, paragraph_label?)
     note_text_cleaner.py                 NEW — strip inline note markup from text
     notes_backfill.py                    NEW — read-only additive backfill job
-  app/models/law.py                      EDIT — add columns + relationship
   app/routers/admin.py                   EDIT — POST /admin/backfill/notes endpoint
+  scripts/backfill_paragraph_notes.py    NEW — CLI wrapper around notes_backfill
+  tests/
+    test_note_text_cleaner.py            NEW
+    test_note_subject_parser.py          NEW
+    test_notes_backfill.py               NEW
 ```
 
 The two new helper modules (`note_subject_parser`, `note_text_cleaner`) are pure: no DB session, no I/O, fully unit-testable against fixtures.
 
 ## Schema migration
 
-One Alembic migration. Strictly additive. Safe on Postgres without table rewrite.
+The project uses **SQLite** (`backend/app/database.py:5`) and has no Alembic. Schema migrations are performed inline at app startup via `_add_column_if_missing()` in `backend/app/main.py:83`. The new columns and indexes are added the same way — additive only, idempotent across restarts.
+
+Equivalent SQL applied at startup:
 
 ```sql
-ALTER TABLE amendment_notes
-  ADD COLUMN paragraph_id   INTEGER NULL REFERENCES paragraphs(id),
-  ADD COLUMN note_source_id VARCHAR(200) NULL;
-
-CREATE INDEX ix_amendment_notes_paragraph_id ON amendment_notes(paragraph_id);
-CREATE UNIQUE INDEX ux_amendment_notes_dedupe
+ALTER TABLE amendment_notes ADD COLUMN paragraph_id   INTEGER NULL REFERENCES paragraphs(id);
+ALTER TABLE amendment_notes ADD COLUMN note_source_id VARCHAR(200) NULL;
+CREATE INDEX IF NOT EXISTS ix_amendment_notes_paragraph_id ON amendment_notes(paragraph_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_amendment_notes_dedupe
   ON amendment_notes(article_id, COALESCE(paragraph_id, 0), COALESCE(note_source_id, ''));
 
 ALTER TABLE articles  ADD COLUMN text_clean TEXT NULL;
 ALTER TABLE paragraphs ADD COLUMN text_clean TEXT NULL;
 ```
+
+SQLite has supported expression indexes since 3.9.0 (2015), so the `COALESCE`-based unique index is portable. The `ALTER` calls are wrapped in the existing `_add_column_if_missing()` helper so re-running the lifespan is a no-op.
 
 `note_source_id` stores the leropa `Note.note_id` (the HTML element id for the note). It is the dedupe key that makes the backfill safely re-runnable: re-importing or re-running the backfill on a version that already has paragraph notes is a no-op because the unique index rejects duplicates.
 
@@ -236,12 +242,11 @@ Action: mount a Railway volume at `/root/.leropa` (or set `LEROPA_CACHE_DIR` to 
 2. Open PR with importer edits (`leropa_service.py`) + integration test. Merge. Deploy. New imports now produce paragraph notes and `text_clean`.
 3. Open PR with `notes_backfill.py` + admin endpoint + CLI + guardrail + tests. Merge. Deploy.
 4. Mount the Railway leropa cache volume.
-5. Operator: Postgres backup → dry run on one law → dry run on all laws → review reports → live run on all laws.
+5. Operator: SQLite file snapshot from Railway volume → dry run on one law → dry run on all laws → review reports → live run on all laws.
 
 After step 5 completes, the database is ready for Spec 2 (the new diff backend).
 
 ## Open questions
 
-- **Production database engine.** This spec assumes Postgres. If production is still SQLite the additive ALTERs are still fine (SQLite supports `ADD COLUMN`) but the `CREATE UNIQUE INDEX` with `COALESCE` expression needs verification. Confirm before opening the migration PR.
 - **Subject parser pattern set.** The exact regex set should be derived from a sample of real `Note.subject` values from the production DB. The first dry run will surface anything missed; we add patterns and re-run.
 - **Cache volume size.** ~100 laws × ~10 versions × ~500 KB HTML ≈ 500 MB. A 1 GB Railway volume is comfortable; confirm during infra step.
