@@ -43,6 +43,15 @@ class EUImportRequest(BaseModel):
     import_history: bool = True
 
 
+class LawCheckLogRowOut(BaseModel):
+    id: int
+    checked_at: str
+    user_email: str | None
+    new_versions: int
+    status: str
+    error_message: str | None
+
+
 # LawMapping.document_type stores English keys; advanced_search expects
 # Romanian abbreviated keys or numeric codes from legislatie.just.ro.
 _DOC_TYPE_TO_SEARCH_CODE = {
@@ -1519,6 +1528,43 @@ def check_law_updates(
         "discovered": new_count,
         "last_checked_at": str(law.last_checked_at) if law.last_checked_at else None,
     }
+
+
+@router.get("/{law_id}/check-logs", response_model=list[LawCheckLogRowOut])
+def list_law_check_logs_for_law(
+    law_id: int,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    """Return the per-law update check history, newest first."""
+    from app.models.law_check_log import LawCheckLog
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    capped = max(1, min(limit, 200))
+
+    rows = (
+        db.query(LawCheckLog, User)
+        .outerjoin(User, User.id == LawCheckLog.user_id)
+        .filter(LawCheckLog.law_id == law_id)
+        .order_by(LawCheckLog.checked_at.desc())
+        .limit(capped)
+        .all()
+    )
+
+    return [
+        LawCheckLogRowOut(
+            id=log.id,
+            checked_at=log.checked_at.isoformat(),
+            user_email=user.email if user else None,
+            new_versions=log.new_versions,
+            status=log.status,
+            error_message=log.error_message,
+        )
+        for (log, user) in rows
+    ]
 
 
 def _bulk_delete_versions(db: Session, version_ids: list[int]):

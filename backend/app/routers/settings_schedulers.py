@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_admin
 from app.database import get_db
+from app.models.law import Law
+from app.models.law_check_log import LawCheckLog
 from app.models.scheduler_run_log import SchedulerRunLog
 from app.models.scheduler_settings import SchedulerSetting
 from app.models.user import User
@@ -44,6 +46,18 @@ class SchedulerRunLogOut(BaseModel):
     laws_checked: int
     new_versions: int
     errors: int
+
+
+class LawCheckLogOut(BaseModel):
+    id: int
+    law_id: int
+    source: str
+    law_label: str
+    checked_at: str
+    user_email: str | None
+    new_versions: int
+    status: str
+    error_message: str | None
 
 
 class SchedulerSettingUpdate(BaseModel):
@@ -144,6 +158,43 @@ def list_scheduler_logs(
             errors=r.errors,
         )
         for r in rows
+    ]
+
+
+@router.get("/law-check-logs", response_model=list[LawCheckLogOut])
+def list_law_check_logs(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Combined feed of per-law update checks across both sources, newest first.
+
+    Read-only. Admin-only.
+    """
+    capped = max(1, min(limit, 200))
+
+    rows = (
+        db.query(LawCheckLog, Law, User)
+        .join(Law, Law.id == LawCheckLog.law_id)
+        .outerjoin(User, User.id == LawCheckLog.user_id)
+        .order_by(LawCheckLog.checked_at.desc())
+        .limit(capped)
+        .all()
+    )
+
+    return [
+        LawCheckLogOut(
+            id=log.id,
+            law_id=log.law_id,
+            source=log.source,
+            law_label=f"{law.title} ({law.law_number}/{law.law_year})",
+            checked_at=log.checked_at.isoformat(),
+            user_email=user.email if user else None,
+            new_versions=log.new_versions,
+            status=log.status,
+            error_message=log.error_message,
+        )
+        for (log, law, user) in rows
     ]
 
 
