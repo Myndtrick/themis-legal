@@ -497,6 +497,8 @@ def _store_single_article(
     parent: StructuralElement | None,
     order_index: int,
 ) -> None:
+    from app.services.note_text_cleaner import strip as strip_notes
+
     full_text = art_data.get("full_text", "")
     is_abrogated = bool(re.search(r"^\s*\(?\s*[Aa]brogat", full_text[:200]))
 
@@ -506,6 +508,7 @@ def _store_single_article(
         article_number=art_data.get("label", "?"),
         label=art_data.get("label"),
         full_text=full_text,
+        text_clean=strip_notes(full_text),
         order_index=order_index,
         is_abrogated=is_abrogated,
     )
@@ -514,11 +517,13 @@ def _store_single_article(
 
     # Paragraphs
     for p_idx, par in enumerate(art_data.get("paragraphs", [])):
+        par_text = par.get("text", "")
         paragraph = Paragraph(
             article_id=article.id,
             paragraph_number=par.get("label") or str(p_idx + 1),
             label=par.get("label"),
-            text=par.get("text", ""),
+            text=par_text,
+            text_clean=strip_notes(par_text),
             order_index=p_idx,
         )
         db.add(paragraph)
@@ -534,10 +539,29 @@ def _store_single_article(
             )
             db.add(subparagraph)
 
-    # Amendment notes
+        # Paragraph-level amendment notes (NEW — previously discarded)
+        for note in par.get("notes", []):
+            db.add(AmendmentNote(
+                article_id=article.id,
+                paragraph_id=paragraph.id,
+                note_source_id=note.get("note_id"),
+                text=note.get("text"),
+                date=note.get("date"),
+                subject=note.get("subject"),
+                law_number=note.get("law_number"),
+                law_date=note.get("law_date"),
+                monitor_number=note.get("monitor_number"),
+                monitor_date=note.get("monitor_date"),
+                original_text=note.get("replaced"),
+                replacement_text=note.get("replacement"),
+            ))
+
+    # Article-level amendment notes (existing behaviour, now also writes note_source_id)
     for note in art_data.get("notes", []):
-        amendment = AmendmentNote(
+        db.add(AmendmentNote(
             article_id=article.id,
+            paragraph_id=None,
+            note_source_id=note.get("note_id"),
             text=note.get("text"),
             date=note.get("date"),
             subject=note.get("subject"),
@@ -547,8 +571,11 @@ def _store_single_article(
             monitor_date=note.get("monitor_date"),
             original_text=note.get("replaced"),
             replacement_text=note.get("replacement"),
-        )
-        db.add(amendment)
+        ))
+
+
+# Alias used by tests and external callers expecting the canonical name.
+_import_article = _store_single_article
 
 
 def _fetch_law_metadata(ver_id: str) -> dict:
