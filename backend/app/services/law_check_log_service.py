@@ -2,7 +2,6 @@
 
 import datetime as _dt
 import logging
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -17,10 +16,10 @@ _ERROR_MESSAGE_MAX = 512
 def record_check(
     db: Session,
     law: Law,
-    user_id: Optional[int],
+    user_id: int | None,
     new_versions: int,
     status: str,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
 ) -> None:
     """Insert one law_check_logs row.
 
