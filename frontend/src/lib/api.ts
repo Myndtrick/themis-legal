@@ -797,6 +797,17 @@ export const api = {
         `/api/laws/${lawId}/known-versions/import`,
         { method: "POST", body: JSON.stringify({ ver_id: verId }) }
       ),
+    /**
+     * Submit a batch of known-version imports for a single law as a background
+     * job. Returns the job_id immediately. Caller polls /api/jobs/{job_id} for
+     * progress (current/total = imported/total) and the result.skipped list
+     * holds permanently-unavailable versions.
+     */
+    startImportKnownVersionsBatch: (lawId: number, verIds: string[]) =>
+      apiFetch<{ job_id: string; total: number }>(
+        `/api/laws/${lawId}/known-versions/import-batch/job`,
+        { method: "POST", body: JSON.stringify({ ver_ids: verIds }) }
+      ),
     importAllMissing: (lawId: number) =>
       apiFetch<{ status: string; imported: number; errors: Array<{ ver_id: string; error: string }> }>(
         `/api/laws/${lawId}/known-versions/import-all`,

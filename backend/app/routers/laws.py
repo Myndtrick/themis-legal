@@ -1277,6 +1277,166 @@ def import_known_version(law_id: int, req: ImportKnownVersionRequest, db: Sessio
     return {"status": "imported", "ver_id": req.ver_id, "law_version_id": new_version.id}
 
 
+class ImportKnownVersionsBatchRequest(BaseModel):
+    ver_ids: list[str]
+
+
+@router.post("/{law_id}/known-versions/import-batch/job")
+def import_known_versions_batch_as_job(
+    law_id: int,
+    req: ImportKnownVersionsBatchRequest,
+    db: Session = Depends(get_db),
+):
+    """Submit a batch of known-version imports for a single law as a background job.
+
+    Replaces the frontend's previous pattern of awaiting `/known-versions/import`
+    in a loop on the client. That pattern persisted half-finished entries to
+    localStorage and lost them on refresh; running the same loop in JobService
+    means the import survives refresh and the polling effect drives progress.
+    """
+    from app.services import job_service
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if not law:
+        raise HTTPException(status_code=404, detail="Law not found")
+
+    ver_ids = [v.strip() for v in req.ver_ids if v and v.strip()]
+    if not ver_ids:
+        raise HTTPException(status_code=400, detail="ver_ids is required")
+
+    # All ver_ids must belong to this law's known versions, otherwise the
+    # frontend gave us junk and we should fail synchronously.
+    known_set = {
+        row[0]
+        for row in db.query(KnownVersion.ver_id)
+        .filter(KnownVersion.law_id == law_id, KnownVersion.ver_id.in_(ver_ids))
+        .all()
+    }
+    missing = [v for v in ver_ids if v not in known_set]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown ver_ids for this law: {','.join(missing)}",
+        )
+
+    if job_service.has_active(
+        db,
+        kind="import_known_versions_batch",
+        entity_kind="law",
+        entity_id=law_id,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Another batch import is already in progress for this law",
+        )
+
+    job_id = job_service.submit(
+        kind="import_known_versions_batch",
+        params={"law_id": law_id, "ver_ids": ver_ids},
+        runner=_run_import_known_versions_batch_job,
+        entity_kind="law",
+        entity_id=law_id,
+        db=db,
+    )
+    return {"job_id": job_id, "total": len(ver_ids)}
+
+
+def _run_import_known_versions_batch_job(db: Session, job_id: str, params: dict):
+    """JobService runner: sequentially import a list of known versions for one law.
+
+    Order is whatever the caller submitted — the frontend sends oldest-first so
+    diffs compute correctly. Per-version progress is pushed to the job row so
+    the polling effect's progress bar advances.
+
+    Failure model:
+      - EUContentUnavailableError on a single version → record as a permanent
+        skip and continue with the next one. The skip list is returned in the
+        job result so the frontend can surface them as non-retriable failed
+        rows after the job completes.
+      - Any other exception → stop the batch and raise. The exception bubbles
+        up to JobService._run_job which marks the job failed and persists the
+        message; the frontend already renders job.error.message in the failed
+        list.
+    """
+    from app.services import job_service
+    from app.errors import EUContentUnavailableError
+
+    law_id: int = params["law_id"]
+    ver_ids: list[str] = params["ver_ids"]
+    total = len(ver_ids)
+
+    law = db.query(Law).filter(Law.id == law_id).first()
+    if law is None:
+        raise ValueError(f"Law {law_id} not found")
+
+    job_service.update_progress(
+        db, job_id, phase="version", current=0, total=total
+    )
+
+    imported = 0
+    skipped: list[dict] = []
+
+    for ver_id in ver_ids:
+        kv = (
+            db.query(KnownVersion)
+            .filter(KnownVersion.law_id == law_id, KnownVersion.ver_id == ver_id)
+            .first()
+        )
+        if kv is None:
+            raise ValueError(f"Known version {ver_id} not found for law {law_id}")
+
+        # Already imported? Treat as success and advance the counter.
+        existing = (
+            db.query(LawVersion).filter(LawVersion.ver_id == ver_id).first()
+        )
+        if existing is not None:
+            imported += 1
+            job_service.update_progress(db, job_id, current=imported)
+            continue
+
+        try:
+            if law.source == "eu":
+                from app.services.eu_cellar_service import import_eu_known_version
+
+                import_eu_known_version(db, law, ver_id)
+            else:
+                from app.services.leropa_service import fetch_and_store_version
+                import app.services.leropa_service as _ls
+
+                _ls._stored_article_ids = set()
+                fetch_and_store_version(
+                    db, ver_id, law=law, override_date=kv.date_in_force
+                )
+
+            _recalculate_current_version(db, law_id)
+            db.commit()
+            imported += 1
+            job_service.update_progress(db, job_id, current=imported)
+        except EUContentUnavailableError as e:
+            # CELLAR has nothing for this version yet — non-retriable, skip.
+            db.rollback()
+            skipped.append(
+                {"ver_id": ver_id, "error": str(e), "permanent": True}
+            )
+            continue
+        except Exception as e:
+            # Transient/unknown — stop the batch and surface the message with
+            # the partial-progress count so the user knows where it died.
+            db.rollback()
+            raise RuntimeError(
+                f"{e} (imported {imported}/{total})"
+            ) from e
+
+    # Backfill diffs once at the end so version order is stable.
+    from app.services.diff_summary import backfill_diff_summaries
+
+    backfilled = backfill_diff_summaries(db)
+    if backfilled:
+        db.commit()
+
+    return {"imported": imported, "total": total, "skipped": skipped}
+
+
 @router.post("/{law_id}/known-versions/import-all")
 def import_all_missing(law_id: int, db: Session = Depends(get_db)):
     """Import all known versions that aren't imported yet."""

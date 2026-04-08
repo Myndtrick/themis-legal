@@ -55,7 +55,14 @@ export default function LibraryPage() {
     if (typeof window === "undefined") return [];
     try {
       const stored = localStorage.getItem("themis_importing_entries");
-      return stored ? (JSON.parse(stored) as ImportingEntry[]) : [];
+      if (!stored) return [];
+      // Drop rehydrated entries with no jobId. They were persisted mid-flight
+      // (before startStreamingImport's POST resolved, or by the legacy
+      // synchronous importVersionsForLaw path) and are unrecoverable: the
+      // polling effect skips entries without a jobId, and there is no resume
+      // hook on mount. Without this filter they sit in the "Importing" section
+      // forever — see incident from 2026-04-08.
+      return (JSON.parse(stored) as ImportingEntry[]).filter((e) => e.jobId);
     } catch { return []; }
   });
   const [failedEntries, setFailedEntries] = useState<FailedEntry[]>(() => {
@@ -348,7 +355,17 @@ export default function LibraryPage() {
       );
       if (cancelled) return;
 
-      const completed: { entryId: string; success: boolean; message: string }[] = [];
+      // We snapshot the entry on the completed payload because the polling
+      // closure's `importingEntries` is stale (the deps array intentionally
+      // only watches activeJobIds), and by the time the side-effects loop
+      // runs we've already filtered the entry out of state.
+      const completed: {
+        entryId: string;
+        success: boolean;
+        message: string;
+        entry: ImportingEntry;
+        skipped?: Array<{ ver_id: string; error: string; permanent?: boolean }>;
+      }[] = [];
 
       setImportingEntries((prev) => {
         let next = prev;
@@ -358,7 +375,7 @@ export default function LibraryPage() {
           if (!res.ok) {
             const statusCode = (res.err as { statusCode?: number } | null)?.statusCode;
             if (statusCode === 404) {
-              completed.push({ entryId: entry.id, success: false, message: "Job no longer exists" });
+              completed.push({ entryId: entry.id, success: false, message: "Job no longer exists", entry });
               next = next.filter((e) => e.id !== entry.id);
             }
             // Transient error: keep entry, try again next tick.
@@ -366,11 +383,23 @@ export default function LibraryPage() {
           }
           const job = res.job;
           if (job.status === "succeeded") {
-            completed.push({ entryId: entry.id, success: true, message: "" });
+            // Surface batch-job permanent skips (e.g. CELLAR has no text for
+            // some versions in the batch) as non-retriable failed entries.
+            const result = job.result as
+              | { skipped?: Array<{ ver_id: string; error: string; permanent?: boolean }> }
+              | null
+              | undefined;
+            completed.push({
+              entryId: entry.id,
+              success: true,
+              message: "",
+              entry,
+              skipped: result?.skipped,
+            });
             next = next.filter((e) => e.id !== entry.id);
           } else if (job.status === "failed") {
             const msg = job.error?.message || "Import failed";
-            completed.push({ entryId: entry.id, success: false, message: msg });
+            completed.push({ entryId: entry.id, success: false, message: msg, entry });
             next = next.filter((e) => e.id !== entry.id);
           } else {
             // Still running — merge progress into the entry.
@@ -395,28 +424,59 @@ export default function LibraryPage() {
 
       // Side effects after the state update.
       for (const c of completed) {
+        const entry = c.entry;
+        // Free up the law in the new-versions list (so it reappears on
+        // failure, or stays consistent with the post-success refresh).
+        if (entry.id.startsWith("newver-")) {
+          const lawId = Number(entry.id.slice("newver-".length));
+          if (Number.isFinite(lawId)) {
+            setNewVersionImportingIds((prev) => {
+              if (!prev.has(lawId)) return prev;
+              const nextSet = new Set(prev);
+              nextSet.delete(lawId);
+              return nextSet;
+            });
+          }
+          setNewVersionsRefreshKey((k) => k + 1);
+        }
+
         if (c.success) {
-          fetchData();
-        } else {
-          // Look up the entry's display info for the failed list.
-          const entry = importingEntries.find((e) => e.id === c.entryId);
-          if (entry) {
+          // Surface any skipped (permanent) versions from the batch result.
+          if (c.skipped && c.skipped.length > 0) {
             setFailedEntries((prev) => [
               ...prev,
-              {
-                id: entry.id,
+              ...c.skipped!.map((s, i) => ({
+                id: `${entry.id}-skip-${s.ver_id}-${i}`,
                 title: entry.title,
                 description: entry.description,
                 lawNumber: entry.lawNumber,
-                verId: entry.verId,
+                verId: s.ver_id,
                 source: entry.source,
                 importHistory: entry.importHistory,
                 categoryId: entry.categoryId,
                 groupSlug: entry.groupSlug,
-                error: c.message,
-              },
+                error: s.error,
+                permanent: s.permanent !== false,
+              })),
             ]);
           }
+          fetchData();
+        } else {
+          setFailedEntries((prev) => [
+            ...prev,
+            {
+              id: entry.id,
+              title: entry.title,
+              description: entry.description,
+              lawNumber: entry.lawNumber,
+              verId: entry.verId,
+              source: entry.source,
+              importHistory: entry.importHistory,
+              categoryId: entry.categoryId,
+              groupSlug: entry.groupSlug,
+              error: c.message,
+            },
+          ]);
         }
       }
     };
@@ -766,10 +826,12 @@ export default function LibraryPage() {
   }
 
   function importVersionsForLaw(entry: NewVersionEntry, verIds: string[]) {
-    // Track this law_id as importing so it hides from new versions list
+    // Track this law_id as importing so it hides from new versions list.
+    // Cleanup happens in the polling effect's terminal-state handler.
     setNewVersionImportingIds((prev) => new Set(prev).add(entry.law_id));
 
-    // Import versions sequentially (oldest first for correct diffs)
+    // Oldest-first so the backend computes diffs against the correct
+    // predecessor for each version in the batch.
     const sortedVerIds = entry.versions
       .filter((v) => verIds.includes(v.ver_id))
       .sort((a, b) => a.date_in_force.localeCompare(b.date_in_force))
@@ -794,78 +856,43 @@ export default function LibraryPage() {
         message: "Importing new version...",
       },
     };
-    setImportingEntries((prev) => [...prev, importingEntry]);
+    setImportingEntries((prev) => [...prev.filter((e) => e.id !== entryId), importingEntry]);
 
-    // Import sequentially
-    (async () => {
-      let imported = 0;
-      for (const verId of sortedVerIds) {
-        try {
-          setImportingEntries((prev) => prev.map((e) =>
-            e.id === entryId
-              ? { ...e, verId, progress: { ...e.progress, current: imported, message: `Importing version ${imported + 1}/${sortedVerIds.length}...` } }
-              : e
-          ));
-          await api.laws.importKnownVersion(entry.law_id, verId);
-          imported++;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Import failed";
-          const code = (err as { code?: string } | null)?.code;
-          const isPermanent = code === "eu_content_unavailable";
-
-          if (isPermanent) {
-            // CELLAR has no published text for this version yet — skip it,
-            // record a non-retriable failed entry, and keep trying the rest.
-            setFailedEntries((prev) => [...prev, {
-              id: `${entryId}-skip-${verId}`,
-              title: entry.title,
-              description: entry.description,
-              lawNumber: entry.law_number,
-              verId,
-              source: entry.source as "ro" | "eu",
-              importHistory: false,
-              categoryId: null,
-              groupSlug: null,
-              error: message,
-              permanent: true,
-            }]);
-            continue;
-          }
-
-          // Transient/unknown failure — stop the run and let the user retry.
-          setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
-          setNewVersionImportingIds((prev) => {
-            const next = new Set(prev);
-            next.delete(entry.law_id);
-            return next;
-          });
-          setFailedEntries((prev) => [...prev, {
+    // Submit a batch job and let the centralized polling effect drive
+    // progress + terminal cleanup. Importantly, the batch runs on the backend,
+    // so a page refresh mid-import is no longer destructive.
+    api.laws
+      .startImportKnownVersionsBatch(entry.law_id, sortedVerIds)
+      .then(({ job_id }) => {
+        setImportingEntries((prev) =>
+          prev.map((e) => (e.id === entryId ? { ...e, jobId: job_id } : e))
+        );
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Failed to start import";
+        setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
+        setNewVersionImportingIds((prev) => {
+          if (!prev.has(entry.law_id)) return prev;
+          const next = new Set(prev);
+          next.delete(entry.law_id);
+          return next;
+        });
+        setFailedEntries((prev) => [
+          ...prev,
+          {
             id: entryId,
             title: entry.title,
             description: entry.description,
             lawNumber: entry.law_number,
-            verId,
+            verId: sortedVerIds[0],
             source: entry.source as "ro" | "eu",
             importHistory: false,
             categoryId: null,
             groupSlug: null,
-            error: `${message} (imported ${imported}/${sortedVerIds.length})`,
-          }]);
-          fetchData();
-          return;
-        }
-      }
-
-      // All done
-      setImportingEntries((prev) => prev.filter((e) => e.id !== entryId));
-      setNewVersionImportingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(entry.law_id);
-        return next;
+            error: message,
+          },
+        ]);
       });
-      setNewVersionsRefreshKey((k) => k + 1);
-      fetchData();
-    })();
   }
 
   function handleNewVersionImport(entry: NewVersionEntry, selectedVerIds: string[]) {
