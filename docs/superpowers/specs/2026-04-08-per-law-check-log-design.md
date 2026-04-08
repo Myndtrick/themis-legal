@@ -77,22 +77,20 @@ on both the success and exception paths:
 - Success: `record_check(db, law, user.id if user else None, new_count, "ok")`
 - Exception: `record_check(db, law, user.id if user else None, 0, "error", str(e)[:512])`
 
-### Auth contract change on `check_law_updates`
+### Auth — no contract change
 
-The existing `check_law_updates` endpoint has no `Depends(get_current_user)`
-— it accepts unauthenticated callers in principle. The frontend
-(`update-banner.tsx`) only ever calls it from an admin/user-gated page,
-so in practice all real callers are authenticated.
+The laws router already enforces auth at the router level
+(`backend/app/routers/laws.py:23` — `APIRouter(..., dependencies=[Depends(get_current_user)])`),
+so `check_law_updates` already requires a logged-in user. Capturing
+`user_id` is purely additive: we add an explicit
+`current_user: User = Depends(get_current_user)` parameter to the
+function signature so the body can read `current_user.id`. No callers
+break, no 401s for anyone who could already call this endpoint.
 
-To capture `user_id` cleanly without inventing a new "optional auth"
-dependency, this design **adds `Depends(get_current_user)` to
-`check_law_updates`**, making the implicit reality explicit. The
-endpoint's auth contract becomes "logged-in user required" which matches
-how it is actually called today.
-
-If you need to keep the endpoint open to unauthenticated callers for a
-specific reason, flag it on spec review and we'll add an optional-auth
-helper instead — but the current frontend wiring does not need that.
+The `user_id` column on `LawCheckLog` is still nullable for
+forward-compat (e.g., a deleted user, or a future system-triggered call
+path) — but in practice every row written today will have a non-null
+user.
 
 ## API
 
