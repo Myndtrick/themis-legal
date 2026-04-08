@@ -635,6 +635,17 @@ export interface SchedulerSettingsUpdate {
   eu: { enabled: boolean; frequency: string; time_hour: number; time_minute: number };
 }
 
+export interface SchedulerRunLogData {
+  id: number;
+  scheduler_id: string;
+  ran_at: string;
+  trigger: "scheduled" | "manual";
+  status: "ok" | "error";
+  laws_checked: number;
+  new_versions: number;
+  errors: number;
+}
+
 // Background-job tracking. Long-running operations on the backend create a Job
 // row; the frontend polls /api/jobs/{id} so progress survives navigation.
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -1008,6 +1019,10 @@ export const api = {
         apiFetch<{ status: string; job_type: string; job_id: string }>(
           `/api/admin/trigger-discovery/${jobType}`,
           { method: "POST" }
+        ),
+      listLogs: (schedulerId: "ro" | "eu", limit = 20) =>
+        apiFetch<SchedulerRunLogData[]>(
+          `/api/admin/scheduler-logs?scheduler_id=${schedulerId}&limit=${limit}`
         ),
     },
   },
