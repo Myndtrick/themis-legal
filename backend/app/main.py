@@ -13,6 +13,7 @@ from app.models import assistant, pipeline, prompt, category, user, favorite  # 
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.models import job as job_model  # noqa: F401 — register jobs table
+from app.models.scheduler_run_log import SchedulerRunLog  # noqa: F401 — register scheduler_run_logs table
 from app.routers import assistant as assistant_router
 from app.routers import categories, jobs as jobs_router, law_mappings, laws, notifications
 from app.routers import settings_categories, settings_pipeline, settings_prompts
