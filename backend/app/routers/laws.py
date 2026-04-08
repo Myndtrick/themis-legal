@@ -1474,7 +1474,11 @@ def serialize_article(article: Article, law: Law) -> dict:
 
 
 @router.post("/{law_id}/check-updates")
-def check_law_updates(law_id: int, db: Session = Depends(get_db)):
+def check_law_updates(
+    law_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Refresh KnownVersion entries for a single law from legislatie.just.ro.
 
     Discovery only: writes/updates KnownVersion rows and re-derives
@@ -1482,6 +1486,7 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
     user's job via the Import buttons in the law-detail page.
     """
     from app.services.version_discovery import discover_versions_for_law
+    from app.services.law_check_log_service import record_check
 
     law = db.query(Law).filter(Law.id == law_id).first()
     if not law:
@@ -1492,7 +1497,23 @@ def check_law_updates(law_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.exception(f"Error checking updates for law {law_id}")
         db.rollback()
+        record_check(
+            db,
+            law=law,
+            user_id=current_user.id,
+            new_versions=0,
+            status="error",
+            error_message=str(e),
+        )
         raise HTTPException(status_code=500, detail=f"Update check failed: {str(e)}")
+
+    record_check(
+        db,
+        law=law,
+        user_id=current_user.id,
+        new_versions=new_count,
+        status="ok",
+    )
 
     return {
         "discovered": new_count,
