@@ -7,6 +7,7 @@ import type { KnownVersionData, LawVersionSummary } from "@/lib/api";
 import UpdateBanner from "./update-banner";
 import ImportedVersionsTable from "./imported-versions-table";
 import UnimportedVersionsTable from "./unimported-versions-table";
+import CheckHistorySection from "./check-history-section";
 
 interface VersionsSectionProps {
   lawId: number;
@@ -23,6 +24,7 @@ export default function VersionsSection({
   const [versions, setVersions] = useState<LawVersionSummary[]>(initialVersions);
   const [knownVersions, setKnownVersions] = useState<KnownVersionData[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [checkRefreshKey, setCheckRefreshKey] = useState(0);
 
   const importedVerIds = new Set(versions.map((v) => v.ver_id));
 
@@ -54,6 +56,10 @@ export default function VersionsSection({
     setVersions((prev) => prev.filter((v) => v.id !== versionId));
   }, []);
 
+  const handleCheckComplete = useCallback(() => {
+    setCheckRefreshKey((k) => k + 1);
+  }, []);
+
   const unimportedVersions = knownVersions
     ? knownVersions.filter((v) => !importedVerIds.has(v.ver_id))
     : [];
@@ -67,6 +73,7 @@ export default function VersionsSection({
         knownVersions={knownVersions}
         onVersionImported={handleVersionImported}
         onKnownVersionsLoaded={handleKnownVersionsLoaded}
+        onCheckComplete={handleCheckComplete}
       />
 
       <ImportedVersionsTable lawId={lawId} versions={versions} knownVersions={knownVersions} onVersionDeleted={handleVersionDeleted} />
@@ -79,6 +86,8 @@ export default function VersionsSection({
           onVersionImported={handleVersionImported}
         />
       )}
+
+      <CheckHistorySection lawId={lawId} refreshKey={checkRefreshKey} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ interface UpdateBannerProps {
   knownVersions: KnownVersionData[] | null;
   onVersionImported: (verId: string, lawVersionId: number) => void;
   onKnownVersionsLoaded: (versions: KnownVersionData[]) => void;
+  onCheckComplete?: () => void;
 }
 
 function formatCheckedTime(lastCheckedAt: string | null): string {
@@ -48,6 +49,7 @@ export default function UpdateBanner({
   knownVersions,
   onVersionImported,
   onKnownVersionsLoaded,
+  onCheckComplete,
 }: UpdateBannerProps) {
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -70,9 +72,11 @@ export default function UpdateBanner({
       .then((data) => {
         onKnownVersionsLoaded(data.versions);
         setCheckedAt(data.last_checked_at);
+        onCheckComplete?.();
       })
       .catch((e: unknown) => {
         setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
+        onCheckComplete?.();
       })
       .finally(() => setChecking(false));
   }, [lawId, lastCheckedAt, onKnownVersionsLoaded]);
@@ -117,8 +121,10 @@ export default function UpdateBanner({
       const data = await api.laws.getKnownVersions(lawId);
       onKnownVersionsLoaded(data.versions);
       setCheckedAt(data.last_checked_at);
+      onCheckComplete?.();
     } catch (e: unknown) {
       setCheckError(e instanceof Error ? e.message : "Failed to check for updates");
+      onCheckComplete?.();
     } finally {
       setChecking(false);
     }
