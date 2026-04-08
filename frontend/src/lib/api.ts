@@ -667,6 +667,17 @@ export interface LawCheckLogRowData {
   error_message: string | null;
 }
 
+export interface BackfillNotesReport {
+  dry_run: boolean;
+  versions_processed: number;
+  versions_failed: number;
+  paragraph_notes_to_insert: number;
+  article_notes_to_insert: number;
+  text_clean_writes: number;
+  unknown_paragraph_labels: string[];
+  errors: string[];
+}
+
 // Background-job tracking. Long-running operations on the backend create a Job
 // row; the frontend polls /api/jobs/{id} so progress survives navigation.
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -1051,6 +1062,13 @@ export const api = {
         ),
       listLawCheckLogs: (limit = 20) =>
         apiFetch<LawCheckLogData[]>(`/api/admin/law-check-logs?limit=${limit}`),
+    },
+    maintenance: {
+      backfillNotes: (dryRun: boolean) =>
+        apiFetch<BackfillNotesReport>("/api/admin/backfill/notes", {
+          method: "POST",
+          body: JSON.stringify({ dry_run: dryRun }),
+        }),
     },
   },
   jobs: {

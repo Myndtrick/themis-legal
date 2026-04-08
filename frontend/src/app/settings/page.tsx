@@ -12,6 +12,7 @@ import { SuggestionsTable } from "./suggestions/suggestions-table";
 import { ModelsTable } from "./models/models-table";
 import { UsersTable } from "./users/users-table";
 import { SchedulerSettings } from "./schedulers/scheduler-settings";
+import { MaintenancePanel } from "./maintenance/maintenance-panel";
 
 function SettingsContent() {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -70,6 +71,10 @@ function SettingsContent() {
 
           if (activeTab === "schedulers") {
             return <SchedulerSettings />;
+          }
+
+          if (activeTab === "maintenance") {
+            return <MaintenancePanel />;
           }
 
           return null;
