@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_admin
 from app.database import get_db
+from app.models.scheduler_run_log import SchedulerRunLog
 from app.models.scheduler_settings import SchedulerSetting
 from app.models.user import User
 from app.services.scheduler_config import (
@@ -32,6 +33,17 @@ class SchedulerSettingOut(BaseModel):
     last_run_status: str | None
     last_run_summary: dict | None
     next_run_utc: str | None
+
+
+class SchedulerRunLogOut(BaseModel):
+    id: int
+    scheduler_id: str
+    ran_at: str
+    trigger: str
+    status: str
+    laws_checked: int
+    new_versions: int
+    errors: int
 
 
 class SchedulerSettingUpdate(BaseModel):
@@ -94,6 +106,45 @@ def save_scheduler_settings(
 
     logger.info("Scheduler settings saved and jobs rescheduled")
     return {"status": "ok"}
+
+
+@router.get("/scheduler-logs", response_model=list[SchedulerRunLogOut])
+def list_scheduler_logs(
+    scheduler_id: str,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Return the most recent scheduler runs, newest first.
+
+    Read-only. summary_json is intentionally omitted from the response —
+    it stays in the DB for future drilldowns.
+    """
+    if scheduler_id not in ("ro", "eu"):
+        raise HTTPException(status_code=400, detail="scheduler_id must be 'ro' or 'eu'")
+
+    capped = max(1, min(limit, 200))
+
+    rows = (
+        db.query(SchedulerRunLog)
+        .filter(SchedulerRunLog.scheduler_id == scheduler_id)
+        .order_by(SchedulerRunLog.ran_at.desc())
+        .limit(capped)
+        .all()
+    )
+    return [
+        SchedulerRunLogOut(
+            id=r.id,
+            scheduler_id=r.scheduler_id,
+            ran_at=r.ran_at.isoformat(),
+            trigger=r.trigger,
+            status=r.status,
+            laws_checked=r.laws_checked,
+            new_versions=r.new_versions,
+            errors=r.errors,
+        )
+        for r in rows
+    ]
 
 
 # Note: the old GET /discovery-progress/{job_type} endpoint was removed when

@@ -92,3 +92,104 @@ def test_record_run_rolls_back_when_commit_fails(db, monkeypatch, caplog):
     # Restore commit and confirm the failed row is NOT in the table.
     monkeypatch.setattr(db, "commit", real_commit)
     assert db.query(SchedulerRunLog).count() == 0
+
+
+import datetime as _dt
+from fastapi.testclient import TestClient
+
+from app.auth import require_admin, get_current_user
+from app.database import get_db
+from app.main import app as fastapi_app
+from app.models.user import User
+
+
+@pytest.fixture
+def client(db):
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    def override_admin():
+        return User(id=1, email="admin@example.com", role="admin")
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[require_admin] = override_admin
+    fastapi_app.dependency_overrides[get_current_user] = override_admin
+    yield TestClient(fastapi_app)
+    fastapi_app.dependency_overrides.clear()
+
+
+def _seed_logs(db):
+    base = _dt.datetime(2026, 4, 8, 9, 0, 0, tzinfo=_dt.timezone.utc)
+    for i in range(5):
+        db.add(SchedulerRunLog(
+            scheduler_id="ro",
+            ran_at=base + _dt.timedelta(hours=i),
+            trigger="scheduled" if i % 2 == 0 else "manual",
+            status="ok",
+            laws_checked=100 + i,
+            new_versions=i,
+            errors=0,
+            summary_json={"checked": 100 + i, "discovered": i, "errors": 0},
+        ))
+    db.add(SchedulerRunLog(
+        scheduler_id="eu",
+        ran_at=base,
+        trigger="scheduled",
+        status="error",
+        laws_checked=10,
+        new_versions=0,
+        errors=1,
+        summary_json={"checked": 10, "discovered": 0, "errors": 1},
+    ))
+    db.commit()
+
+
+def test_list_scheduler_logs_returns_rows_descending(client, db):
+    _seed_logs(db)
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=ro")
+    assert res.status_code == 200
+    rows = res.json()
+    assert len(rows) == 5
+    timestamps = [r["ran_at"] for r in rows]
+    assert timestamps == sorted(timestamps, reverse=True)
+    assert rows[0]["laws_checked"] == 104
+    assert rows[0]["new_versions"] == 4
+    assert "summary_json" not in rows[0]
+
+
+def test_list_scheduler_logs_respects_limit(client, db):
+    _seed_logs(db)
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=ro&limit=2")
+    assert res.status_code == 200
+    assert len(res.json()) == 2
+
+
+def test_list_scheduler_logs_filters_by_scheduler_id(client, db):
+    _seed_logs(db)
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=eu")
+    assert res.status_code == 200
+    rows = res.json()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["errors"] == 1
+
+
+def test_list_scheduler_logs_rejects_bad_scheduler_id(client):
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=fr")
+    assert res.status_code == 400
+
+
+def test_list_scheduler_logs_caps_limit_at_200(client, db):
+    _seed_logs(db)
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=ro&limit=9999")
+    assert res.status_code == 200  # accepted, just capped
+    assert len(res.json()) <= 200
+
+
+def test_list_scheduler_logs_empty_returns_empty_array(client):
+    res = client.get("/api/admin/scheduler-logs?scheduler_id=ro")
+    assert res.status_code == 200
+    assert res.json() == []
