@@ -176,6 +176,7 @@ class Article(Base):
     article_number: Mapped[str] = mapped_column(String(50), nullable=False)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     full_text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_clean: Mapped[str | None] = mapped_column(Text, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     is_abrogated: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -201,11 +202,16 @@ class Paragraph(Base):
     paragraph_number: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_clean: Mapped[str | None] = mapped_column(Text, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
 
     article: Mapped["Article"] = relationship(back_populates="paragraphs")
     subparagraphs: Mapped[list["Subparagraph"]] = relationship(
         back_populates="paragraph", cascade="all, delete-orphan"
+    )
+    amendment_notes: Mapped[list["AmendmentNote"]] = relationship(
+        back_populates="paragraph", cascade="all, delete-orphan",
+        foreign_keys="AmendmentNote.paragraph_id",
     )
 
 
@@ -230,6 +236,10 @@ class AmendmentNote(Base):
     article_id: Mapped[int] = mapped_column(
         ForeignKey("articles.id"), nullable=False, index=True
     )
+    paragraph_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paragraphs.id"), nullable=True, index=True
+    )
+    note_source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     date: Mapped[str | None] = mapped_column(String(50), nullable=True)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -241,6 +251,10 @@ class AmendmentNote(Base):
     replacement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     article: Mapped["Article"] = relationship(back_populates="amendment_notes")
+    paragraph: Mapped["Paragraph | None"] = relationship(
+        back_populates="amendment_notes",
+        foreign_keys=[paragraph_id],
+    )
 
 
 class Annex(Base):

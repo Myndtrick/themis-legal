@@ -117,6 +117,21 @@ async def lifespan(app: FastAPI):
         _add_column_if_missing(db, "law_mappings", "source_ver_id", "VARCHAR(50)", None)
         _add_column_if_missing(db, "law_mappings", "deleted_at", "DATETIME", None)
 
+        # Paragraph-notes migration (Spec 1: 2026-04-08-paragraph-notes-and-backfill)
+        _add_column_if_missing(db, "amendment_notes", "paragraph_id", "INTEGER", None)
+        _add_column_if_missing(db, "amendment_notes", "note_source_id", "VARCHAR(200)", None)
+        _add_column_if_missing(db, "articles", "text_clean", "TEXT", None)
+        _add_column_if_missing(db, "paragraphs", "text_clean", "TEXT", None)
+        db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_amendment_notes_paragraph_id "
+            "ON amendment_notes(paragraph_id)"
+        ))
+        db.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_amendment_notes_dedupe "
+            "ON amendment_notes(article_id, COALESCE(paragraph_id, 0), COALESCE(note_source_id, ''))"
+        ))
+        db.commit()
+
         seed_defaults(db)
         sync_prompts_from_files(db)
         from app.services.category_service import seed_categories, backfill_law_mapping_fields, ensure_eu_decision_category, seed_eu_celex_mappings
