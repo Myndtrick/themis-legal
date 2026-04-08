@@ -262,3 +262,39 @@ def _make_discovery_runner(job_type: str):
         return results
 
     return _runner
+
+
+# ---------------------------------------------------------------------------
+# Paragraph-notes backfill (Spec 1: 2026-04-08-paragraph-notes-and-backfill)
+# ---------------------------------------------------------------------------
+
+
+class BackfillNotesRequest(BaseModel):
+    law_id: int | None = None
+    dry_run: bool = True
+
+
+@router.post("/backfill/notes")
+def trigger_backfill_notes(
+    req: BackfillNotesRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    from app.services.notes_backfill import backfill_notes
+
+    report = backfill_notes(
+        db,
+        law_id=req.law_id,
+        dry_run=req.dry_run,
+        fetch_delay_seconds=0.5,
+    )
+    return {
+        "dry_run": req.dry_run,
+        "versions_processed": report.versions_processed,
+        "versions_failed": report.versions_failed,
+        "paragraph_notes_to_insert": report.paragraph_notes_to_insert,
+        "article_notes_to_insert": report.article_notes_to_insert,
+        "text_clean_writes": report.text_clean_writes,
+        "unknown_paragraph_labels": report.unknown_paragraph_labels[:50],
+        "errors": report.errors[:50],
+    }

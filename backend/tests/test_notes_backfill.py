@@ -183,3 +183,41 @@ def test_unknown_paragraph_label_skips_with_warning(db, caplog):
         backfill_notes(db, dry_run=False, fetch_delay_seconds=0)
     db.expire_all()
     assert db.query(AmendmentNote).count() == 0
+
+
+from fastapi.testclient import TestClient
+
+from app.auth import require_admin
+from app.database import get_db
+from app.main import app as fastapi_app
+from app.models.user import User
+
+
+def test_admin_endpoint_dry_run(db):
+    law, v, art, par = _seed_one_version_no_notes(db)
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    def override_admin():
+        return User(id=1, email="admin@example.com")
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[require_admin] = override_admin
+    try:
+        with patch(
+            "app.services.notes_backfill.fetch_document",
+            return_value=_fake_leropa_result_with_paragraph_note(v.ver_id),
+        ):
+            client = TestClient(fastapi_app)
+            r = client.post("/api/admin/backfill/notes", json={"dry_run": True})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["versions_processed"] == 1
+        assert body["paragraph_notes_to_insert"] == 1
+        assert db.query(AmendmentNote).count() == 0
+    finally:
+        fastapi_app.dependency_overrides.clear()
