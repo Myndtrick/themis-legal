@@ -58,23 +58,39 @@ function ParagraphNotesBackfillCard() {
     pollRef.current = setInterval(() => pollOnce(jobId), POLL_INTERVAL_MS);
   }, [pollOnce, stopPolling]);
 
-  // On mount: check if there's already an active backfill job and resume polling.
-  // This is what makes the progress survive a page refresh.
+  // On mount: first look for an active backfill job and resume polling. If
+  // there isn't one, fall back to the most recent finished job so the user
+  // can still see the report after closing and reopening the tab.
   useEffect(() => {
     let cancelled = false;
-    api.jobs
-      .list({ kind: BACKFILL_KIND, active: true, limit: 1 })
-      .then((res) => {
+    (async () => {
+      try {
+        const active = await api.jobs.list({
+          kind: BACKFILL_KIND,
+          active: true,
+          limit: 1,
+        });
         if (cancelled) return;
-        if (res.jobs.length > 0) {
-          const active = res.jobs[0];
-          setJob(active);
-          startPolling(active.id);
+        if (active.jobs.length > 0) {
+          const job = active.jobs[0];
+          setJob(job);
+          startPolling(job.id);
+          return;
         }
-      })
-      .catch(() => {
+        // No active job — show the most recent finished one (succeeded or failed)
+        const finished = await api.jobs.list({
+          kind: BACKFILL_KIND,
+          active: false,
+          limit: 1,
+        });
+        if (cancelled) return;
+        if (finished.jobs.length > 0) {
+          setJob(finished.jobs[0]);
+        }
+      } catch {
         /* ignore — the user can always click a button */
-      });
+      }
+    })();
     return () => {
       cancelled = true;
       stopPolling();
