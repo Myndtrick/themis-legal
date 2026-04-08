@@ -274,27 +274,95 @@ class BackfillNotesRequest(BaseModel):
     dry_run: bool = True
 
 
+BACKFILL_NOTES_KIND = "backfill_notes"
+
+
 @router.post("/backfill/notes")
 def trigger_backfill_notes(
     req: BackfillNotesRequest,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """Spawn a paragraph-notes backfill job and return its job_id immediately.
+
+    The backfill itself runs in the JobService thread pool. Frontend polls
+    /api/jobs/{job_id} for progress and the final report — same pattern as
+    /trigger-discovery, so progress survives navigation and refresh.
+    """
+    from app.services import job_service
+
+    if job_service.has_active(db, kind=BACKFILL_NOTES_KIND):
+        raise HTTPException(
+            status_code=409,
+            detail="A paragraph-notes backfill is already running",
+        )
+
+    job_id = job_service.submit(
+        kind=BACKFILL_NOTES_KIND,
+        params={"law_id": req.law_id, "dry_run": req.dry_run},
+        runner=_backfill_notes_runner,
+        user_id=admin.id,
+        db=db,
+    )
+    logger.info(
+        "Manually triggered paragraph-notes backfill (dry_run=%s, law_id=%s) as job %s",
+        req.dry_run, req.law_id, job_id,
+    )
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "dry_run": req.dry_run,
+    }
+
+
+def _backfill_notes_runner(db: Session, job_id: str, params: dict) -> dict:
+    """Job runner: open a fresh session and call backfill_notes with progress.
+
+    Returns a JSON-serializable report dict that the frontend reads from
+    job.result_json.
+    """
+    from dataclasses import asdict
+
+    from app.database import SessionLocal
+    from app.services import job_service as _js
     from app.services.notes_backfill import backfill_notes
+
+    law_id = params.get("law_id")
+    dry_run = bool(params.get("dry_run", True))
+
+    def _on_progress(current: int, total: int) -> None:
+        # Use a fresh short-lived session: the runner's `db` is mid-loop in
+        # the backfill code path and writing to it concurrently is unsafe.
+        progress_db = SessionLocal()
+        try:
+            _js.update_progress(
+                progress_db,
+                job_id,
+                phase=f"Processing version {current} of {total}",
+                current=current,
+                total=total,
+            )
+        finally:
+            progress_db.close()
+
+    # Initial phase so the UI shows something before the first version finishes
+    _js.update_progress(db, job_id, phase="Starting backfill", current=0, total=0)
 
     report = backfill_notes(
         db,
-        law_id=req.law_id,
-        dry_run=req.dry_run,
+        law_id=law_id,
+        dry_run=dry_run,
+        on_progress=_on_progress,
         fetch_delay_seconds=0.5,
     )
+    # Truncate the long lists so the result_json stays bounded
     return {
-        "dry_run": req.dry_run,
+        "dry_run": dry_run,
         "versions_processed": report.versions_processed,
         "versions_failed": report.versions_failed,
         "paragraph_notes_to_insert": report.paragraph_notes_to_insert,
         "article_notes_to_insert": report.article_notes_to_insert,
         "text_clean_writes": report.text_clean_writes,
-        "unknown_paragraph_labels": report.unknown_paragraph_labels[:50],
-        "errors": report.errors[:50],
+        "unknown_paragraph_labels": report.unknown_paragraph_labels[:200],
+        "errors": report.errors[:200],
     }

@@ -242,8 +242,15 @@ from app.main import app as fastapi_app
 from app.models.user import User
 
 
-def test_admin_endpoint_dry_run(db):
-    law, v, art, par = _seed_one_version_no_notes(db)
+def test_admin_endpoint_spawns_job_and_returns_job_id(db):
+    """The endpoint must spawn a backfill job and return its job_id immediately.
+
+    The actual backfill runs in the JobService thread pool with its own session
+    pointing at the production engine, not the test in-memory engine — so we
+    don't try to assert end-to-end behaviour through the endpoint here. The
+    backfill_notes() function itself is covered by the six tests above.
+    """
+    _seed_one_version_no_notes(db)
 
     def override_get_db():
         try:
@@ -257,16 +264,48 @@ def test_admin_endpoint_dry_run(db):
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[require_admin] = override_admin
     try:
-        with patch(
-            "app.services.notes_backfill.fetch_document",
-            return_value=_fake_leropa_result_with_paragraph_note(v.ver_id),
-        ):
-            client = TestClient(fastapi_app)
-            r = client.post("/api/admin/backfill/notes", json={"dry_run": True})
+        # Stub out job_service.submit so we don't actually kick off the worker
+        # thread (it would race against the test DB and is also unnecessary).
+        with patch("app.services.job_service.submit", return_value="test-job-123") as submit:
+            with patch("app.services.job_service.has_active", return_value=False):
+                client = TestClient(fastapi_app)
+                r = client.post("/api/admin/backfill/notes", json={"dry_run": True})
         assert r.status_code == 200
         body = r.json()
-        assert body["versions_processed"] == 1
-        assert body["paragraph_notes_to_insert"] == 1
+        assert body["status"] == "started"
+        assert body["job_id"] == "test-job-123"
+        assert body["dry_run"] is True
+        # Confirm the runner was wired correctly
+        submit.assert_called_once()
+        kwargs = submit.call_args.kwargs
+        assert kwargs["kind"] == "backfill_notes"
+        assert kwargs["params"] == {"law_id": None, "dry_run": True}
+        assert callable(kwargs["runner"])
+        # Sanity: nothing was written to the DB by the endpoint itself
         assert db.query(AmendmentNote).count() == 0
+    finally:
+        fastapi_app.dependency_overrides.clear()
+
+
+def test_admin_endpoint_returns_409_when_already_running(db):
+    """Two POSTs in quick succession must not spawn two backfills."""
+    _seed_one_version_no_notes(db)
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    def override_admin():
+        return User(id=1, email="admin@example.com")
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[require_admin] = override_admin
+    try:
+        with patch("app.services.job_service.has_active", return_value=True):
+            client = TestClient(fastapi_app)
+            r = client.post("/api/admin/backfill/notes", json={"dry_run": True})
+        assert r.status_code == 409
     finally:
         fastapi_app.dependency_overrides.clear()

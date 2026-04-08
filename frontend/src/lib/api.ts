@@ -1075,11 +1075,19 @@ export const api = {
         apiFetch<LawCheckLogData[]>(`/api/admin/law-check-logs?limit=${limit}`),
     },
     maintenance: {
-      backfillNotes: (dryRun: boolean) =>
-        apiFetch<BackfillNotesReport>("/api/admin/backfill/notes", {
-          method: "POST",
-          body: JSON.stringify({ dry_run: dryRun }),
-        }),
+      /**
+       * Spawn a paragraph-notes backfill job. Returns the job_id immediately;
+       * caller polls /api/jobs/{job_id} for progress and the final report.
+       * The report is read from `job.result` once `job.status === "succeeded"`.
+       */
+      startBackfillNotes: (dryRun: boolean) =>
+        apiFetch<{ status: string; job_id: string; dry_run: boolean }>(
+          "/api/admin/backfill/notes",
+          {
+            method: "POST",
+            body: JSON.stringify({ dry_run: dryRun }),
+          }
+        ),
     },
   },
   jobs: {
