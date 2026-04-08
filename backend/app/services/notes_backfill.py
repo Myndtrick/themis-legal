@@ -79,7 +79,15 @@ def backfill_notes(
     """
     report = BackfillReport()
 
-    versions_q = db.query(LawVersion)
+    # Restrict to Romanian-source laws. The backfill re-fetches each version
+    # via leropa (legislatie.just.ro), which only knows how to parse Romanian
+    # documents. EU laws live under a different parser (eu_html_parser /
+    # cellar) and have CELEX ver_ids that legislatie.just.ro returns 500 for.
+    versions_q = (
+        db.query(LawVersion)
+        .join(Law, LawVersion.law_id == Law.id)
+        .filter(Law.source == "ro")
+    )
     if law_id is not None:
         versions_q = versions_q.filter(LawVersion.law_id == law_id)
     versions = versions_q.order_by(LawVersion.id).all()

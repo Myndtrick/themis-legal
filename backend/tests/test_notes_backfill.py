@@ -185,6 +185,55 @@ def test_unknown_paragraph_label_skips_with_warning(db, caplog):
     assert db.query(AmendmentNote).count() == 0
 
 
+def test_eu_laws_are_skipped_entirely(db):
+    """EU laws (Law.source='eu') must not be passed to the leropa fetcher.
+
+    Regression: legislatie.just.ro returns HTTP 500 for CELEX-numbered ver_ids,
+    so the backfill must filter to source='ro' before iterating versions.
+    """
+    # Romanian law that should be processed
+    ro_law = Law(title="RO", law_number="1", law_year=2020, source="ro")
+    db.add(ro_law)
+    db.flush()
+    ro_version = LawVersion(
+        law_id=ro_law.id, ver_id="100",
+        date_in_force=datetime.date(2024, 1, 1),
+        state="actual", is_current=True,
+    )
+    db.add(ro_version)
+    db.flush()
+    db.add(Article(
+        law_version_id=ro_version.id, article_number="1", label="1",
+        full_text="x", order_index=0,
+    ))
+    # EU law that must be skipped
+    eu_law = Law(title="EU", law_number="1925", law_year=2022, source="eu")
+    db.add(eu_law)
+    db.flush()
+    eu_version = LawVersion(
+        law_id=eu_law.id, ver_id="32022R1925",
+        date_in_force=datetime.date(2022, 9, 14),
+        state="actual", is_current=True,
+    )
+    db.add(eu_version)
+    db.commit()
+
+    fetched_ver_ids: list[str] = []
+
+    def spy_fetch(ver_id, *args, **kwargs):
+        fetched_ver_ids.append(ver_id)
+        return {"document": {}, "articles": [], "books": []}
+
+    with patch("app.services.notes_backfill.fetch_document", side_effect=spy_fetch):
+        report = backfill_notes(db, dry_run=True, fetch_delay_seconds=0)
+
+    # The leropa fetcher must only have been called for the Romanian version
+    assert fetched_ver_ids == ["100"]
+    # The report counts only the RO version
+    assert report.versions_processed == 1
+    assert report.versions_failed == 0
+
+
 from fastapi.testclient import TestClient
 
 from app.auth import require_admin
