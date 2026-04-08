@@ -256,6 +256,9 @@ def _make_discovery_runner(job_type: str):
             setting.last_run_summary = results
             db.commit()
 
+        from app.services.scheduler_log_service import record_run
+        record_run(db, job_type, results, "manual")
+
         return results
 
     return _runner

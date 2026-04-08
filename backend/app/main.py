@@ -49,6 +49,8 @@ def run_update_check():
             setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
             setting.last_run_summary = results
             db.commit()
+        from app.services.scheduler_log_service import record_run
+        record_run(db, "ro", results, "scheduled")
     finally:
         db.close()
 
@@ -72,6 +74,8 @@ def run_eu_update_check():
             setting.last_run_status = "ok" if results.get("errors", 0) == 0 else "error"
             setting.last_run_summary = results
             db.commit()
+        from app.services.scheduler_log_service import record_run
+        record_run(db, "eu", results, "scheduled")
     finally:
         db.close()
 
