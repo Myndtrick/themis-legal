@@ -126,9 +126,11 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS ix_amendment_notes_paragraph_id "
             "ON amendment_notes(paragraph_id)"
         ))
+        db.execute(text("DROP INDEX IF EXISTS ux_amendment_notes_dedupe"))
         db.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_amendment_notes_dedupe "
-            "ON amendment_notes(article_id, COALESCE(paragraph_id, 0), COALESCE(note_source_id, ''))"
+            "ON amendment_notes(article_id, COALESCE(paragraph_id, 0), note_source_id) "
+            "WHERE note_source_id IS NOT NULL"
         ))
         db.commit()
 
