@@ -20,8 +20,11 @@ def record_run(db: Session, scheduler_id: str, results: dict, trigger: str) -> N
         db: SQLAlchemy session (caller-owned; this function commits on it).
         scheduler_id: "ro" or "eu".
         results: Dict returned by run_daily_discovery / run_eu_weekly_discovery.
-                 Expected keys: checked, discovered, errors. Stored in full as
-                 summary_json for future debugging.
+                 Field mapping from results dict to DB columns:
+                     checked    -> laws_checked
+                     discovered -> new_versions
+                     errors     -> errors
+                 Stored in full as summary_json for future debugging.
         trigger: "scheduled" or "manual".
     """
     try:

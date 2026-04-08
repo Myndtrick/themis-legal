@@ -55,11 +55,40 @@ def test_record_run_marks_error_status_when_errors_present(db):
 
 def test_record_run_swallows_db_failures(db, monkeypatch, caplog):
     """A logging failure must not break the discovery run."""
+    import logging
+
     def boom(*a, **kw):
         raise RuntimeError("db is down")
 
     monkeypatch.setattr(db, "add", boom)
 
-    # Should not raise
-    scheduler_log_service.record_run(db, "ro", {"checked": 1, "discovered": 0, "errors": 0}, "scheduled")
-    assert any("scheduler_run_log" in r.message or "db is down" in r.message for r in caplog.records)
+    with caplog.at_level(logging.WARNING, logger="app.services.scheduler_log_service"):
+        # Should not raise
+        scheduler_log_service.record_run(
+            db, "ro", {"checked": 1, "discovered": 0, "errors": 0}, "scheduled"
+        )
+    assert any("db is down" in r.message for r in caplog.records)
+
+
+def test_record_run_rolls_back_when_commit_fails(db, monkeypatch, caplog):
+    """When commit fails, the staged row must be rolled back and the error swallowed."""
+    import logging
+
+    real_commit = db.commit
+
+    def boom_commit():
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db, "commit", boom_commit)
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scheduler_log_service"):
+        # Should not raise
+        scheduler_log_service.record_run(
+            db, "ro", {"checked": 1, "discovered": 0, "errors": 0}, "scheduled"
+        )
+
+    assert any("commit failed" in r.message for r in caplog.records)
+
+    # Restore commit and confirm the failed row is NOT in the table.
+    monkeypatch.setattr(db, "commit", real_commit)
+    assert db.query(SchedulerRunLog).count() == 0
