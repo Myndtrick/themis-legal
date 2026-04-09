@@ -383,3 +383,35 @@ def test_duplicate_amendment_notes_are_deduped_in_response():
     # Even though we passed two notes, they should appear once
     assert len(art.notes) == 1
     assert art.notes[0].monitor_number == "85"
+
+
+def test_article_modified_with_no_paragraph_changes_falls_back_to_synthetic_diff():
+    """Regression: leropa stores only fragments in some Paragraph rows, with
+    the real article body in Article.full_text only. When the article-level
+    text differs but every paragraph comes back unchanged, the matcher must
+    fall back to a synthetic whole-article diff so the change is visible."""
+    par_a = _par("(1)", "Judecătorul-sindic va decide", par_id=1)
+    par_b = _par("(1)", "Judecătorul-sindic va decide", par_id=2)  # IDENTICAL
+    art_a = FakeArticle(
+        label="145", article_number="145",
+        full_text="Long article body version A with extra text.",
+        text_clean="Long article body version A with extra text.",
+        paragraphs=[par_a],
+    )
+    art_b = FakeArticle(
+        label="145", article_number="145",
+        full_text="Long article body version B with different extra text.",
+        text_clean="Long article body version B with different extra text.",
+        paragraphs=[par_b],
+    )
+    result = diff_versions([art_a], [art_b])
+    art = result[0]
+    assert art.change_type == "modified"
+    # Falls back to synthetic paragraph because the only real paragraph was unchanged
+    assert len(art.paragraphs) == 1
+    par = art.paragraphs[0]
+    assert par.paragraph_label is None
+    assert par.change_type == "modified"
+    assert "version A" in par.text_clean_a
+    assert "version B" in par.text_clean_b
+    assert "<ins>" in par.diff_html and "<del>" in par.diff_html

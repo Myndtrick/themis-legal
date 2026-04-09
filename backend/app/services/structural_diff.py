@@ -266,6 +266,21 @@ def _diff_article_pair(
         fallback_a=_clean(art_a),
         fallback_b=_clean(art_b),
     )
+    # If the article-level text differs but every paragraph came back as
+    # unchanged, leropa stored only fragments in the paragraph rows and the
+    # actual change lives in Article.full_text only (e.g., literă A./B./C.
+    # sub-points, post-paragraph notes). Fall back to a single synthetic
+    # paragraph holding the whole-article diff so the change is visible.
+    if paragraphs and all(p.change_type == "unchanged" for p in paragraphs):
+        text_a = _clean(art_a)
+        text_b = _clean(art_b)
+        paragraphs = [DiffParagraphEntry(
+            paragraph_label=None,
+            change_type="modified",
+            text_clean_a=text_a,
+            text_clean_b=text_b,
+            diff_html=word_diff_html(text_a, text_b),
+        )]
     return DiffArticleEntry(
         article_label=_article_label(art_b),
         change_type="modified",
