@@ -112,8 +112,14 @@ def test_imports_paragraph_level_note_with_paragraph_id(db):
 def test_writes_text_clean_for_article_and_paragraph(db):
     """Article.text_clean and Paragraph.text_clean strip inline (la …) annotations."""
     version = _make_version(db)
-    raw_full = "Articolul 1. Text. (la 01-01-2024, Articolul 1 a fost modificat de Legea nr. 5/2023)"
-    raw_par = "Conținut. (la 02-02-2025, Alineatul (1) a fost modificat de OUG nr. 7/2024)"
+    raw_full = (
+        "Articolul 1. Text. (la 01-01-2024, Articolul 1 a fost modificat de Legea nr. 5/2023, "
+        "publicată în MONITORUL OFICIAL nr. 5 din 01 ianuarie 2024)"
+    )
+    raw_par = (
+        "Conținut. (la 02-02-2025, Alineatul (1) a fost modificat de OUG nr. 7/2024, "
+        "publicată în MONITORUL OFICIAL nr. 7 din 02 februarie 2025)"
+    )
     art_data = {
         "label": "1",
         "full_text": raw_full,
