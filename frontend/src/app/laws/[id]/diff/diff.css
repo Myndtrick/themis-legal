@@ -17,3 +17,18 @@
   padding: 0 2px;
   border-radius: 2px;
 }
+
+.diff-html del {
+  background: #fee2e2;
+  color: #991b1b;
+  text-decoration: line-through;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.diff-html ins {
+  background: #d1fae5;
+  color: #065f46;
+  text-decoration: none;
+  padding: 0 2px;
+  border-radius: 2px;
+}

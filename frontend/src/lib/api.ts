@@ -188,6 +188,7 @@ export interface LocalSearchResult {
   law_number: string;
   law_year: number;
   version_count: number;
+  description: string | null;
   category_name: string | null;
   current_version: {
     id: number;
@@ -337,26 +338,35 @@ export interface NotificationData {
   created_at: string;
 }
 
-export interface DiffUnit {
-  alineat_label: string | null;
-  marker_kind: "alineat" | "numbered" | "litera" | "upper_litera" | "bullet" | "intro";
-  label: string;
-  change_type: "added" | "removed" | "modified" | "unchanged";
-  text_a?: string;
-  text_b?: string;
-  diff_html?: string;
+export interface AmendmentNoteRef {
+  date: string | null;
+  subject: string | null;
+  law_number: string | null;
+  law_date: string | null;
+  monitor_number: string | null;
+  monitor_date: string | null;
 }
 
-export interface DiffArticle {
-  article_number: string;
-  change_type: "added" | "removed" | "modified" | "unchanged";
-  title?: string | null;
+export type DiffChangeType = "added" | "removed" | "modified" | "unchanged";
+
+export interface DiffParagraphEntry {
+  paragraph_label: string | null;
+  change_type: DiffChangeType;
   renumbered_from: string | null;
-  units: DiffUnit[];
-  // For added/removed articles and the tokenizer-fallback path:
-  text_a?: string;
-  text_b?: string;
-  diff_html?: string;
+  text_clean?: string | null;       // for added/removed/unchanged
+  text_clean_a?: string | null;     // for modified
+  text_clean_b?: string | null;     // for modified
+  diff_html?: string | null;        // for modified
+  notes: AmendmentNoteRef[];
+}
+
+export interface DiffArticleEntry {
+  article_label: string;
+  change_type: DiffChangeType;
+  renumbered_from: string | null;
+  text_clean?: string | null;       // for added/removed
+  paragraphs: DiffParagraphEntry[];
+  notes: AmendmentNoteRef[];
 }
 
 export interface DiffResult {
@@ -369,7 +379,7 @@ export interface DiffResult {
     modified: number;
     unchanged: number;
   };
-  changes: DiffArticle[];
+  articles: DiffArticleEntry[];
 }
 
 export interface AdvancedSearchResult {
