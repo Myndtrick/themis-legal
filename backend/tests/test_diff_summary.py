@@ -104,3 +104,48 @@ def test_backfill_diff_summaries(db, law_with_two_versions):
     assert v2.diff_summary == {"modified": 1, "added": 1, "removed": 1}
     db.refresh(v1)
     assert v1.diff_summary is None
+
+
+def test_backfill_diff_summaries_scoped_to_law(db, law_with_two_versions):
+    """When law_id is given, only that law's versions are touched.
+
+    Regression: a global scan from per-import runners caused SQLite writer
+    contention and stuck `running` jobs when two imports ran in parallel.
+    """
+    from app.services.diff_summary import backfill_diff_summaries
+
+    target_law, _, target_v2 = law_with_two_versions
+
+    # A second, unrelated law also has a NULL-summary version.
+    other_law = Law(title="Other Law", law_number="99", law_year=2025)
+    db.add(other_law)
+    db.flush()
+    other_v1 = LawVersion(
+        law_id=other_law.id,
+        ver_id="900",
+        date_in_force=datetime.date(2025, 1, 1),
+        state="actual",
+    )
+    db.add(other_v1)
+    db.flush()
+    db.add(Article(law_version_id=other_v1.id, article_number="1", full_text="A", order_index=0))
+    other_v2 = LawVersion(
+        law_id=other_law.id,
+        ver_id="901",
+        date_in_force=datetime.date(2025, 6, 1),
+        state="actual",
+    )
+    db.add(other_v2)
+    db.flush()
+    db.add(Article(law_version_id=other_v2.id, article_number="1", full_text="B", order_index=0))
+    db.flush()
+
+    count = backfill_diff_summaries(db, law_id=target_law.id)
+    assert count == 1
+
+    db.refresh(target_v2)
+    assert target_v2.diff_summary == {"modified": 1, "added": 1, "removed": 1}
+
+    # The other law's NULL summary must be untouched.
+    db.refresh(other_v2)
+    assert other_v2.diff_summary is None

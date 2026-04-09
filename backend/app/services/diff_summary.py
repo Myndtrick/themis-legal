@@ -58,14 +58,19 @@ def compute_diff_summary(db: Session, version: LawVersion) -> dict | None:
     return {"modified": modified, "added": added, "removed": removed}
 
 
-def backfill_diff_summaries(db: Session) -> int:
-    """Compute diff_summary for all LawVersion rows that don't have one yet."""
-    versions = (
-        db.query(LawVersion)
-        .filter(LawVersion.diff_summary.is_(None))
-        .order_by(LawVersion.law_id, LawVersion.date_in_force)
-        .all()
-    )
+def backfill_diff_summaries(db: Session, *, law_id: int | None = None) -> int:
+    """Compute diff_summary for LawVersion rows that don't have one yet.
+
+    When `law_id` is provided, the scan is scoped to that single law. This is
+    what import runners use — a full-DB scan inside a per-import transaction
+    causes long-running writes that contend on the SQLite writer lock when two
+    imports run in parallel, leaving jobs stuck in `running` long after the
+    visible import work is done.
+    """
+    q = db.query(LawVersion).filter(LawVersion.diff_summary.is_(None))
+    if law_id is not None:
+        q = q.filter(LawVersion.law_id == law_id)
+    versions = q.order_by(LawVersion.law_id, LawVersion.date_in_force).all()
 
     count = 0
     for v in versions:

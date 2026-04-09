@@ -1,10 +1,24 @@
 """Category taxonomy seed and management service."""
 import logging
+import re
+import unicodedata
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.category import CategoryGroup, Category, LawMapping
 from app.models.law import Law
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and strip diacritics for accent-insensitive matching."""
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+_NUMBER_YEAR_RE = re.compile(r"(\d+)\s*/\s*(\d{4})")
+_BARE_NUMBER_RE = re.compile(r"^\s*(\d{1,6})\s*$")
 
 logger = logging.getLogger(__name__)
 
@@ -719,22 +733,74 @@ def assign_category(db: Session, law_id: int, category_id: int) -> dict:
 
 
 def local_search(db: Session, query: str) -> list[dict]:
-    """Search imported laws by title or law_number."""
-    q = f"%{query}%"
-    laws = (
-        db.query(Law)
-        .filter((Law.title.ilike(q)) | (Law.law_number.ilike(q)))
-        .order_by(Law.law_year.desc())
-        .limit(10)
-        .all()
-    )
+    """Search imported laws by title (diacritic-insensitive, token AND match)
+    or by NUMBER/YEAR pattern. Returns up to 10 results."""
+    if not query or not query.strip():
+        return []
+
+    raw = query.strip()
+    norm_query = _normalize(raw)
+
+    # Detect NUMBER/YEAR (e.g. "85/2014") and bare number (e.g. "85")
+    ny_match = _NUMBER_YEAR_RE.search(raw)
+    bare_num = _BARE_NUMBER_RE.match(raw)
+
+    exact_matches: list[Law] = []
+    if ny_match:
+        num, yr = ny_match.group(1), int(ny_match.group(2))
+        exact_matches = (
+            db.query(Law)
+            .filter(Law.law_number == num, Law.law_year == yr)
+            .order_by(Law.law_year.desc())
+            .all()
+        )
+    elif bare_num:
+        num = bare_num.group(1)
+        exact_matches = (
+            db.query(Law)
+            .filter(Law.law_number == num)
+            .order_by(Law.law_year.desc())
+            .limit(10)
+            .all()
+        )
+
+    # Tokenized normalized title search (AND semantics across tokens).
+    # Library size is small enough that an in-Python pass over all laws is fine.
+    tokens = [t for t in norm_query.split() if t]
+    title_matches: list[Law] = []
+    if tokens:
+        all_laws = db.query(Law).order_by(Law.law_year.desc()).all()
+        for law in all_laws:
+            haystack_parts = [
+                _normalize(law.title or ""),
+                _normalize(law.description or ""),
+                _normalize(law.keywords or ""),
+                _normalize(law.law_number or ""),
+                str(law.law_year or ""),
+            ]
+            haystack = " ".join(haystack_parts)
+            if all(tok in haystack for tok in tokens):
+                title_matches.append(law)
+
+    # Merge: exact NUMBER/YEAR matches first, then title token matches, dedup.
+    seen: set[int] = set()
+    ordered: list[Law] = []
+    for law in exact_matches + title_matches:
+        if law.id in seen:
+            continue
+        seen.add(law.id)
+        ordered.append(law)
+        if len(ordered) >= 10:
+            break
+
     results = []
-    for law in laws:
+    for law in ordered:
         current = next((v for v in law.versions if v.is_current), None)
         cat = law.category
         results.append({
             "id": law.id, "title": law.title, "law_number": law.law_number,
             "law_year": law.law_year, "version_count": len(law.versions),
+            "description": law.description,
             "category_name": cat.group.name_en if cat else None,
             "current_version": {"id": current.id, "state": current.state} if current else None,
         })

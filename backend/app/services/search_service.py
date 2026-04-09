@@ -281,13 +281,26 @@ def _do_search(
         "actiontype": "Căutare",
     }
 
-    resp = session.post(
-        BASE_URL + "/",
-        data=form_data,
-        timeout=15,
-        allow_redirects=True,
-    )
-    resp.raise_for_status()
+    # Upstream legislatie.just.ro is flaky for broad title-only queries
+    # (returns HTTP 500 on the redirect target when the result set is huge).
+    # We swallow request-level errors so a single failing sub-query in
+    # advanced_search() doesn't kill the whole search — the caller can
+    # still try word-form variants and the content-keyword fallback.
+    try:
+        resp = session.post(
+            BASE_URL + "/",
+            data=form_data,
+            timeout=15,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning(
+            "legislatie.just.ro sub-query failed (%s) for title=%r doc_type=%r "
+            "doc_number=%r content=%r — returning [] and continuing",
+            exc, title_text, doc_type, doc_number, ct,
+        )
+        return []
     return _parse_search_results(resp.text, max_results=20)
 
 
@@ -663,6 +676,24 @@ def advanced_search(
                 seen_ids.add(r.ver_id)
                 dest.append(r)
 
+    # Step 0: Number/year boost — if the keyword contains a NUMBER/YEAR
+    # pattern (e.g. "57/2019"), do a precise number-based search across all
+    # act types first, so that LEGE/OUG/OG/etc. with that exact number+year
+    # are surfaced before any description-only matches.
+    if keyword and not number:
+        ny_match = re.search(r"\b(\d+)\s*/\s*(\d{4})\b", keyword)
+        if ny_match:
+            num_part, year_part = ny_match.group(1), ny_match.group(2)
+            if all_results or boosted_results:
+                token = _refresh_token(session)
+            results = _do_search(
+                session, token,
+                doc_number=f"{num_part}-{year_part}",
+            )
+            _add_results(results, target=boosted_results)
+            if results:
+                token = _refresh_token(session)
+
     # Step 1: Alias boost — if keyword matches a known alias, do a precise
     # number search first and put those results at the very top.
     if keyword and not number:
@@ -760,7 +791,21 @@ def advanced_search(
     # "legea" matches "lege" and "societatilor" matches "societatile".
     # Stopwords are skipped — "de", "din", etc. don't need to match.
     if keyword:
-        kw_words = [_strip_diacritics(w).lower() for w in keyword.split()
+        # Expand NUMBER/YEAR pairs (e.g. "57/2019") into two separate tokens
+        # ("57", "2019") so the post-filter can match acts whose number and
+        # date appear in different visible fields.
+        def _expand_tokens(text: str) -> list[str]:
+            out: list[str] = []
+            for raw in text.split():
+                m = re.fullmatch(r"(\d+)/(\d{4})", raw)
+                if m:
+                    out.append(m.group(1))
+                    out.append(m.group(2))
+                else:
+                    out.append(raw)
+            return out
+
+        kw_words = [_strip_diacritics(w).lower() for w in _expand_tokens(keyword)
                      if w and w.lower() not in _STOPWORDS and len(w) >= 2]
 
         def _word_variants(word: str) -> list[str]:
@@ -784,17 +829,49 @@ def advanced_search(
         boosted_results = [r for r in boosted_results if _matches_keyword(r)]
         all_results = [r for r in all_results if _matches_keyword(r)]
 
-    # Smart sorting — sort non-boosted results by doc type priority.
-    # COD/LEGE first, ancillary documents (DECIZIE, RECTIFICARE, DECRET) last.
-    DOC_TYPE_PRIORITY = {
-        "CONSTITUTIE": 0,
-        "COD": 1, "LEGE": 1,
-        "OUG": 2, "OG": 2, "ORDONANTA": 2,
-        "HG": 3, "ORDIN": 3, "HOTARARE": 3,
-        "REGULAMENT": 4, "NORMA": 4,
-        "DECIZIE": 5, "RECTIFICARE": 5, "DECRET": 5,
+    # Default tier ordering (1=top, 4=bottom). Codes are placed with LEGE
+    # because most Romanian codes are issued via LEGE; codes issued via OUG
+    # (e.g. Codul administrativ) come back from legislatie.just.ro with
+    # doc_type="OUG" so they naturally land in tier 2 anyway.
+    DOC_TYPE_TIER = {
+        "LEGE": 1, "COD": 1,
+        "OUG": 2, "OG": 2, "ORDONANTA": 2, "ORDONANȚĂ": 2,
+        "HG": 3, "HOTARARE": 3, "HOTĂRÂRE": 3,
     }
-    all_results.sort(key=lambda r: DOC_TYPE_PRIORITY.get(r.doc_type, 5))
+    DEFAULT_TIER = 4  # everything else, including CONSTITUTIE/DECRET/...
+
+    def _tier_for(doc_type: str) -> int:
+        return DOC_TYPE_TIER.get((doc_type or "").upper(), DEFAULT_TIER)
+
+    # Keyword-type override: if the user typed a token that names an act type
+    # (and they did NOT pick a doc_type in the structured filter), promote
+    # results of that type to rank 0, above the default tier sort. The rest
+    # still appear after, in normal tier order.
+    promoted_tier: int | None = None
+    if keyword and not doc_type_codes:
+        kw_norm = _strip_diacritics(keyword).lower()
+        kw_tokens = set(re.findall(r"[a-z]+", kw_norm))
+        # Order matters: check more specific tokens first.
+        if {"oug"} & kw_tokens or "de urgenta" in kw_norm or "de urgență" in kw_norm:
+            promoted_tier = 2  # OUG specifically
+        elif {"ordonanta", "ordonanță", "og"} & kw_tokens:
+            promoted_tier = 2  # OG/OUG/ordonanță
+        elif {"hotarare", "hotărâre", "hg"} & kw_tokens:
+            promoted_tier = 3  # HG
+        elif {"lege", "legea"} & kw_tokens:
+            promoted_tier = 1  # LEGE
+
+    def _sort_key(r: SearchResult) -> tuple[int, int]:
+        tier = _tier_for(r.doc_type)
+        # Rank 0 = promoted; rank 1 = everything else (then by tier).
+        rank = 0 if promoted_tier is not None and tier == promoted_tier else 1
+        return (rank, tier)
+
+    all_results.sort(key=_sort_key)
+    # Apply the same tier sort to boosted_results so that within the boost
+    # block (e.g. NUMBER/YEAR exact matches across multiple act types) the
+    # LEGE > OUG > HG > rest order still holds.
+    boosted_results.sort(key=_sort_key)
 
     # Combine: boosted results first, then sorted remainder
     final = boosted_results + all_results

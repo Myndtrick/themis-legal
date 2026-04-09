@@ -172,7 +172,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
     })();
   }, []);
 
-  // Close dropdowns on outside click
+  // Close dropdowns on outside click or Escape
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -186,8 +186,20 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
         setShowDocTypeDropdown(false);
       }
     }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setShowResults(false);
+        setShowEmitentDropdown(false);
+        setShowDocTypeDropdown(false);
+        setPendingImportId(null);
+      }
+    }
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, []);
 
   const fetchEmitents = useCallback(async (q: string) => {
@@ -228,9 +240,19 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
 
   const selectedDocTypeLabels = visibleDocTypes.filter((t) => selectedDocTypes.has(t.value));
 
-  // Local search as you type
+  // Local search as you type.
+  // Fires for queries of 2+ characters, OR immediately for any query containing
+  // a number/year-like pattern (e.g. "85", "85/2014") so number-based lookups
+  // always work even with very short input.
+  const shouldLiveSearch = useCallback((q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) return false;
+    if (/\d/.test(trimmed)) return true;
+    return trimmed.length >= 2;
+  }, []);
+
   const doLocalSearch = useCallback(async (q: string) => {
-    if (q.length < 3) {
+    if (!shouldLiveSearch(q)) {
       setLocalResults([]);
       return;
     }
@@ -244,7 +266,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
         setLocalResults(data.results);
       }
     } catch { /* silent */ }
-  }, []);
+  }, [shouldLiveSearch]);
 
   function handleInputChange(value: string) {
     setKeyword(value);
@@ -304,7 +326,16 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
       const res = await fetch(`${API_BASE}/api/laws/advanced-search?${params}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!res.ok) throw new Error(`Search failed (${res.status})`);
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const body = await res.json();
+          detail = typeof body?.detail === "string" ? body.detail : JSON.stringify(body?.detail ?? "");
+        } catch {
+          try { detail = await res.text(); } catch { /* ignore */ }
+        }
+        throw new Error(`Search failed (${res.status})${detail ? `: ${detail}` : ""}`);
+      }
       const data = await res.json();
       setExternalResults(data.results.map((r: SearchResult) => ({ ...r, source: "ro" as const })));
       setExternalTotal(data.total);
@@ -538,7 +569,7 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
           type="text"
           value={keyword}
           onChange={(e) => handleInputChange(e.target.value)}
-          onFocus={() => { if (keyword.length >= 3 || externalResults.length > 0) setShowResults(true); }}
+          onFocus={() => { if (shouldLiveSearch(keyword) || externalResults.length > 0) setShowResults(true); }}
           placeholder="Search by keyword, name, or paste a legislatie.just.ro link..."
           className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
         />
@@ -686,7 +717,12 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                     className="block px-4 py-2.5 border-b border-gray-100 hover:bg-gray-50"
                     onClick={() => setShowResults(false)}
                   >
-                    <div className="font-semibold text-sm">{r.title}</div>
+                    <div className="font-semibold text-sm">
+                      {r.title}
+                      {r.description && (
+                        <span className="font-normal text-gray-600"> — {r.description}</span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-500 mt-0.5">
                       Legea {r.law_number}/{r.law_year}
                       {r.current_version?.state && (
@@ -717,9 +753,10 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                 const colorClass = DOC_TYPE_COLORS[r.doc_type] || "bg-gray-100 text-gray-600";
                 const isImporting = importingIds.has(r.ver_id);
                 const isImported = importedIds.has(r.ver_id) || r.already_imported;
+                const linkable = isImported && r.local_law_id != null;
 
-                return (
-                  <div key={r.ver_id} className="px-4 py-2.5 border-b border-gray-100 flex justify-between items-center">
+                const rowInner = (
+                  <>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5">
                         {r.source === "eu" ? (
@@ -777,6 +814,24 @@ export default function CombinedSearch({ groups, suggestedLaws, onImportComplete
                     {importErrors[r.ver_id] && (
                       <p className="text-xs text-red-600 mt-1 ml-auto max-w-xs text-right">{importErrors[r.ver_id]}</p>
                     )}
+                  </>
+                );
+
+                if (linkable) {
+                  return (
+                    <Link
+                      key={r.ver_id}
+                      href={`/laws/${r.local_law_id}`}
+                      className="px-4 py-2.5 border-b border-gray-100 flex justify-between items-center hover:bg-gray-50"
+                      onClick={() => setShowResults(false)}
+                    >
+                      {rowInner}
+                    </Link>
+                  );
+                }
+                return (
+                  <div key={r.ver_id} className="px-4 py-2.5 border-b border-gray-100 flex justify-between items-center">
+                    {rowInner}
                   </div>
                 );
               })}
