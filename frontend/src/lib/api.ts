@@ -56,6 +56,9 @@ export async function apiFetch<T>(
     (error as any).statusCode = res.status;
     throw error;
   }
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return res.json();
 }
 
