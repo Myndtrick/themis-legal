@@ -152,6 +152,25 @@ def _article_label(art: _ArticleLike) -> str:
     return art.label or art.article_number or ""
 
 
+def _dedupe_notes(notes: list[AmendmentNoteRef]) -> list[AmendmentNoteRef]:
+    """Remove duplicate AmendmentNoteRef objects, preserving first-seen order.
+
+    Two refs are duplicates if every field matches. This is defense in depth
+    against the Spec 1 backfill bug where the same article-level note can
+    exist twice in the DB (once with note_source_id IS NULL from the original
+    importer, once with note_source_id set from the backfill — same metadata).
+    """
+    seen: set[tuple] = set()
+    out: list[AmendmentNoteRef] = []
+    for n in notes:
+        key = (n.date, n.subject, n.law_number, n.law_date, n.monitor_number, n.monitor_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(n)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -229,7 +248,9 @@ def _diff_article_pair(
     art_b: _ArticleLike,
     renumbered_from: str | None,
 ) -> DiffArticleEntry:
-    art_notes = [_note_to_ref(n) for n in art_b.amendment_notes if getattr(n, "paragraph_id", None) is None]
+    art_notes = _dedupe_notes(
+        [_note_to_ref(n) for n in art_b.amendment_notes if getattr(n, "paragraph_id", None) is None]
+    )
 
     if _clean(art_a) == _clean(art_b):
         return DiffArticleEntry(
@@ -255,7 +276,9 @@ def _diff_article_pair(
 
 
 def _emit_added_article(art_b: _ArticleLike) -> DiffArticleEntry:
-    art_notes = [_note_to_ref(n) for n in art_b.amendment_notes if getattr(n, "paragraph_id", None) is None]
+    art_notes = _dedupe_notes(
+        [_note_to_ref(n) for n in art_b.amendment_notes if getattr(n, "paragraph_id", None) is None]
+    )
     return DiffArticleEntry(
         article_label=_article_label(art_b),
         change_type="added",
@@ -284,6 +307,12 @@ def _diff_paragraph_lists(
     fallback_a: str,
     fallback_b: str,
 ) -> list[DiffParagraphEntry]:
+    # Filter out leropa "ghost paragraphs" — rows with empty/whitespace text
+    # that some article shapes accumulate. They render as blank rows in the
+    # diff and contribute nothing.
+    pars_a = [p for p in pars_a if (_clean(p) or "").strip()]
+    pars_b = [p for p in pars_b if (_clean(p) or "").strip()]
+
     # If exactly one side (or both) has no paragraph rows, fall back to a
     # single synthetic paragraph holding the entire article body.
     if not pars_a or not pars_b:
@@ -360,7 +389,7 @@ def _diff_paragraph_pair(
     par_b: _ParagraphLike,
     renumbered_from: str | None,
 ) -> DiffParagraphEntry:
-    par_notes = [_note_to_ref(n) for n in par_b.amendment_notes]
+    par_notes = _dedupe_notes([_note_to_ref(n) for n in par_b.amendment_notes])
     text_a = _clean(par_a)
     text_b = _clean(par_b)
     if text_a == text_b:
@@ -387,7 +416,7 @@ def _emit_added_paragraph(par_b: _ParagraphLike) -> DiffParagraphEntry:
         paragraph_label=par_b.label,
         change_type="added",
         text_clean=_clean(par_b),
-        notes=[_note_to_ref(n) for n in par_b.amendment_notes],
+        notes=_dedupe_notes([_note_to_ref(n) for n in par_b.amendment_notes]),
     )
 
 

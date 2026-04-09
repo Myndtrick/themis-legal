@@ -287,6 +287,60 @@ def test_admin_endpoint_spawns_job_and_returns_job_id(db):
         fastapi_app.dependency_overrides.clear()
 
 
+def test_backfill_skips_article_note_already_present_as_legacy_null_source_id(db):
+    """Regression: a leropa note with monitor_number that matches an existing
+    legacy article-level note (with NULL source_id) must not be inserted as
+    a duplicate."""
+    # Seed a law version with one article and ONE legacy article-level note
+    # (NULL source_id, only monitor_number populated)
+    law = Law(title="T", law_number="1", law_year=2020, source="ro")
+    db.add(law); db.flush()
+    v = LawVersion(
+        law_id=law.id, ver_id="500",
+        date_in_force=datetime.date(2024, 1, 1),
+        state="actual", is_current=True,
+    )
+    db.add(v); db.flush()
+    art = Article(
+        law_version_id=v.id, article_number="102", label="102",
+        full_text="x", text_clean="x", order_index=0,
+    )
+    db.add(art); db.flush()
+    # Legacy note: NULL source_id, only monitor_number
+    db.add(AmendmentNote(
+        article_id=art.id, paragraph_id=None, note_source_id=None,
+        monitor_number="85",
+    ))
+    db.commit()
+
+    # Leropa returns the same note again, this time with a fresh note_id and
+    # the same monitor_number
+    fake = {
+        "document": {},
+        "articles": [{
+            "label": "102",
+            "full_text": "x",
+            "paragraphs": [],
+            "notes": [{
+                "note_id": "id_ntaA99497532",
+                "monitor_number": "85",
+            }],
+        }],
+        "books": [],
+    }
+
+    with patch("app.services.notes_backfill.fetch_document", return_value=fake):
+        backfill_notes(db, dry_run=False, fetch_delay_seconds=0)
+
+    db.expire_all()
+    notes = db.query(AmendmentNote).filter(AmendmentNote.article_id == art.id).all()
+    # Still only one note — the legacy one — even though leropa returned a
+    # "new" note with a fresh source_id
+    assert len(notes) == 1
+    assert notes[0].note_source_id is None
+    assert notes[0].monitor_number == "85"
+
+
 def test_admin_endpoint_returns_409_when_already_running(db):
     """Two POSTs in quick succession must not spawn two backfills."""
     _seed_one_version_no_notes(db)

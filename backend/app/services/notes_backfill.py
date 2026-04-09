@@ -151,6 +151,7 @@ def _process_version(
 
     # Pre-load existing note source ids for this version's articles to dedupe
     existing_source_ids: set[tuple[int, int | None, str | None]] = set()
+    existing_legacy_article_notes: set[tuple[int, str | None]] = set()
     for art in existing_articles:
         for n in (
             db.query(AmendmentNote)
@@ -158,6 +159,11 @@ def _process_version(
             .all()
         ):
             existing_source_ids.add((n.article_id, n.paragraph_id, n.note_source_id))
+            # Track legacy article-level notes (no source_id, no paragraph) by
+            # monitor_number so we can dedupe future inserts that come with a
+            # source_id but the same monitor metadata.
+            if n.paragraph_id is None and n.note_source_id is None:
+                existing_legacy_article_notes.add((n.article_id, n.monitor_number))
 
     for parsed_art in parsed_articles:
         art_label = parsed_art.get("label")
@@ -216,6 +222,12 @@ def _process_version(
         for note in parsed_art.get("notes", []):
             key = (art_row.id, None, note.get("note_id"))
             if key in existing_source_ids:
+                continue
+            # Skip legacy duplicates: a leropa note that matches an existing
+            # NULL-source-id article-level note by monitor_number is the same
+            # note, just with a fresh source_id. Don't double-insert.
+            legacy_key = (art_row.id, note.get("monitor_number"))
+            if legacy_key in existing_legacy_article_notes:
                 continue
             report.article_notes_to_insert += 1
             db.add(AmendmentNote(

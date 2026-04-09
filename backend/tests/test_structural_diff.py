@@ -315,3 +315,71 @@ def test_article_level_note_surfaces_in_response():
     assert art.change_type == "unchanged"
     assert len(art.notes) == 1
     assert art.notes[0].law_number == "5"
+
+
+def test_empty_paragraphs_are_filtered_out():
+    """Leropa ghost paragraphs (empty text) must not produce diff rows."""
+    a = [_art("19", paragraphs=[
+        _par("", "", par_id=1),                                # empty ghost
+        _par("", "Principalele atribuții ...", par_id=2),
+    ])]
+    b = [_art("19", paragraphs=[
+        _par("", "", par_id=11),                               # empty ghost
+        _par("", "Principalele atribuții ...", par_id=12),
+    ])]
+    result = diff_versions(a, b)
+    art = result[0]
+    # Article-level text_clean is identical (because _art() joins paragraph
+    # text_cleans, the empty ones contribute nothing) so the article is
+    # unchanged. We don't even enter the paragraph walk.
+    assert art.change_type == "unchanged"
+
+
+def test_empty_paragraphs_filtered_when_article_modified():
+    """Even when the article is modified, ghost paragraphs are skipped."""
+    a = [FakeArticle(
+        label="19", article_number="19",
+        full_text="real one", text_clean="real one",
+        paragraphs=[
+            _par("", "", par_id=1),
+            _par("", "real one", par_id=2),
+        ],
+    )]
+    b = [FakeArticle(
+        label="19", article_number="19",
+        full_text="real two", text_clean="real two",
+        paragraphs=[
+            _par("", "", par_id=11),
+            _par("", "real two", par_id=12),
+        ],
+    )]
+    result = diff_versions(a, b)
+    art = result[0]
+    assert art.change_type == "modified"
+    # Only one paragraph entry — the ghosts are filtered
+    assert len(art.paragraphs) == 1
+    assert art.paragraphs[0].change_type == "modified"
+
+
+def test_duplicate_amendment_notes_are_deduped_in_response():
+    """If two AmendmentNote rows on the same article have identical metadata
+    (e.g., one from the legacy importer with NULL source_id, one from the
+    backfill with a source_id), they should appear once in the diff response."""
+    note_legacy = FakeNote(
+        id=1, paragraph_id=None, note_source_id=None,
+        date=None, subject=None, law_number=None,
+        monitor_number="85", monitor_date="4 februarie 2019",
+    )
+    note_backfilled = FakeNote(
+        id=2, paragraph_id=None, note_source_id="id_ntaA99497532",
+        date=None, subject=None, law_number=None,
+        monitor_number="85", monitor_date="4 februarie 2019",
+    )
+    art_b = _art("102", paragraphs=[_par("", "Body.")], notes=[note_legacy, note_backfilled])
+    a = [_art("102", paragraphs=[_par("", "Body.")])]
+    b = [art_b]
+    result = diff_versions(a, b)
+    art = result[0]
+    # Even though we passed two notes, they should appear once
+    assert len(art.notes) == 1
+    assert art.notes[0].monitor_number == "85"
