@@ -1427,10 +1427,12 @@ def _run_import_known_versions_batch_job(db: Session, job_id: str, params: dict)
                 f"{e} (imported {imported}/{total})"
             ) from e
 
-    # Backfill diffs once at the end so version order is stable.
+    # Backfill diffs once at the end so version order is stable. Scoped to
+    # this law — a global scan would block on the SQLite writer lock when
+    # two batch jobs run in parallel and leave them stuck in `running`.
     from app.services.diff_summary import backfill_diff_summaries
 
-    backfilled = backfill_diff_summaries(db)
+    backfilled = backfill_diff_summaries(db, law_id=law_id)
     if backfilled:
         db.commit()
 
@@ -1498,7 +1500,7 @@ def import_all_missing(law_id: int, db: Session = Depends(get_db)):
 
     # Backfill diff summaries for all versions of this law
     from app.services.diff_summary import backfill_diff_summaries
-    backfilled = backfill_diff_summaries(db)
+    backfilled = backfill_diff_summaries(db, law_id=law_id)
     if backfilled:
         db.commit()
 
@@ -1987,10 +1989,11 @@ def diff_versions(
 ):
     """Compare two versions of a law as a structural tree.
 
-    version_a and version_b are LawVersion IDs.
-    Returns a tree of article → paragraph → subparagraph diffs. Articles
-    that are byte-for-byte unchanged are excluded.
+    version_a and version_b are LawVersion IDs. Returns a hierarchical
+    article → paragraph diff. Articles whose text_clean is identical are
+    emitted as 'unchanged' so the frontend can still show their summary line.
     """
+    from sqlalchemy.orm import selectinload
     from app.services.structured_diff import diff_articles
 
     ver_a = (
@@ -2006,29 +2009,30 @@ def diff_versions(
     if not ver_a or not ver_b:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    articles_a = (
-        db.query(Article)
-        .filter(Article.law_version_id == version_a)
-        .order_by(Article.order_index)
-        .all()
-    )
-    articles_b = (
-        db.query(Article)
-        .filter(Article.law_version_id == version_b)
-        .order_by(Article.order_index)
-        .all()
-    )
+    def _load_articles(version_id: int) -> list[Article]:
+        return (
+            db.query(Article)
+            .filter(Article.law_version_id == version_id)
+            .options(
+                selectinload(Article.paragraphs).selectinload(
+                    Paragraph.amendment_notes
+                ),
+                selectinload(Article.amendment_notes),
+            )
+            .order_by(Article.order_index)
+            .all()
+        )
 
-    changes = diff_articles(articles_a, articles_b)
+    articles_a = _load_articles(version_a)
+    articles_b = _load_articles(version_b)
 
-    common = {a.article_number for a in articles_a} & {b.article_number for b in articles_b}
+    article_entries = diff_articles(articles_a, articles_b)
+
     summary = {
-        "added": sum(1 for c in changes if c["change_type"] == "added"),
-        "removed": sum(1 for c in changes if c["change_type"] == "removed"),
-        "modified": sum(1 for c in changes if c["change_type"] == "modified"),
-        "unchanged": (
-            len(common) - sum(1 for c in changes if c["change_type"] == "modified")
-        ),
+        "added": sum(1 for e in article_entries if e["change_type"] == "added"),
+        "removed": sum(1 for e in article_entries if e["change_type"] == "removed"),
+        "modified": sum(1 for e in article_entries if e["change_type"] == "modified"),
+        "unchanged": sum(1 for e in article_entries if e["change_type"] == "unchanged"),
     }
 
     return {
@@ -2044,5 +2048,5 @@ def diff_versions(
             "date_in_force": str(ver_b.date_in_force) if ver_b.date_in_force else None,
         },
         "summary": summary,
-        "changes": changes,
+        "articles": article_entries,
     }
