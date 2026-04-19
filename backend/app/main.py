@@ -22,6 +22,7 @@ from app.routers import settings_models
 from app.routers import compare
 from app.routers import admin as admin_router
 from app.routers import settings_schedulers
+from app.routers import internal_scheduler
 from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -182,21 +183,17 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    # Load scheduler settings from DB and register jobs
-    from app.services.scheduler_config import schedule_jobs
-    from app.database import SessionLocal as _SessionLocal
-    _sched_db = _SessionLocal()
-    try:
-        schedule_jobs(_sched_db)
-    finally:
-        _sched_db.close()
+    # AICC Scheduler drives cron jobs (ro daily / eu weekly) by POSTing to
+    # /internal/scheduler/*. APScheduler is still started because
+    # pipeline_service uses it for one-shot background work (importing
+    # remaining law versions after a user-initiated import).
     scheduler.start()
-    logger.info("Scheduler started with DB-configured jobs")
+    logger.info("APScheduler started for in-process background jobs — cron handled by AICC")
 
     yield
 
     scheduler.shutdown()
-    logger.info("Scheduler stopped")
+    logger.info("APScheduler stopped")
 
 
 app = FastAPI(
@@ -263,6 +260,7 @@ app.include_router(compare.router)
 app.include_router(admin_router.router)
 app.include_router(settings_schedulers.router)
 app.include_router(jobs_router.router)
+app.include_router(internal_scheduler.router)
 
 
 @app.get("/api/health")

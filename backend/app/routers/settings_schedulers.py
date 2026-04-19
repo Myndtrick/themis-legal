@@ -15,7 +15,6 @@ from app.models.user import User
 from app.services.scheduler_config import (
     compute_next_run,
     get_all_settings,
-    schedule_jobs,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,10 +114,10 @@ def save_scheduler_settings(
 
     db.commit()
 
-    # Reschedule APScheduler jobs with new settings
-    schedule_jobs(db)
-
-    logger.info("Scheduler settings saved and jobs rescheduled")
+    # Frequency is stored for UI display only. The actual cron lives in
+    # AICC Scheduler (project THEMIS → SCHEDULER). Edit it there to change
+    # when jobs actually run.
+    logger.info("Scheduler settings saved (AICC owns the cron)")
     return {"status": "ok"}
 
 

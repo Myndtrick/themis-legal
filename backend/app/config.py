@@ -17,6 +17,10 @@ AICC_BASE_URL = os.environ.get(
     "https://aicommandcenter-production-d7b1.up.railway.app/v1",
 )
 
+# Shared secret between AICC scheduler and Themis webhook endpoints.
+# AICC signs each scheduled POST with HMAC-SHA256(body, secret) in X-AICC-Signature.
+AICC_SCHEDULER_SECRET = os.environ.get("AICC_SCHEDULER_SECRET", "")
+
 # AICC short-form model names (NOT provider-native dated IDs)
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
