@@ -10,9 +10,18 @@ if _env_file.exists():
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
 
+# AI Command Center — all AI calls route through this proxy
+AICC_KEY = os.environ.get("AICC_KEY", "")
+AICC_BASE_URL = os.environ.get(
+    "AICC_BASE_URL",
+    "https://aicommandcenter-production-d7b1.up.railway.app/v1",
+)
+
+# AICC short-form model names (NOT provider-native dated IDs)
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5-20251001")
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "data/chroma")
 CHROMA_COLLECTION = "legal_articles"
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"

@@ -44,12 +44,12 @@ def test_non_ocr_model_raises_on_ocr():
 def test_anthropic_chat_calls_api():
     provider = get_provider("claude-sonnet-4-6")
     mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Hello")]
-    mock_response.usage.input_tokens = 10
-    mock_response.usage.output_tokens = 5
+    mock_response.choices = [MagicMock(message=MagicMock(content="Hello"))]
+    mock_response.usage.prompt_tokens = 10
+    mock_response.usage.completion_tokens = 5
 
     with patch.object(provider, "_client") as mock_client:
-        mock_client.messages.create.return_value = mock_response
+        mock_client.chat.completions.create.return_value = mock_response
         result = provider.chat(
             messages=[{"role": "user", "content": "Hi"}],
             system="You are helpful",
@@ -57,5 +57,5 @@ def test_anthropic_chat_calls_api():
         assert isinstance(result, LLMResponse)
         assert result.content == "Hello"
         assert result.usage.input_tokens == 10
-        call_kwargs = mock_client.messages.create.call_args.kwargs
-        assert "system" in call_kwargs
+        sent_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent_messages[0] == {"role": "system", "content": "You are helpful"}

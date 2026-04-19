@@ -1,8 +1,8 @@
-"""Anthropic (Claude) provider."""
+"""Anthropic (Claude) provider — routes through AICC OpenAI-compatible proxy."""
 
-import os
-import anthropic
 from typing import Iterator
+from openai import OpenAI
+from app.config import AICC_KEY, AICC_BASE_URL
 from app.providers.base import LLMProvider, LLMResponse, TokenUsage
 
 
@@ -10,35 +10,40 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, model_id: str, api_model_id: str):
         self.model_id = model_id
         self.api_model_id = api_model_id
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = OpenAI(api_key=AICC_KEY, base_url=AICC_BASE_URL)
 
     def chat(self, messages, system=None, max_tokens=4096, temperature=0.0):
-        kwargs = {
-            "model": self.api_model_id,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": messages,
-        }
+        msgs = []
         if system:
-            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-        response = self._client.messages.create(**kwargs)
-        content = response.content[0].text if response.content else ""
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+        response = self._client.chat.completions.create(
+            model=self.model_id,
+            messages=msgs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        choice = response.choices[0]
+        usage = response.usage
         return LLMResponse(
-            content=content,
-            usage=TokenUsage(response.usage.input_tokens, response.usage.output_tokens),
+            content=choice.message.content or "",
+            usage=TokenUsage(usage.prompt_tokens, usage.completion_tokens),
             model_id=self.model_id,
         )
 
     def stream(self, messages, system=None, max_tokens=4096, temperature=0.0):
-        kwargs = {
-            "model": self.api_model_id,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": messages,
-        }
+        msgs = []
         if system:
-            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-        with self._client.messages.stream(**kwargs) as stream:
-            for text in stream.text_stream:
-                yield text
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+        stream = self._client.chat.completions.create(
+            model=self.model_id,
+            messages=msgs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield delta.content
