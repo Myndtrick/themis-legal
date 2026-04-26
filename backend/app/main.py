@@ -96,6 +96,19 @@ def _add_column_if_missing(db: Session, table: str, column: str, col_type: str, 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # AICC PKCE auth client — verifies user tokens via /auth/me with TTL cache
+    from app.config import AICC_AUTH_BASE_URL, AICC_AUTH_TTL_SECONDS
+    from app.services.aicc_auth_client import AiccAuthClient
+
+    app.state.aicc_auth = AiccAuthClient(
+        base_url=AICC_AUTH_BASE_URL,
+        ttl_seconds=AICC_AUTH_TTL_SECONDS,
+    )
+    logger.info(
+        "AiccAuthClient initialized: base=%s ttl=%ss",
+        AICC_AUTH_BASE_URL, AICC_AUTH_TTL_SECONDS,
+    )
+
     # Create data directories and database tables on startup
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/chroma", exist_ok=True)
@@ -135,6 +148,14 @@ async def lifespan(app: FastAPI):
         ))
         db.commit()
 
+        # AICC auth migration: add aicc_user_id and drop the legacy allowlist.
+        # Must run AFTER Base.metadata.create_all (so users exists) and AFTER
+        # AllowedEmail is removed from app.models.user (so create_all doesn't
+        # recreate the table on the same boot).
+        _add_column_if_missing(db, "users", "aicc_user_id", "VARCHAR(64)", None)
+        db.execute(text("DROP TABLE IF EXISTS allowed_emails"))
+        db.commit()
+
         seed_defaults(db)
         sync_prompts_from_files(db)
         from app.services.category_service import seed_categories, backfill_law_mapping_fields, ensure_eu_decision_category, seed_eu_celex_mappings
@@ -148,8 +169,6 @@ async def lifespan(app: FastAPI):
         db.execute(text("UPDATE law_mappings SET source='system' WHERE source='seed'"))
         db.commit()
 
-        from app.services.user_service import seed_admin_users
-        seed_admin_users(db)
         from app.services.model_seed import seed_models
         seed_models(db)
         from app.services.bm25_service import ensure_fts_index
@@ -194,6 +213,9 @@ async def lifespan(app: FastAPI):
 
     scheduler.shutdown()
     logger.info("APScheduler stopped")
+
+    if hasattr(app.state, "aicc_auth"):
+        app.state.aicc_auth.close()
 
 
 app = FastAPI(
