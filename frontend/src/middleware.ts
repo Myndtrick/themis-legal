@@ -1,36 +1,35 @@
-import { auth } from "@/lib/auth";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-export default auth((req) => {
+export function middleware(req: NextRequest) {
   const { nextUrl } = req;
+  const path = nextUrl.pathname;
 
-  const isAuthenticated = !!req.auth;
-  const isAuthPage = nextUrl.pathname.startsWith("/auth");
-  const isApiAuth = nextUrl.pathname.startsWith("/api/auth");
-  const isApiToken = nextUrl.pathname === "/api/token";
+  const isAuthPage = path.startsWith("/auth");
+  const isApiAuth = path.startsWith("/api/auth");
+  const isApiToken = path === "/api/token";
+  const isApiMe = path === "/api/me";
 
-  // Allow auth-related routes and token endpoint
-  if (isAuthPage || isApiAuth || isApiToken) {
-    // Redirect authenticated users away from sign-in page
-    if (isAuthenticated && isAuthPage) {
+  const hasAccess = req.cookies.has("aicc_access");
+
+  // Auth-related routes (sign-in page, login/callback handlers, token endpoint)
+  // are reachable without auth. Authenticated users visiting /auth/signin get
+  // bounced to home.
+  if (isAuthPage || isApiAuth || isApiToken || isApiMe) {
+    if (hasAccess && isAuthPage) {
       return NextResponse.redirect(new URL("/", nextUrl));
     }
     return NextResponse.next();
   }
 
-  // Redirect unauthenticated users to sign-in
-  if (!isAuthenticated) {
-    const signInUrl = new URL("/auth/signin", nextUrl);
-    signInUrl.searchParams.set("callbackUrl", nextUrl.pathname);
-    return NextResponse.redirect(signInUrl);
+  if (!hasAccess) {
+    const target = new URL("/api/auth/login", nextUrl);
+    target.searchParams.set("callbackUrl", path);
+    return NextResponse.redirect(target);
   }
 
   return NextResponse.next();
-});
+}
 
 export const config = {
-  matcher: [
-    // Match all routes except static files and Next.js internals
-    "/((?!_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

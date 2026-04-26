@@ -41,6 +41,12 @@ export async function apiFetch<T>(
     );
   }
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      const cb = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/api/auth/login?callbackUrl=${cb}`;
+      // Throw so callers don't process the redirect as a successful response.
+      throw new Error("Session expired, redirecting to sign-in.");
+    }
     let errorMessage: string;
     let errorCode: string | undefined;
     try {
@@ -52,8 +58,8 @@ export async function apiFetch<T>(
       errorMessage = body || res.statusText;
     }
     const error = new Error(errorMessage);
-    (error as any).code = errorCode;
-    (error as any).statusCode = res.status;
+    (error as Error & { code?: string; statusCode?: number }).code = errorCode;
+    (error as Error & { code?: string; statusCode?: number }).statusCode = res.status;
     throw error;
   }
   if (res.status === 204 || res.headers.get("content-length") === "0") {

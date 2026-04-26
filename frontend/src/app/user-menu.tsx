@@ -1,30 +1,41 @@
 "use client";
 
-import { signOut, useSession } from "next-auth/react";
+import { useEffect, useState } from "react";
+
+interface Me {
+  email: string;
+  name: string | null;
+  picture: string | null;
+  role: "admin" | "user";
+}
 
 export function UserMenu() {
-  const { data: session } = useSession();
+  const [me, setMe] = useState<Me | null>(null);
 
-  if (!session?.user) return null;
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (alive) setMe(data); })
+      .catch(() => { if (alive) setMe(null); });
+    return () => { alive = false; };
+  }, []);
+
+  if (!me) return null;
 
   return (
     <div className="flex items-center gap-3">
       <span className="text-sm text-gray-600 hidden sm:block">
-        {session.user.name || session.user.email}
+        {me.name || me.email}
       </span>
-      {session.user.image && (
-        <img
-          src={session.user.image}
-          alt=""
-          className="w-8 h-8 rounded-full"
-        />
+      {me.picture && (
+        <img src={me.picture} alt="" className="w-8 h-8 rounded-full" />
       )}
-      <button
-        onClick={() => signOut({ callbackUrl: "/auth/signin" })}
-        className="text-sm text-gray-500 hover:text-gray-700"
-      >
-        Sign out
-      </button>
+      <form action="/api/auth/logout" method="POST">
+        <button type="submit" className="text-sm text-gray-500 hover:text-gray-700">
+          Sign out
+        </button>
+      </form>
     </div>
   );
 }
