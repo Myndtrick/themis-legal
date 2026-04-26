@@ -29,4 +29,10 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "data/chroma")
 CHROMA_COLLECTION = "legal_articles"
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-NEXTAUTH_SECRET = os.environ.get("NEXTAUTH_SECRET", "dev-secret-change-me")
+# AICC PKCE auth — backend verifies user tokens via AICC /auth/me.
+# Distinct from AICC_BASE_URL (which has /v1 suffix for the AI proxy).
+AICC_AUTH_BASE_URL = os.environ.get(
+    "AICC_AUTH_BASE_URL",
+    "https://aicommandcenter-production-d7b1.up.railway.app",
+)
+AICC_AUTH_TTL_SECONDS = int(os.environ.get("AICC_AUTH_TTL_SECONDS", "60"))
