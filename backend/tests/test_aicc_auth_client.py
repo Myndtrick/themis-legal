@@ -96,3 +96,71 @@ def test_verify_token_caches_result():
     client.verify_token("access-xyz")
     client.verify_token("access-xyz")
     assert call_count["n"] == 1, "second call should hit the cache"
+
+
+def test_verify_token_returns_none_on_401_and_does_not_cache():
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(401, json={"error": "invalid_token"})
+
+    client = AiccAuthClient(
+        base_url="https://aicc.test",
+        ttl_seconds=60,
+        transport=_mock_transport(handler),
+    )
+    assert client.verify_token("bad-token") is None
+    assert client.verify_token("bad-token") is None
+    assert call_count["n"] == 2, "401s must NOT be cached"
+
+
+def test_verify_token_raises_503_on_5xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="bad gateway")
+
+    client = AiccAuthClient(
+        base_url="https://aicc.test",
+        ttl_seconds=60,
+        transport=_mock_transport(handler),
+    )
+    with pytest.raises(HTTPException) as exc:
+        client.verify_token("any-token")
+    assert exc.value.status_code == 503
+
+
+def test_verify_token_raises_503_on_network_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failure")
+
+    client = AiccAuthClient(
+        base_url="https://aicc.test",
+        ttl_seconds=60,
+        transport=_mock_transport(handler),
+    )
+    with pytest.raises(HTTPException) as exc:
+        client.verify_token("any-token")
+    assert exc.value.status_code == 503
+
+
+def test_invalidate_drops_cache_entry():
+    payload = {
+        "id": "u1", "email": "a@x.com", "name": None,
+        "avatarUrl": None, "role": "user", "globalRole": "user",
+        "projectRole": None, "projectId": None,
+    }
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json=payload)
+
+    client = AiccAuthClient(
+        base_url="https://aicc.test",
+        ttl_seconds=60,
+        transport=_mock_transport(handler),
+    )
+    client.verify_token("t")
+    client.invalidate("t")
+    client.verify_token("t")
+    assert call_count["n"] == 2
