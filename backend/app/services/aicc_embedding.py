@@ -10,8 +10,6 @@ SentenceTransformerEmbeddingFunction handles that path.
 from __future__ import annotations
 
 import logging
-from typing import Sequence
-
 import httpx
 from chromadb import Documents, EmbeddingFunction, Embeddings
 
@@ -55,8 +53,12 @@ class AiccEmbeddingFunction(EmbeddingFunction[Documents]):
         if not input:
             return []
 
-        # Single batch path. Multi-batch handled in Task 2.
-        return self._embed_batch(list(input))
+        items = list(input)
+        out: Embeddings = []
+        for start in range(0, len(items), _VOYAGE_MAX_INPUTS_PER_CALL):
+            batch = items[start : start + _VOYAGE_MAX_INPUTS_PER_CALL]
+            out.extend(self._embed_batch(batch))
+        return out
 
     def _embed_batch(self, batch: list[str]) -> Embeddings:
         r = self._http.post(

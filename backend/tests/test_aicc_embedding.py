@@ -64,3 +64,65 @@ def test_passes_model_in_request_body():
     )
     fn(["x"])
     assert captured_payload["model"] == "voyage-3-lite"
+
+
+def test_batches_inputs_above_128():
+    """Voyage caps at 128 inputs per call; we must auto-chunk."""
+    call_log = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        payload = json.loads(request.read())
+        call_log.append(len(payload["input"]))
+        return httpx.Response(200, json={
+            "data": [
+                {"index": i, "embedding": [float(i)] * 1024}
+                for i in range(len(payload["input"]))
+            ],
+            "model": "voyage-3",
+            "object": "list",
+        })
+
+    fn = AiccEmbeddingFunction(
+        api_key="sk-cc-fake",
+        base_url="https://aicc.test/v1",
+        model="voyage-3",
+        transport=_mock_transport(handler),
+    )
+
+    # 200 inputs -> 128 + 72
+    result = fn([f"doc-{i}" for i in range(200)])
+    assert len(result) == 200
+    assert call_log == [128, 72]
+    # First batch results: index 0..127, embeddings = [0.0,...,127.0]
+    # Second batch results: index 0..71, embeddings = [0.0,...,71.0]
+    assert result[0][0] == 0.0
+    assert result[127][0] == 127.0
+    assert result[128][0] == 0.0
+    assert result[199][0] == 71.0
+
+
+def test_exactly_128_inputs_one_call():
+    call_log = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        payload = json.loads(request.read())
+        call_log.append(len(payload["input"]))
+        return httpx.Response(200, json={
+            "data": [
+                {"index": i, "embedding": [0.0] * 1024} for i in range(len(payload["input"]))
+            ],
+            "model": "voyage-3",
+            "object": "list",
+        })
+
+    fn = AiccEmbeddingFunction(
+        api_key="sk-cc-fake",
+        base_url="https://aicc.test/v1",
+        model="voyage-3",
+        transport=_mock_transport(handler),
+    )
+    result = fn([f"doc-{i}" for i in range(128)])
+    assert len(result) == 128
+    assert call_log == [128]
