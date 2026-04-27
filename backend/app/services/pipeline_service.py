@@ -2598,17 +2598,18 @@ def _step6_5_relevance_gate(state: dict, db: Session) -> tuple[list[dict], dict 
                  output_data={"skipped": True})
         return events, None
 
-    # Use the top reranker score as a relevance proxy
-    # Cross-encoder ms-marco-MiniLM-L-6-v2 scores range roughly -10 to +10
+    # Use the top reranker score as a relevance proxy.
+    # LLM-based reranker scores articles in [0, 1] (1.0 = directly answers,
+    # 0.5 = somewhat related, 0.0 = irrelevant). Tier boost can push it
+    # slightly above 1.0; clamp.
     top_score = max((a.get("reranker_score", 0) for a in retrieved), default=0)
     avg_score = sum(a.get("reranker_score", 0) for a in retrieved) / len(retrieved)
 
-    # Normalize to 0-1: score of -5 → 0.0, score of +10 → 1.0
-    relevance_score = min(1.0, max(0.0, (top_score + 5) / 15))
+    relevance_score = min(1.0, max(0.0, top_score))
     state["relevance_score"] = relevance_score
 
-    gate_will_trigger = relevance_score < 0.2  # ~top_score < -2 (clearly irrelevant)
-    gate_will_warn = 0.2 <= relevance_score < 0.4  # ~top_score < 1
+    gate_will_trigger = relevance_score < 0.3  # nothing remotely on-topic
+    gate_will_warn = 0.3 <= relevance_score < 0.5  # only weakly relevant
 
     duration = time.time() - t0
     relevance_output = {
