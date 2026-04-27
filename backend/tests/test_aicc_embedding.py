@@ -126,3 +126,57 @@ def test_exactly_128_inputs_one_call():
     result = fn([f"doc-{i}" for i in range(128)])
     assert len(result) == 128
     assert call_log == [128]
+
+
+def test_5xx_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="upstream unavailable")
+
+    fn = AiccEmbeddingFunction(
+        api_key="sk-cc-fake",
+        base_url="https://aicc.test/v1",
+        model="voyage-3",
+        transport=_mock_transport(handler),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        fn(["x"])
+    assert excinfo.value.response.status_code == 503
+
+
+def test_401_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+    fn = AiccEmbeddingFunction(
+        api_key="sk-cc-fake",
+        base_url="https://aicc.test/v1",
+        model="voyage-3",
+        transport=_mock_transport(handler),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        fn(["x"])
+    assert excinfo.value.response.status_code == 401
+
+
+def test_network_error_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failure")
+
+    fn = AiccEmbeddingFunction(
+        api_key="sk-cc-fake",
+        base_url="https://aicc.test/v1",
+        model="voyage-3",
+        transport=_mock_transport(handler),
+    )
+    with pytest.raises(httpx.RequestError):
+        fn(["x"])
+
+
+def test_missing_api_key_raises_at_init():
+    with pytest.raises(ValueError, match="api_key"):
+        AiccEmbeddingFunction(api_key="", base_url="https://aicc.test/v1", model="voyage-3")
+
+
+def test_missing_base_url_raises_at_init():
+    with pytest.raises(ValueError, match="base_url"):
+        AiccEmbeddingFunction(api_key="sk-cc-fake", base_url="", model="voyage-3")
