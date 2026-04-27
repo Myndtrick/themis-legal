@@ -111,3 +111,20 @@ def test_semantic_search_no_fallback_on_happy_path():
         )
 
     assert not mock_bm25.called, "BM25 should not be called on happy path"
+
+
+def test_tier_search_semantic_failure_doesnt_break_loop():
+    """If the per-law semantic call raises mid-loop, we should log and use
+    only BM25 results for that law (BM25 was already called separately),
+    not abort the whole tier."""
+    from app.services.pipeline_service import _safe_semantic_search
+
+    with patch(
+        "app.services.pipeline_service.query_articles",
+        side_effect=httpx.HTTPStatusError(
+            "503", request=httpx.Request("POST", "http://x"),
+            response=httpx.Response(503),
+        ),
+    ):
+        result = _safe_semantic_search("question", [42], n_results=5)
+    assert result == []

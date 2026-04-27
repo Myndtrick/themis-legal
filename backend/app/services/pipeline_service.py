@@ -730,6 +730,30 @@ def _extract_law_key(ref: str | None) -> str:
     return f"{match.group(1)}/{match.group(2)}" if match else ""
 
 
+def _safe_semantic_search(
+    question: str,
+    law_version_ids: list[int],
+    n_results: int,
+) -> list[dict]:
+    """Wrap query_articles with logging on failure. Returns [] on AICC errors.
+
+    Used in tier search (caller already has BM25 results separately, so
+    returning [] here loses semantic but BM25 still contributes).
+    """
+    try:
+        return query_articles(
+            query_text=question,
+            law_version_ids=law_version_ids,
+            n_results=n_results,
+        )
+    except Exception as e:
+        logger.warning(
+            "[search] semantic search failed for versions=%s: %s; tier continues with BM25 only",
+            law_version_ids, e,
+        )
+        return []
+
+
 def _semantic_search_for_norm(
     description: str,
     law_key: str,
@@ -2270,9 +2294,9 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
             bm25_results = search_bm25(db, state["question"], version_ids, limit=per_law_limit)
             bm25_count += len(bm25_results)
 
-            # Semantic search for this law
-            semantic_results = query_articles(
-                state["question"], law_version_ids=version_ids, n_results=per_law_limit
+            # Semantic search for this law (with AICC-failure tolerance)
+            semantic_results = _safe_semantic_search(
+                state["question"], version_ids, n_results=per_law_limit,
             )
             semantic_count += len(semantic_results)
 
