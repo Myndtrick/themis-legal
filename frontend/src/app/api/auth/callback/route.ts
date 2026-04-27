@@ -38,8 +38,39 @@ function readPkceCookie(req: Request): string | null {
   return null;
 }
 
-function redirectToSignin(origin: string, errorCode: string): Response {
-  const target = new URL("/auth/signin", origin);
+/**
+ * Public origin of this Themis deployment. Derived from the AICC redirect
+ * URI (which AICC validated against the registered redirect list, so it's
+ * trustworthy). Cannot use `new URL(req.url).origin` — inside a container
+ * `req.url` reflects the internal binding (e.g. http://0.0.0.0:3000) rather
+ * than the public host.
+ */
+function publicOrigin(): string {
+  return new URL(process.env.NEXT_PUBLIC_AICC_AUTH_REDIRECT!).origin;
+}
+
+/**
+ * Validate cookie.callbackUrl is a same-origin path, and resolve to an
+ * absolute URL on this deployment. Anything that resolves to a different
+ * origin is treated as malicious (open-redirect attempt) and falls back
+ * to the home page.
+ */
+function safeRedirectTarget(callbackUrl: string): string {
+  const origin = publicOrigin();
+  try {
+    const resolved = new URL(callbackUrl, origin);
+    if (resolved.origin !== origin) {
+      console.error("[auth] cross-origin callbackUrl rejected: %s", callbackUrl);
+      return origin + "/";
+    }
+    return resolved.toString();
+  } catch {
+    return origin + "/";
+  }
+}
+
+function redirectToSignin(errorCode: string): Response {
+  const target = new URL("/auth/signin", publicOrigin());
   target.searchParams.set("error", errorCode);
   return new Response(null, {
     status: 302,
@@ -61,7 +92,7 @@ export async function GET(req: Request): Promise<Response> {
   // (access_denied = no project membership; server_error = transient).
   if (aiccError) {
     console.error("[auth] AICC callback error: %s (state=%s)", aiccError, state);
-    return redirectToSignin(u.origin, aiccError);
+    return redirectToSignin(aiccError);
   }
 
   if (!code || !state || !cookieRaw) {
@@ -92,7 +123,7 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const expEpochMs = Date.now() + tokens.expires_in * 1000;
-  const dest = new URL(cookie.callbackUrl, u.origin).toString();
+  const dest = safeRedirectTarget(cookie.callbackUrl);
 
   const headers = new Headers();
   headers.set("Location", dest);

@@ -6,6 +6,7 @@ const BASE = "https://aicc.test";
 
 beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_AICC_AUTH_BASE_URL", BASE);
+  vi.stubEnv("NEXT_PUBLIC_AICC_AUTH_REDIRECT", "https://themis.test/api/auth/callback");
   vi.stubEnv("AICC_PKCE_COOKIE_SECRET", SECRET);
   vi.unstubAllGlobals();
 });
@@ -104,6 +105,50 @@ describe("GET /api/auth/callback", () => {
     }));
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toContain("error=server_error");
+  });
+
+  test("redirects to public origin even when req.url is the container's internal binding", async () => {
+    // Simulates Railway: container binds 0.0.0.0:3000 but the public host
+    // is themis.test (per NEXT_PUBLIC_AICC_AUTH_REDIRECT).
+    const cookie = await signPkceCookie(
+      { verifier: "v", state: "s", callbackUrl: "/laws" },
+      SECRET,
+    );
+    mockTokenEndpoint({
+      status: 200,
+      body: { access_token: "A", refresh_token: "R", expires_in: 900, token_type: "Bearer" },
+    });
+
+    const headers = new Headers();
+    headers.set("cookie", `aicc_pkce=${cookie}`);
+    // Note the host: 0.0.0.0:3000 — what Railway's Node container would see.
+    const req = new Request("http://0.0.0.0:3000/api/auth/callback?code=C&state=s", { headers });
+
+    const { GET } = await import("./route");
+    const res = await GET(req);
+    expect(res.status).toBe(302);
+    // Must redirect to the PUBLIC origin, not 0.0.0.0:3000.
+    expect(res.headers.get("location")).toBe("https://themis.test/laws");
+  });
+
+  test("rejects cross-origin callbackUrl (open-redirect protection)", async () => {
+    const cookie = await signPkceCookie(
+      { verifier: "v", state: "s", callbackUrl: "https://evil.example/steal" },
+      SECRET,
+    );
+    mockTokenEndpoint({
+      status: 200,
+      body: { access_token: "A", refresh_token: "R", expires_in: 900, token_type: "Bearer" },
+    });
+
+    const { GET } = await import("./route");
+    const res = await GET(await makeReqWithCookie({
+      query: "code=C&state=s",
+      pkceCookie: cookie,
+    }));
+    expect(res.status).toBe(302);
+    // Falls back to home of public origin, NOT the cross-origin URL.
+    expect(res.headers.get("location")).toBe("https://themis.test/");
   });
 
   test("returns 502 when AICC /auth/token returns 5xx", async () => {
