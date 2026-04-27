@@ -10,6 +10,7 @@ SentenceTransformerEmbeddingFunction handles that path.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import httpx
 from chromadb import Documents, EmbeddingFunction, Embeddings
@@ -24,6 +25,12 @@ _VOYAGE_MAX_INPUTS_PER_CALL = 128
 _RETRY_MAX_ATTEMPTS = 5
 _RETRY_BASE_BACKOFF_S = 1.0
 _RETRY_MAX_BACKOFF_S = 16.0
+
+# Optional inter-call pacing: sleep this many seconds AFTER each successful
+# embedding call to smooth the request rate. Useful for bulk reindex when
+# AICC enforces a tight per-minute quota. Default 0 (no pacing) to keep
+# query-time embedding latency unchanged. Override via env for batch jobs.
+_INTER_CALL_PACING_S = float(os.environ.get("AICC_EMBED_PACING_S", "0"))
 
 
 class AiccEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -93,7 +100,10 @@ class AiccEmbeddingFunction(EmbeddingFunction[Documents]):
             if r.status_code < 400:
                 body = r.json()
                 items = sorted(body["data"], key=lambda d: d["index"])
-                return [item["embedding"] for item in items]
+                result = [item["embedding"] for item in items]
+                if _INTER_CALL_PACING_S > 0:
+                    time.sleep(_INTER_CALL_PACING_S)
+                return result
 
             if r.status_code == 429 or r.status_code >= 500:
                 # Honor Retry-After if present, else exponential backoff.
