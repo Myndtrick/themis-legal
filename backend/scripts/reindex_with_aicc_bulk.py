@@ -155,13 +155,22 @@ def main() -> int:
     total_annexes = 0
     total_docs = 0
     try:
-        # Get just the version IDs first — small payload, gives us chunkable units.
+        # Get just the CURRENT version IDs first — small payload, gives us
+        # chunkable units. Search only ever needs the current version per law;
+        # historical versions are still in the DB but not in the vector index.
+        # If a user explicitly searches a historical version, BM25 still works.
         all_version_ids = [
-            row[0] for row in db.query(LawVersion.id).order_by(LawVersion.id).all()
+            row[0]
+            for row in db.query(LawVersion.id)
+            .filter(LawVersion.is_current.is_(True))
+            .order_by(LawVersion.id)
+            .all()
         ]
         total_versions = len(all_version_ids)
-        logger.info("Found %d law versions; processing in chunks of %d.",
-                    total_versions, _VERSION_CHUNK_SIZE)
+        logger.info(
+            "Found %d CURRENT law versions; processing in chunks of %d.",
+            total_versions, _VERSION_CHUNK_SIZE,
+        )
 
         for chunk_start in range(0, total_versions, _VERSION_CHUNK_SIZE):
             chunk_ids = all_version_ids[chunk_start : chunk_start + _VERSION_CHUNK_SIZE]
