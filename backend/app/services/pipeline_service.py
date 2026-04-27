@@ -730,6 +730,30 @@ def _extract_law_key(ref: str | None) -> str:
     return f"{match.group(1)}/{match.group(2)}" if match else ""
 
 
+def _safe_semantic_search(
+    question: str,
+    law_version_ids: list[int],
+    n_results: int,
+) -> list[dict]:
+    """Wrap query_articles with logging on failure. Returns [] on AICC errors.
+
+    Used in tier search (caller already has BM25 results separately, so
+    returning [] here loses semantic but BM25 still contributes).
+    """
+    try:
+        return query_articles(
+            query_text=question,
+            law_version_ids=law_version_ids,
+            n_results=n_results,
+        )
+    except Exception as e:
+        logger.warning(
+            "[search] semantic search failed for versions=%s: %s; tier continues with BM25 only",
+            law_version_ids, e,
+        )
+        return []
+
+
 def _semantic_search_for_norm(
     description: str,
     law_key: str,
@@ -756,11 +780,51 @@ def _semantic_search_for_norm(
     if not version_ids:
         return []
 
-    results = query_articles(
-        query_text=description,
-        law_version_ids=version_ids,
-        n_results=5,
-    )
+    # Try semantic search first; on AICC failure (5xx, 401, network), fall back
+    # to BM25 so the user still gets some results.
+    use_bm25_results = False
+    try:
+        results = query_articles(
+            query_text=description,
+            law_version_ids=version_ids,
+            n_results=5,
+        )
+    except Exception as e:
+        logger.warning(
+            "[search] AICC embedding failed in _semantic_search_for_norm: %s; falling back to BM25",
+            e,
+        )
+        try:
+            from app.services.bm25_service import search_bm25
+            results = search_bm25(db, description, version_ids, limit=5)
+            use_bm25_results = True
+        except Exception as bm25_err:
+            logger.error("[search] BM25 fallback also failed: %s", bm25_err)
+            results = []
+
+    # BM25 results are already fully populated dicts — return them directly
+    # after tagging with the governing-norm metadata.
+    if use_bm25_results:
+        sv = state.get("selected_versions", {}).get(law_key, {})
+        fetched = []
+        for r in results:
+            if not r.get("article_id"):
+                continue
+            # BM25 doesn't embed which version_id the hit came from.
+            # Use version_ids[0] as the best approximation; when multiple
+            # versions are in scope this is approximate but safe for downstream
+            # consumers that only need a non-null law_version_id.
+            bm25_law_version_id = r.get("law_version_id") or (version_ids[0] if version_ids else None)
+            fetched.append({
+                **r,
+                "law_version_id": bm25_law_version_id,
+                "law_title": sv.get("law_title", r.get("law_title", "")),
+                "date_in_force": sv.get("date_in_force", r.get("date_in_force", "")),
+                "source": "governing_norm_search",
+                "tier": "reasoning_request",
+                "role": "PRIMARY",
+            })
+        return fetched
 
     # Convert ChromaDB results to pipeline article format
     fetched = []
@@ -2230,9 +2294,9 @@ def _step4_hybrid_retrieval(state: dict, db: Session, tier_limits_override: dict
             bm25_results = search_bm25(db, state["question"], version_ids, limit=per_law_limit)
             bm25_count += len(bm25_results)
 
-            # Semantic search for this law
-            semantic_results = query_articles(
-                state["question"], law_version_ids=version_ids, n_results=per_law_limit
+            # Semantic search for this law (with AICC-failure tolerance)
+            semantic_results = _safe_semantic_search(
+                state["question"], version_ids, n_results=per_law_limit,
             )
             semantic_count += len(semantic_results)
 

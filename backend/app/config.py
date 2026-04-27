@@ -28,7 +28,18 @@ CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "data/chroma")
 CHROMA_COLLECTION = "legal_articles"
+# Embedding provider selection: "local" (in-process sentence-transformers,
+# legacy) or "aicc" (route through AICC /v1/embeddings proxy). Default
+# "local" so existing deploys are unchanged until operator flips the flag.
+EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local")
+
+# Model used when provider=local. Untouched.
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
+# Model used when provider=aicc. voyage-3 = 1024 dims, multilingual,
+# AICC-supported. See spec 2026-04-27-aicc-embeddings-migration-design.md
+# for model selection rationale.
+EMBEDDING_MODEL_AICC = os.environ.get("EMBEDDING_MODEL_AICC", "voyage-3")
 # AICC PKCE auth — backend verifies user tokens via AICC /auth/me.
 # Distinct from AICC_BASE_URL (which has /v1 suffix for the AI proxy).
 AICC_AUTH_BASE_URL = os.environ.get(
