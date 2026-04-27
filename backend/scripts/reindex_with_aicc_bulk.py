@@ -36,6 +36,12 @@ logger = logging.getLogger("reindex-aicc-bulk")
 # memory usage; 500 is the same value as the per-version script.
 _UPSERT_BATCH_SIZE = 500
 
+# How many LawVersion rows to load+process per chunk. Loading ALL versions at
+# once OOMs the container at the 3 GB cap (article.full_text averages a few KB,
+# 2300 versions x ~17 articles + amendment_notes => GBs of Python objects).
+# 50 keeps peak memory bounded while still amortizing eager-load overhead.
+_VERSION_CHUNK_SIZE = 50
+
 
 def main() -> int:
     from sqlalchemy.orm import selectinload
@@ -85,32 +91,16 @@ def main() -> int:
     logger.info("Creating fresh collection: %s", name)
     collection = get_collection()  # creates on first access
 
-    db = SessionLocal()
-    try:
-        # ONE big query that eager-loads everything we need. selectinload
-        # avoids N+1: it does one IN(...) query per relationship, so the
-        # whole graph loads in O(num_relationships) roundtrips, not O(N).
-        logger.info("Loading all law versions with eager-loaded children...")
-        versions = (
-            db.query(LawVersion)
-            .options(
-                selectinload(LawVersion.law),
-                selectinload(LawVersion.articles).selectinload(Article.amendment_notes),
-                selectinload(LawVersion.annexes),
-            )
-            .all()
-        )
-        logger.info("Loaded %d law versions.", len(versions))
-
-        # Build full document lists in memory (small — ~12K articles + a few annexes).
+    # Helper: build (ids, documents, metadatas) for a chunk of versions.
+    # Caller is responsible for the DB session lifecycle.
+    def build_payload_for_versions(versions: list) -> tuple[list[str], list[str], list[dict], int, int]:
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict] = []
-        article_count = 0
-        annex_count = 0
-
+        a_count = 0
+        x_count = 0
         for v in versions:
-            law = v.law  # eager-loaded, no DB roundtrip
+            law = v.law
             if law is None:
                 logger.warning("LawVersion id=%s has no parent law; skipping", v.id)
                 continue
@@ -133,7 +123,7 @@ def main() -> int:
                     "is_abrogated": str(getattr(article, "is_abrogated", False)),
                     "amendment_count": str(len(article.amendment_notes)) if article.amendment_notes else "0",
                 })
-                article_count += 1
+                a_count += 1
 
             for annex in v.annexes:
                 if not annex.full_text or not annex.full_text.strip():
@@ -155,42 +145,77 @@ def main() -> int:
                     "doc_type": "annex",
                     "annex_title": annex.title[:200] if annex.title else "",
                 })
-                annex_count += 1
+                x_count += 1
+
+        return ids, documents, metadatas, a_count, x_count
+
+    db = SessionLocal()
+    failed_batches = 0
+    total_articles = 0
+    total_annexes = 0
+    total_docs = 0
+    try:
+        # Get just the version IDs first — small payload, gives us chunkable units.
+        all_version_ids = [
+            row[0] for row in db.query(LawVersion.id).order_by(LawVersion.id).all()
+        ]
+        total_versions = len(all_version_ids)
+        logger.info("Found %d law versions; processing in chunks of %d.",
+                    total_versions, _VERSION_CHUNK_SIZE)
+
+        for chunk_start in range(0, total_versions, _VERSION_CHUNK_SIZE):
+            chunk_ids = all_version_ids[chunk_start : chunk_start + _VERSION_CHUNK_SIZE]
+            # Eager-load just this chunk. selectinload runs an IN(...) per
+            # relationship — O(1) DB roundtrips for the whole chunk.
+            chunk_versions = (
+                db.query(LawVersion)
+                .options(
+                    selectinload(LawVersion.law),
+                    selectinload(LawVersion.articles).selectinload(Article.amendment_notes),
+                    selectinload(LawVersion.annexes),
+                )
+                .filter(LawVersion.id.in_(chunk_ids))
+                .all()
+            )
+
+            ids, documents, metadatas, a_count, x_count = build_payload_for_versions(chunk_versions)
+            total_articles += a_count
+            total_annexes += x_count
+            total_docs += len(ids)
+
+            # Upsert this chunk's docs in batches of _UPSERT_BATCH_SIZE.
+            for start in range(0, len(ids), _UPSERT_BATCH_SIZE):
+                end = min(start + _UPSERT_BATCH_SIZE, len(ids))
+                try:
+                    collection.upsert(
+                        ids=ids[start:end],
+                        documents=documents[start:end],
+                        metadatas=metadatas[start:end],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "[reindex-aicc-bulk] upsert batch failed (chunk_start=%d, batch=%d-%d): %s",
+                        chunk_start, start, end, e,
+                    )
+                    failed_batches += 1
+
+            # Free memory: drop SQLAlchemy identity-map references and the local lists.
+            db.expunge_all()
+            del chunk_versions, ids, documents, metadatas
+
+            chunk_end = min(chunk_start + _VERSION_CHUNK_SIZE, total_versions)
+            logger.info(
+                "  versions %d-%d / %d processed (%.0f%%); cumulative %d articles + %d annexes",
+                chunk_start, chunk_end, total_versions,
+                100.0 * chunk_end / total_versions,
+                total_articles, total_annexes,
+            )
     finally:
         db.close()
 
-    total = len(ids)
     logger.info(
-        "Built in-memory payload: %d articles + %d annexes = %d total documents",
-        article_count, annex_count, total,
-    )
-
-    # Batch upsert — Chroma will call our AiccEmbeddingFunction once per
-    # upsert call, which then auto-chunks into 128/call for Voyage.
-    failed_batches = 0
-    for start in range(0, total, _UPSERT_BATCH_SIZE):
-        end = min(start + _UPSERT_BATCH_SIZE, total)
-        try:
-            collection.upsert(
-                ids=ids[start:end],
-                documents=documents[start:end],
-                metadatas=metadatas[start:end],
-            )
-            logger.info(
-                "  upsert batch %d-%d / %d (%.0f%%)",
-                start, end, total, 100.0 * end / total,
-            )
-        except Exception as e:
-            logger.error(
-                "[reindex-aicc-bulk] batch %d-%d failed: %s",
-                start, end, e,
-            )
-            failed_batches += 1
-            # Continue — better to ship a partial index than abort.
-
-    logger.info(
-        "Reindex finished: %d documents into %s; %d batches failed",
-        total, name, failed_batches,
+        "Reindex finished: %d articles + %d annexes = %d docs into %s; %d batches failed",
+        total_articles, total_annexes, total_docs, name, failed_batches,
     )
     if failed_batches:
         logger.error(
