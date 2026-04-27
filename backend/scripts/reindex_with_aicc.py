@@ -35,6 +35,23 @@ logger = logging.getLogger("reindex-aicc")
 
 def main() -> int:
     from app.database import SessionLocal
+    # Register all SQLAlchemy models so cross-model relationships resolve.
+    # Mirror app/main.py's registration set so this script's session sees the
+    # same mapper graph the running app uses.
+    from app.models import (  # noqa: F401
+        assistant,
+        category,
+        favorite,
+        job as job_model,
+        law,
+        model_config,
+        pipeline,
+        prompt,
+        scheduler_settings,
+        user,
+    )
+    from app.models.law_check_log import LawCheckLog  # noqa: F401
+    from app.models.scheduler_run_log import SchedulerRunLog  # noqa: F401
     from app.models.law import LawVersion
     from app.services.chroma_service import (
         get_chroma_client,
