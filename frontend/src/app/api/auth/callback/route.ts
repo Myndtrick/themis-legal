@@ -38,6 +38,15 @@ function readPkceCookie(req: Request): string | null {
   return null;
 }
 
+function redirectToSignin(origin: string, errorCode: string): Response {
+  const target = new URL("/auth/signin", origin);
+  target.searchParams.set("error", errorCode);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: target.toString() },
+  });
+}
+
 export async function GET(req: Request): Promise<Response> {
   const baseUrl = process.env.NEXT_PUBLIC_AICC_AUTH_BASE_URL!;
   const cookieSecret = process.env.AICC_PKCE_COOKIE_SECRET!;
@@ -45,7 +54,15 @@ export async function GET(req: Request): Promise<Response> {
   const u = new URL(req.url);
   const code = u.searchParams.get("code");
   const state = u.searchParams.get("state");
+  const aiccError = u.searchParams.get("error");
   const cookieRaw = readPkceCookie(req);
+
+  // AICC sends ?error=<code>&state=<state> when sign-in is rejected
+  // (access_denied = no project membership; server_error = transient).
+  if (aiccError) {
+    console.error("[auth] AICC callback error: %s (state=%s)", aiccError, state);
+    return redirectToSignin(u.origin, aiccError);
+  }
 
   if (!code || !state || !cookieRaw) {
     console.error("[auth] missing PKCE cookie or query params on callback");

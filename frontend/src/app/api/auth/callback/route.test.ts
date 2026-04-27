@@ -86,6 +86,26 @@ describe("GET /api/auth/callback", () => {
     expect(res.status).toBe(400);
   });
 
+  test("redirects to /auth/signin?error=access_denied when AICC sends ?error=access_denied", async () => {
+    const { GET } = await import("./route");
+    const res = await GET(await makeReqWithCookie({
+      query: "error=access_denied&state=anything",
+    }));
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("location")!;
+    expect(loc).toContain("/auth/signin");
+    expect(loc).toContain("error=access_denied");
+  });
+
+  test("redirects to /auth/signin?error=server_error for transient AICC failures", async () => {
+    const { GET } = await import("./route");
+    const res = await GET(await makeReqWithCookie({
+      query: "error=server_error&state=anything",
+    }));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("error=server_error");
+  });
+
   test("returns 502 when AICC /auth/token returns 5xx", async () => {
     const cookie = await signPkceCookie(
       { verifier: "v", state: "s", callbackUrl: "/" },
