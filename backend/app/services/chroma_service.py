@@ -4,7 +4,6 @@ import logging
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from chromadb.utils import embedding_functions
 from sqlalchemy.orm import Session
 
 from app.config import (
@@ -12,16 +11,15 @@ from app.config import (
     AICC_KEY,
     CHROMA_PATH,
     CHROMA_COLLECTION,
-    EMBEDDING_MODEL,
     EMBEDDING_MODEL_AICC,
-    EMBEDDING_PROVIDER,
 )
 from app.models.law import Article, Law, LawVersion
+from app.services.aicc_embedding import AiccEmbeddingFunction
 
 logger = logging.getLogger(__name__)
 
 _client: chromadb.PersistentClient | None = None
-_embedding_fn = None
+_embedding_fn: AiccEmbeddingFunction | None = None
 
 
 def get_chroma_client() -> chromadb.PersistentClient:
@@ -35,35 +33,20 @@ def get_chroma_client() -> chromadb.PersistentClient:
 
 
 def get_collection_name() -> str:
-    """Collection name varies by provider so old + new can coexist on disk."""
-    if EMBEDDING_PROVIDER == "aicc":
-        return f"{CHROMA_COLLECTION}_v2"
-    return CHROMA_COLLECTION
+    """Active collection name. Always the v2 (voyage-3-large) collection."""
+    return f"{CHROMA_COLLECTION}_v2"
 
 
-def get_embedding_function():
+def get_embedding_function() -> AiccEmbeddingFunction:
+    """Module-level singleton: AICC voyage embeddings."""
     global _embedding_fn
-    if _embedding_fn is not None:
-        return _embedding_fn
-
-    if EMBEDDING_PROVIDER == "local":
-        _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
-        )
-        logger.info("Embedding provider: local (model=%s)", EMBEDDING_MODEL)
-    elif EMBEDDING_PROVIDER == "aicc":
-        from app.services.aicc_embedding import AiccEmbeddingFunction
+    if _embedding_fn is None:
         _embedding_fn = AiccEmbeddingFunction(
             api_key=AICC_KEY,
             base_url=AICC_BASE_URL,
             model=EMBEDDING_MODEL_AICC,
         )
         logger.info("Embedding provider: aicc (model=%s)", EMBEDDING_MODEL_AICC)
-    else:
-        raise ValueError(
-            f"Unknown EMBEDDING_PROVIDER={EMBEDDING_PROVIDER!r}; expected 'local' or 'aicc'"
-        )
-
     return _embedding_fn
 
 
