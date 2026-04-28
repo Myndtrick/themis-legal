@@ -31,32 +31,18 @@ async def _verify_signature(request: Request) -> None:
     sig_header = request.headers.get("X-AICC-Signature", "")
     body = await request.body()
 
-    # TEMP diagnostic — log ALL headers + body preview on EVERY incoming
-    # webhook so we can reverse-engineer AICC's signing format. Remove after
-    # verification passes in production.
-    all_headers = {k: v for k, v in request.headers.items() if k.lower().startswith(("x-", "content-"))}
-    logger.warning(
-        "AICC webhook arrived: path=%s headers=%s body_len=%d body_preview=%r",
-        request.url.path, all_headers, len(body), body[:200],
-    )
-
     if not sig_header:
-        logger.warning("No X-AICC-Signature header present (available headers logged above)")
+        logger.warning("No X-AICC-Signature header on scheduler webhook")
         raise HTTPException(status_code=401, detail="missing X-AICC-Signature header")
 
     provided = sig_header.removeprefix("sha256=").strip()
-    expected_from_scheduler_secret = hmac.new(
+    expected = hmac.new(
         AICC_SCHEDULER_SECRET.encode("utf-8"),
         body,
         hashlib.sha256,
     ).hexdigest()
-    logger.warning(
-        "Signature check: provided=%s expected(scheduler_secret)=%s match=%s",
-        provided, expected_from_scheduler_secret,
-        hmac.compare_digest(provided, expected_from_scheduler_secret),
-    )
 
-    if not hmac.compare_digest(provided, expected_from_scheduler_secret):
+    if not hmac.compare_digest(provided, expected):
         logger.warning("HMAC signature mismatch on scheduler webhook")
         raise HTTPException(status_code=401, detail="invalid signature")
 

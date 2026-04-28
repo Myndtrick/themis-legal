@@ -8,6 +8,7 @@ can ignore it.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 
 from fastapi import Depends, HTTPException, Request
@@ -40,7 +41,8 @@ def verify_caller(request: Request, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Service-token path: only when token is configured (non-empty).
-    if RATES_API_TOKEN and token == RATES_API_TOKEN:
+    # Constant-time compare to avoid leaking the token via response timing.
+    if RATES_API_TOKEN and hmac.compare_digest(token, RATES_API_TOKEN):
         return {"kind": "service", "name": "rates-api-service"}
 
     # User-PKCE fallback: delegate to the existing user dependency. Any
