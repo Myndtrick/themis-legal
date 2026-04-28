@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
-from app.models import assistant, pipeline, prompt, category, user, favorite, law  # noqa: F401 — register models
+from app.models import assistant, pipeline, prompt, category, user, favorite, law, rates  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.models import job as job_model  # noqa: F401 — register jobs table
