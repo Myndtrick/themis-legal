@@ -228,3 +228,56 @@ def _backfill_notes_runner(db: Session, job_id: str, params: dict) -> dict:
         "unknown_paragraph_labels": report.unknown_paragraph_labels[:200],
         "errors": report.errors[:200],
     }
+
+
+# ---------------------------------------------------------------------------
+# Rates backfill (Spec: 2026-04-28-rates-feed-design)
+# ---------------------------------------------------------------------------
+
+BACKFILL_RATES_KIND = "backfill_rates"
+
+
+@router.post("/rates/backfill")
+def trigger_rates_backfill(
+    years: int = 7,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Backfill `years` years of FX + interest rates. Returns job_id."""
+    if years < 1 or years > 30:
+        raise HTTPException(status_code=400, detail="years must be 1..30")
+
+    from app.services import job_service
+
+    if job_service.has_active(db, kind=BACKFILL_RATES_KIND):
+        raise HTTPException(status_code=409, detail="rates backfill is already running")
+
+    job_id = job_service.submit(
+        kind=BACKFILL_RATES_KIND,
+        params={"years": years},
+        runner=_rates_backfill_runner,
+        user_id=admin.id,
+        db=db,
+    )
+    logger.info("Triggered rates backfill (years=%d) as job %s", years, job_id)
+    return {"status": "started", "years": years, "job_id": job_id}
+
+
+def _rates_backfill_runner(db: Session, job_id: str, params: dict) -> dict:
+    """Job runner: backfill rates with progress updates."""
+    from app.database import SessionLocal
+    from app.services import job_service as _js
+    from app.services.rates.backfill import run_rates_backfill
+
+    years_param = int(params.get("years", 7))
+
+    def _on_progress(current: int, total: int, label: str):
+        ps = SessionLocal()
+        try:
+            _js.update_progress(
+                ps, job_id, phase=label, current=current, total=total,
+            )
+        finally:
+            ps.close()
+
+    return run_rates_backfill(years=years_param, on_progress=_on_progress)
