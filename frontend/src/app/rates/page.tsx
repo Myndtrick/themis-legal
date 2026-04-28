@@ -50,32 +50,28 @@ export default function RatesPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      // Awaiting first puts the subsequent setState calls outside the effect's
-      // synchronous body — keeps react-hooks/set-state-in-effect happy.
-      await Promise.resolve();
-      if (cancelled) return;
-      setLoading(true);
-      setError(null);
-      try {
-        const [fx, ir] = await Promise.all([
-          loadFx(fxCurrency),
-          loadInterest(irRateType, irTenor),
-        ]);
-        if (cancelled) return;
+    const ac = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- normal data-fetch pattern
+    setLoading(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- normal data-fetch pattern
+    setError(null);
+    Promise.all([loadFx(fxCurrency), loadInterest(irRateType, irTenor)])
+      .then(([fx, ir]) => {
+        if (ac.signal.aborted) return;
         setFxRates(fx);
         setInterestRates(ir);
-      } catch (e) {
-        if (cancelled) return;
-        setError((e as Error).message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+      })
+      .catch((e: Error) => {
+        if (ac.signal.aborted) return;
+        // Surface the failure mode in DevTools so a stuck "Loading…" is
+        // diagnosable.
+        console.error("[rates] fetch failed:", e);
+        setError(e.message || "Failed to load rates");
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
+      });
+    return () => ac.abort();
   }, [fxCurrency, irRateType, irTenor, loadFx, loadInterest]);
 
   const fxLatest = fxRates[0];
