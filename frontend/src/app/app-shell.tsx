@@ -9,6 +9,7 @@ const navItems = [
   { href: "/laws", label: "Legal Library" },
   { href: "/assistant", label: "Legal Assistant" },
   { href: "/contracts", label: "Contract Review" },
+  { href: "/rates", label: "Rates" },
   { href: "/settings", label: "Settings" },
 ];
 
