@@ -5,9 +5,11 @@ Both gated by the verify_caller dependency.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth_service import verify_caller
@@ -17,6 +19,56 @@ from app.models.rates import ExchangeRate, InterestRate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/rates", tags=["Rates"])
+
+
+def _age_days(latest_iso: str | None, today: datetime.date) -> int | None:
+    if not latest_iso:
+        return None
+    try:
+        return (today - datetime.date.fromisoformat(latest_iso)).days
+    except ValueError:
+        return None
+
+
+@router.get("/health")
+def rates_health(db: Session = Depends(get_db)) -> dict:
+    """Public freshness probe for monitoring (no auth).
+
+    Returns row counts, latest dates, and ages in days for FX, ROBOR, and
+    EURIBOR. Exposes only metadata — no rates — so it's safe to leave open.
+    Lets dashboards / oncall alert if the AICC scheduler stops firing.
+    """
+    today = datetime.date.today()
+
+    fx_count, fx_latest = db.query(
+        func.count(ExchangeRate.id), func.max(ExchangeRate.date)
+    ).first() or (0, None)
+
+    robor_count, robor_latest = db.query(
+        func.count(InterestRate.id), func.max(InterestRate.date)
+    ).filter(InterestRate.rate_type == "ROBOR").first() or (0, None)
+
+    eur_count, eur_latest = db.query(
+        func.count(InterestRate.id), func.max(InterestRate.date)
+    ).filter(InterestRate.rate_type == "EURIBOR").first() or (0, None)
+
+    return {
+        "fx": {
+            "row_count": fx_count or 0,
+            "latest_date": fx_latest,
+            "age_days": _age_days(fx_latest, today),
+        },
+        "robor": {
+            "row_count": robor_count or 0,
+            "latest_date": robor_latest,
+            "age_days": _age_days(robor_latest, today),
+        },
+        "euribor": {
+            "row_count": eur_count or 0,
+            "latest_date": eur_latest,
+            "age_days": _age_days(eur_latest, today),
+        },
+    }
 
 
 @router.get("/exchange")
