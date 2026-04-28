@@ -81,3 +81,25 @@ async def eu_update(request: Request, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_eu_update_check)
     logger.info("AICC scheduler webhook accepted: eu-update")
     return {"status": "accepted", "job": "eu-update"}
+
+
+@router.post("/rates-update")
+async def rates_update(request: Request, background_tasks: BackgroundTasks):
+    """AICC cron: daily FX (BNR) + ROBOR + EURIBOR rates ingest."""
+    await _verify_signature(request)
+
+    def _run_and_log():
+        from app.database import SessionLocal
+        from app.services.rates.run import run_rates_update_check
+        from app.services.scheduler_log_service import record_run
+
+        results = run_rates_update_check()
+        db = SessionLocal()
+        try:
+            record_run(db, "rates", results, "scheduled")
+        finally:
+            db.close()
+
+    background_tasks.add_task(_run_and_log)
+    logger.info("AICC scheduler webhook accepted: rates-update")
+    return {"status": "accepted", "job": "rates-update"}

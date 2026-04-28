@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DataSet xmlns="http://www.bnr.ro/xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.bnr.ro/xsd nbrfxrates.xsd">
+  <Header>
+    <Publisher>National Bank of Romania</Publisher>
+    <PublishingDate>2026-03-06</PublishingDate>
+    <MessageType>DR</MessageType>
+  </Header>
+  <Body>
+    <Subject>Reference rates</Subject>
+    <OrigCurrency>RON</OrigCurrency>
+    <Cube date="2026-03-04">
+      <Rate currency="EUR">4.9700</Rate>
+      <Rate currency="USD">4.3900</Rate>
+    </Cube>
+    <Cube date="2026-03-05">
+      <Rate currency="EUR">4.9720</Rate>
+      <Rate currency="USD">4.3950</Rate>
+      <Rate currency="HUF" multiplier="100">1.1200</Rate>
+    </Cube>
+    <Cube date="2026-03-06">
+      <Rate currency="EUR">4.9741</Rate>
+      <Rate currency="USD">4.3981</Rate>
+      <Rate currency="HUF" multiplier="100">1.1234</Rate>
+    </Cube>
+  </Body>
+</DataSet>

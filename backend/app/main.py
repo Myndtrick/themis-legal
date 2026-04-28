@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
-from app.models import assistant, pipeline, prompt, category, user, favorite, law  # noqa: F401 — register models
+from app.models import assistant, pipeline, prompt, category, user, favorite, law, rates  # noqa: F401 — register models
 from app.models import model_config  # noqa: F401 — register model config tables
 from app.models import scheduler_settings  # noqa: F401 — register scheduler_settings table
 from app.models import job as job_model  # noqa: F401 — register jobs table
@@ -23,6 +23,7 @@ from app.routers import compare
 from app.routers import admin as admin_router
 from app.routers import settings_schedulers
 from app.routers import internal_scheduler
+from app.routers import rates as rates_router
 from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -283,6 +284,7 @@ app.include_router(admin_router.router)
 app.include_router(settings_schedulers.router)
 app.include_router(jobs_router.router)
 app.include_router(internal_scheduler.router)
+app.include_router(rates_router.router)
 
 
 @app.get("/api/health")

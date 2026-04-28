@@ -33,6 +33,13 @@ CHROMA_COLLECTION = "legal_articles"
 # what THEMIS's project has enabled today. Override via env var if you swap
 # models (e.g. voyage-3-lite for cheaper indexing).
 EMBEDDING_MODEL_AICC = os.environ.get("EMBEDDING_MODEL_AICC", "voyage-3-large")
+
+# Shared bearer token for service-to-service callers (e.g. Exodus pulling
+# rates). Empty string disables service-token auth — only Themis user PKCE
+# tokens are then accepted by /api/rates/*. In production, generate via
+# `openssl rand -base64 48` and set on Railway.
+RATES_API_TOKEN = os.environ.get("RATES_API_TOKEN", "")
+
 # AICC PKCE auth — backend verifies user tokens via AICC /auth/me.
 # Distinct from AICC_BASE_URL (which has /v1 suffix for the AI proxy).
 AICC_AUTH_BASE_URL = os.environ.get(
