@@ -1,6 +1,6 @@
-"""ROBOR parser tests. The HTML fixture is a minimal version of what
-curs-valutar-bnr.ro emits; if their schema drifts, the parser will return
-empty and the daily run will log a warning."""
+"""ROBOR parser tests against the real curs-valutar-bnr.ro layout
+(verified live 2026-04-28: no thead/tbody split, comma decimals, T/N column
+present but skipped)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,18 +16,30 @@ def _read(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def test_parse_robor_extracts_6_tenors_per_date():
+def test_parse_robor_extracts_6_tenors_per_date_skipping_tn():
     from app.services.rates.robor import parse_robor_html
     rates = parse_robor_html(_read("robor.html"))
-    # 2 dates × 6 tenors = 12 rows
+    # 2 dates × 6 tenors (ON, 1W, 1M, 3M, 6M, 12M) — T/N is skipped.
     assert len(rates) == 12
     by_key = {(r.date, r.tenor): r for r in rates}
-    # 06 Mar 2026 → 2026-03-06; "ROBOR ON" → "ON" tenor
-    assert by_key[("2026-03-06", "ON")].rate == 5.50
-    assert by_key[("2026-03-06", "3M")].rate == 5.92
-    assert by_key[("2026-03-06", "12M")].rate == 6.18
-    # All rate_type = ROBOR
+    assert by_key[("2026-04-27", "ON")].rate == 5.69
+    assert by_key[("2026-04-27", "1W")].rate == 5.72
+    assert by_key[("2026-04-27", "1M")].rate == 5.78
+    assert by_key[("2026-04-27", "3M")].rate == 5.87
+    assert by_key[("2026-04-27", "6M")].rate == 5.94
+    assert by_key[("2026-04-27", "12M")].rate == 6.00
     assert all(r.rate_type == "ROBOR" for r in rates)
+    # T/N must NOT appear as a tenor.
+    assert all(r.tenor != "TN" for r in rates)
+
+
+def test_parse_robor_handles_comma_decimals():
+    """The real source uses Romanian comma decimals (5,69 not 5.69)."""
+    from app.services.rates.robor import parse_robor_html
+    rates = parse_robor_html(_read("robor.html"))
+    # If we accidentally float() "5,69" it'd raise; if we tolerated only
+    # dot decimals the parser would skip every cell and return 0.
+    assert any(abs(r.rate - 5.69) < 1e-9 for r in rates)
 
 
 def test_parse_robor_returns_empty_on_garbage():
@@ -37,10 +49,16 @@ def test_parse_robor_returns_empty_on_garbage():
 
 
 def test_parse_robor_skips_unparseable_rate():
+    """A header that the parser recognises (O/N) followed by a non-number
+    must yield zero rows (not crash)."""
     from app.services.rates.robor import parse_robor_html
-    bad = """<table><thead><tr><th>Data</th><th>ROBOR ON</th></tr></thead>
-    <tbody><tr><td>06 Mar 2026</td><td>not-a-number</td></tr></tbody></table>"""
-    assert parse_robor_html(bad) == []  # nothing valid to extract
+    bad = (
+        "<table>"
+        "<tr><th>Data</th><th>O/N</th></tr>"
+        "<tr><td>06 Apr 2026</td><td>not-a-number</td></tr>"
+        "</table>"
+    )
+    assert parse_robor_html(bad) == []
 
 
 @pytest.fixture
