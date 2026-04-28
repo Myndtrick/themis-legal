@@ -23,6 +23,7 @@ from app.routers import compare
 from app.routers import admin as admin_router
 from app.routers import settings_schedulers
 from app.routers import internal_scheduler
+from app.routers import rates as rates_router
 from app.scheduler import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -283,6 +284,7 @@ app.include_router(admin_router.router)
 app.include_router(settings_schedulers.router)
 app.include_router(jobs_router.router)
 app.include_router(internal_scheduler.router)
+app.include_router(rates_router.router)
 
 
 @app.get("/api/health")
