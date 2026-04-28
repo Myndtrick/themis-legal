@@ -1,6 +1,13 @@
 """ROBOR rate fetcher + parser + storage.
 
 Source: https://www.curs-valutar-bnr.ro/robor
+
+Real-page structure (verified live, 2026-04-28):
+  - One <table> with <th> header row and <td> data rows as direct siblings
+    (no <thead>/<tbody> split).
+  - Headers: Data | O/N | T/N | 1 sapt. | 1 luna | 3 luni | 6 luni | 12 luni
+  - Dates in English: "27 Apr 2026"
+  - Rates use comma decimal: "5,69"
 """
 from __future__ import annotations
 
@@ -17,26 +24,24 @@ logger = logging.getLogger(__name__)
 
 ROBOR_URL = "https://www.curs-valutar-bnr.ro/robor"
 
-# Map column header tokens to standard tenor codes.
-# curs-valutar-bnr.ro uses Romanian-language headers like "ROBOR 1S" (1 week),
-# "ROBOR 1L" (1 month), etc. ROBOR ON = overnight.
+_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Themis rates feed)"}
+
+# T/N (tomorrow-next) is intentionally skipped — not a standard tenor we want
+# to publish; consumers expect ON, 1W, 1M, 3M, 6M, 12M.
 _TENOR_MAP = {
-    "ON": "ON",
-    "1S": "1W",
-    "1L": "1M",
-    "3L": "3M",
-    "6L": "6M",
-    "12L": "12M",
+    "o/n": "ON",
+    "1 sapt.": "1W",
+    "1 luna": "1M",
+    "3 luni": "3M",
+    "6 luni": "6M",
+    "12 luni": "12M",
 }
 
 
-# Romanian + English month abbreviations seen in the table's date column.
 _MONTHS = {
-    # English (used by some BNR tables)
     "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
     "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
     "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
-    # Romanian (used by curs-valutar-bnr.ro)
     "Ian": "01", "Ian.": "01",
     "Feb.": "02",
     "Mar.": "03",
@@ -75,33 +80,54 @@ def _parse_date(raw: str) -> str | None:
         return None
 
 
+def _parse_rate(raw: str) -> float | None:
+    """Parse a rate that may use comma OR dot as decimal separator,
+    optionally suffixed with '%' or ' %'."""
+    s = raw.strip().rstrip("%").strip().replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def parse_robor_html(html: str) -> list[ParsedInterestRate]:
-    """Parse curs-valutar-bnr.ro ROBOR table into ParsedInterestRate rows."""
+    """Parse curs-valutar-bnr.ro ROBOR table into ParsedInterestRate rows.
+
+    Real layout has no thead/tbody split: rows are direct <tr> children of
+    <table>. The first <tr> with cells starting at "Data" is the header; the
+    rest are data rows.
+    """
     if not html or not html.strip():
         return []
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table")
     if table is None:
         return []
-    thead = table.find("thead")
-    tbody = table.find("tbody")
-    if thead is None or tbody is None:
+
+    all_rows = table.find_all("tr")
+    if not all_rows:
         return []
 
-    headers = [th.get_text(strip=True) for th in thead.find_all("th")]
-    if not headers or headers[0].lower() != "data":
+    header_idx = None
+    headers: list[str] = []
+    for i, tr in enumerate(all_rows):
+        cells = tr.find_all(["th", "td"])
+        if not cells:
+            continue
+        if cells[0].name == "th" and cells[0].get_text(strip=True).lower() == "data":
+            headers = [c.get_text(strip=True) for c in cells]
+            header_idx = i
+            break
+    if header_idx is None:
         return []
 
-    # For columns 1..N, derive their tenor (or None to skip)
-    column_tenors: list[str | None] = [None]  # column 0 is the date column
+    column_tenors: list[str | None] = [None]  # column 0 = date
     for h in headers[1:]:
-        # Header looks like "ROBOR ON" / "ROBOR 1S" — last token is the tenor.
-        token = h.split()[-1] if h.split() else ""
-        column_tenors.append(_TENOR_MAP.get(token))
+        column_tenors.append(_TENOR_MAP.get(h.strip().lower()))
 
     out: list[ParsedInterestRate] = []
-    for tr in tbody.find_all("tr"):
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+    for tr in all_rows[header_idx + 1:]:
+        cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if len(cells) < 2:
             continue
         date = _parse_date(cells[0])
@@ -111,9 +137,8 @@ def parse_robor_html(html: str) -> list[ParsedInterestRate]:
             tenor = column_tenors[i]
             if tenor is None:
                 continue
-            try:
-                rate = float(cells[i])
-            except ValueError:
+            rate = _parse_rate(cells[i])
+            if rate is None:
                 continue
             out.append(ParsedInterestRate(
                 date=date, rate_type="ROBOR", tenor=tenor, rate=rate,
@@ -125,7 +150,7 @@ def fetch_robor_current(client: httpx.Client | None = None) -> list[ParsedIntere
     """Fetch + parse current ROBOR table. Returns [] on HTTP/parse errors."""
     own = client is None
     if own:
-        client = httpx.Client(timeout=30.0)
+        client = httpx.Client(timeout=30.0, follow_redirects=True, headers=_REQUEST_HEADERS)
     try:
         r = client.get(ROBOR_URL)
     except httpx.RequestError as e:
