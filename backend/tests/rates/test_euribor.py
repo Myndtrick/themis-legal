@@ -57,6 +57,19 @@ def test_parse_euribor_empty_on_garbage():
     assert parse_euribor_html("<html>nothing</html>") == []
 
 
+def test_parse_euribor_handles_per_year_layout():
+    """The /euribor-rates-by-year/{year}/ page uses the OPPOSITE orientation:
+    headers = tenors, first column of each row = date."""
+    from app.services.rates.euribor import parse_euribor_html
+    rates = parse_euribor_html(_read("euribor_year.html"))
+    # 2 dates × 5 tenors = 10 rows
+    assert len(rates) == 10
+    by_key = {(r.date, r.tenor): r for r in rates}
+    assert by_key[("2025-12-01", "1W")].rate == 1.929
+    assert by_key[("2025-12-01", "3M")].rate == 2.060
+    assert by_key[("2025-11-03", "12M")].rate == 2.198
+
+
 def test_fetch_euribor_with_mock_returns_parsed():
     from app.services.rates.euribor import fetch_euribor_current
     client = httpx.Client(transport=httpx.MockTransport(

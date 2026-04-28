@@ -76,10 +76,18 @@ def _parse_rate(raw: str) -> float | None:
 
 
 def parse_euribor_html(html: str) -> list[ParsedInterestRate]:
-    """Parse euribor-rates.eu's transposed table into ParsedInterestRate rows.
+    """Parse euribor-rates.eu's table into ParsedInterestRate rows.
 
-    Layout: column 0 of each data row is a tenor label ("Euribor 3 months").
-    Columns 1..N are rates for the dates listed in the header row.
+    The site uses two layouts depending on the page:
+
+    Current-rates (`/current-euribor-rates/`) — TRANSPOSED:
+      header has DATES, each data row starts with a TENOR label.
+
+    Per-year archive (`/euribor-rates-by-year/{year}/`) — NORMAL:
+      header has TENOR labels, each data row starts with a DATE.
+
+    We detect orientation by inspecting the header's second cell: if it parses
+    as a tenor label we're on the per-year page, otherwise transposed.
     """
     if not html or not html.strip():
         return []
@@ -95,28 +103,49 @@ def parse_euribor_html(html: str) -> list[ParsedInterestRate]:
     header_cells = all_rows[0].find_all(["th", "td"])
     if len(header_cells) < 2:
         return []
-    column_dates: list[str | None] = [None]
-    for c in header_cells[1:]:
-        column_dates.append(_parse_us_or_iso_date(c.get_text(strip=True)))
+    header_texts = [c.get_text(strip=True) for c in header_cells]
 
     out: list[ParsedInterestRate] = []
-    for tr in all_rows[1:]:
-        cells = tr.find_all(["th", "td"])
-        if len(cells) < 2:
-            continue
-        tenor = _label_to_tenor(cells[0].get_text(strip=True))
-        if tenor is None:
-            continue
-        for i in range(1, min(len(cells), len(column_dates))):
-            date = column_dates[i]
+    if _label_to_tenor(header_texts[1]) is not None:
+        # Normal layout: header = tenors, rows = dates × rates.
+        column_tenors: list[str | None] = [None] + [_label_to_tenor(t) for t in header_texts[1:]]
+        for tr in all_rows[1:]:
+            cells = tr.find_all(["th", "td"])
+            if len(cells) < 2:
+                continue
+            date = _parse_us_or_iso_date(cells[0].get_text(strip=True))
             if date is None:
                 continue
-            rate = _parse_rate(cells[i].get_text(strip=True))
-            if rate is None:
+            for i in range(1, min(len(cells), len(column_tenors))):
+                tenor = column_tenors[i]
+                if tenor is None:
+                    continue
+                rate = _parse_rate(cells[i].get_text(strip=True))
+                if rate is None:
+                    continue
+                out.append(ParsedInterestRate(
+                    date=date, rate_type="EURIBOR", tenor=tenor, rate=rate,
+                ))
+    else:
+        # Transposed layout: header = dates, rows = tenors × rates.
+        column_dates: list[str | None] = [None] + [_parse_us_or_iso_date(t) for t in header_texts[1:]]
+        for tr in all_rows[1:]:
+            cells = tr.find_all(["th", "td"])
+            if len(cells) < 2:
                 continue
-            out.append(ParsedInterestRate(
-                date=date, rate_type="EURIBOR", tenor=tenor, rate=rate,
-            ))
+            tenor = _label_to_tenor(cells[0].get_text(strip=True))
+            if tenor is None:
+                continue
+            for i in range(1, min(len(cells), len(column_dates))):
+                date = column_dates[i]
+                if date is None:
+                    continue
+                rate = _parse_rate(cells[i].get_text(strip=True))
+                if rate is None:
+                    continue
+                out.append(ParsedInterestRate(
+                    date=date, rate_type="EURIBOR", tenor=tenor, rate=rate,
+                ))
     return out
 
 
