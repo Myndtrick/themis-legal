@@ -133,3 +133,95 @@ def test_interest_filter_by_tenor(client):
 def test_interest_no_auth_returns_401(client):
     r = client.get("/api/rates/interest")
     assert r.status_code == 401
+
+
+# ── POST /api/rates/backfill-history ─────────────────────────────────────
+
+
+def test_backfill_history_no_auth_returns_401(client):
+    r = client.post("/api/rates/backfill-history")
+    assert r.status_code == 401
+
+
+def test_backfill_history_rejects_future_start_year(client):
+    r = client.post(
+        "/api/rates/backfill-history?start_year=2999",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    )
+    assert r.status_code == 400
+
+
+def test_backfill_history_rejects_user_pkce_callers(client, monkeypatch):
+    """Codex P2: verify_caller also admits regular user PKCE tokens — the
+    backfill trigger must be SERVICE-token-only (403 for user callers)."""
+    from app.auth_service import verify_caller
+    from app.main import app as fastapi_app
+
+    fastapi_app.dependency_overrides[verify_caller] = lambda: {
+        "kind": "user", "user_id": 1, "email": "user@example.com", "role": "viewer",
+    }
+    try:
+        r = client.post("/api/rates/backfill-history")
+        assert r.status_code == 403
+    finally:
+        fastapi_app.dependency_overrides.pop(verify_caller, None)
+
+
+def test_backfill_history_runs_and_returns_summary(client, monkeypatch):
+    from app.services.rates.euribor_history import EuriborHistoryFetchResult
+    from app.services.rates.robor import ParsedInterestRate
+
+    fake = EuriborHistoryFetchResult(
+        rows=[
+            ParsedInterestRate(date="2024-01-02", rate_type="EURIBOR", tenor="1M", rate=3.856),
+            ParsedInterestRate(date="2024-01-03", rate_type="EURIBOR", tenor="1M", rate=3.865),
+        ]
+    )
+    # Patch the network fetch only — storage runs for real against the test DB.
+    monkeypatch.setattr(
+        "app.services.rates.euribor_history.fetch_euribor_history",
+        lambda **kwargs: fake,
+    )
+
+    r = client.post(
+        "/api/rates/backfill-history",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["fetched_rows"] == 2
+    assert body["inserted_rows"] == 2
+    assert body["errors"] == 0
+    assert body["tenors"]["1M"]["from"] == "2024-01-02"
+
+    # Idempotent: second call inserts nothing new.
+    r2 = client.post(
+        "/api/rates/backfill-history",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["inserted_rows"] == 0
+
+    # The new rows are served by the read API under the exact identifiers
+    # Exodus requests: rate_type=EURIBOR & tenor=1M.
+    read = client.get(
+        "/api/rates/interest?rate_type=EURIBOR&tenor=1M&from=2024-01-02&to=2024-01-03&limit=100",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    )
+    rows = read.json()
+    assert {row["date"] for row in rows} == {"2024-01-02", "2024-01-03"}
+    assert all(row["tenor"] == "1M" and row["rate_type"] == "EURIBOR" for row in rows)
+
+
+def test_backfill_history_conflicts_when_already_running(client, monkeypatch):
+    from app.services.rates import euribor_history
+
+    assert euribor_history.try_acquire_history_backfill_lock() is True
+    try:
+        r = client.post(
+            "/api/rates/backfill-history",
+            headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+        )
+        assert r.status_code == 409
+    finally:
+        euribor_history.release_history_backfill_lock()

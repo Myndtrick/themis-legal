@@ -71,6 +71,12 @@ def test_health_no_auth_required_and_returns_freshness(client):
     assert body["euribor"]["row_count"] == 1
     assert body["euribor"]["age_days"] == 30
 
+    # Per-tenor EURIBOR density breakdown (the aggregate can look healthy
+    # while one tenor is sparse/missing — this is what exposes that).
+    assert set(body["euribor_tenors"].keys()) == {"3M"}
+    assert body["euribor_tenors"]["3M"]["row_count"] == 1
+    assert body["euribor_tenors"]["3M"]["age_days"] == 30
+
 
 def test_health_with_empty_db_returns_zero_counts_and_null_ages(tmp_path):
     """No rows yet → counts 0, latest_date null, age_days null. (No 5xx.)"""
@@ -101,5 +107,6 @@ def test_health_with_empty_db_returns_zero_counts_and_null_ages(tmp_path):
         assert body["fx"] == {"row_count": 0, "latest_date": None, "age_days": None}
         assert body["robor"] == {"row_count": 0, "latest_date": None, "age_days": None}
         assert body["euribor"] == {"row_count": 0, "latest_date": None, "age_days": None}
+        assert body["euribor_tenors"] == {}
     finally:
         app.dependency_overrides.clear()

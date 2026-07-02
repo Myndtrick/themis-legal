@@ -2,13 +2,16 @@
 
 Auth: either Themis user PKCE bearer or shared RATES_API_TOKEN bearer.
 Both gated by the verify_caller dependency.
+
+Also hosts POST /backfill-history — the service-token-triggerable EURIBOR
+daily-history ingest (additive INSERT OR IGNORE; see euribor_history.py).
 """
 from __future__ import annotations
 
 import datetime
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -52,6 +55,25 @@ def rates_health(db: Session = Depends(get_db)) -> dict:
         func.count(InterestRate.id), func.max(InterestRate.date)
     ).filter(InterestRate.rate_type == "EURIBOR").first() or (0, None)
 
+    # Per-tenor EURIBOR density. The aggregate count above can look healthy
+    # while a tenor's history is monthly-sampled or missing — this breakdown
+    # is what makes that visible (the 2026-07 EURIBOR-1M gap would have been
+    # caught on day one with it).
+    euribor_tenors: dict[str, dict] = {}
+    for tenor, count, latest in (
+        db.query(
+            InterestRate.tenor, func.count(InterestRate.id), func.max(InterestRate.date)
+        )
+        .filter(InterestRate.rate_type == "EURIBOR")
+        .group_by(InterestRate.tenor)
+        .all()
+    ):
+        euribor_tenors[tenor] = {
+            "row_count": count or 0,
+            "latest_date": latest,
+            "age_days": _age_days(latest, today),
+        }
+
     return {
         "fx": {
             "row_count": fx_count or 0,
@@ -68,6 +90,7 @@ def rates_health(db: Session = Depends(get_db)) -> dict:
             "latest_date": eur_latest,
             "age_days": _age_days(eur_latest, today),
         },
+        "euribor_tenors": euribor_tenors,
     }
 
 
@@ -142,3 +165,62 @@ def list_interest_rates(
         }
         for r in rows
     ]
+
+
+@router.post("/backfill-history")
+def backfill_euribor_history(
+    start_year: int = Query(
+        1999, ge=1999, description="Earliest year to backfill (EURIBOR exists since 1999)"
+    ),
+    db: Session = Depends(get_db),
+    caller: dict = Depends(verify_caller),
+) -> dict:
+    """One-shot EURIBOR DAILY-history backfill (all tenors, additive).
+
+    SERVICE-TOKEN ONLY: the rates-feed spec (Q1) designates the shared
+    RATES_API_TOKEN bearer as the service-to-service adapter; regular user
+    PKCE tokens are rejected (403) — humans trigger backfills through the
+    admin path (/api/admin/rates/backfill). The operation is strictly
+    additive (INSERT OR IGNORE on (date, rate_type, tenor)) and idempotent.
+    Runs synchronously (~30 upstream calls, ~1 min) and returns the per-tenor
+    summary — including fetch failures and per-tenor sparse warnings — so the
+    caller can verify coverage, not just row counts.
+    """
+    from app.services.rates.euribor_history import (
+        run_euribor_history_backfill,
+        release_history_backfill_lock,
+        try_acquire_history_backfill_lock,
+    )
+    from app.services.scheduler_log_service import record_run
+
+    if caller.get("kind") != "service":
+        raise HTTPException(
+            status_code=403,
+            detail="backfill-history requires the service token (RATES_API_TOKEN)",
+        )
+
+    today_year = datetime.date.today().year
+    if start_year > today_year:
+        raise HTTPException(status_code=400, detail="start_year must not be in the future")
+
+    if not try_acquire_history_backfill_lock():
+        raise HTTPException(
+            status_code=409, detail="a EURIBOR history backfill is already running"
+        )
+    try:
+        summary = run_euribor_history_backfill(db, start_year=start_year)
+    finally:
+        release_history_backfill_lock()
+
+    # Ops visibility in the admin scheduler log (best-effort, never raises).
+    # Logged under the existing "rates" scheduler id (scheduler_id is
+    # String(8)); trigger="manual" distinguishes it from the daily cron runs
+    # and summary_json carries the full backfill detail.
+    record_run(db, "rates", summary, "manual")
+    logger.info(
+        "[rates] EURIBOR history backfill: %d fetched, %d inserted, %d errors",
+        summary.get("fetched_rows", 0),
+        summary.get("inserted_rows", 0),
+        summary.get("errors", 0),
+    )
+    return summary
